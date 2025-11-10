@@ -16,7 +16,7 @@ Example:
 >>> conv = chak.Conversation('deepseek@https://custom.api.com:deepseek-chat', api_key='xxx')
 """
 
-__version__ = "0.1.2"
+__version__ = "0.1.3"
 
 # Strategy classes
 from .context.strategies import FIFOStrategy, NoopStrategy, SummarizationStrategy, BaseContextStrategy
@@ -40,7 +40,15 @@ try:
     _server_available = True
 except ImportError:
     _server_available = False
-    serve = None  # type: ignore
+    
+    # Provide helpful error message when server dependencies are missing
+    def serve(*args, **kwargs):
+        raise ImportError(
+            "Server dependencies not installed. Install with:\n"
+            "  pip install chakpy[server]\n"
+            "or:\n"
+            "  pip install chakpy[all]"
+        )
 
 
 # Export the public API
