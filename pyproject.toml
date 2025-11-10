@@ -1,0 +1,62 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "chak"
+version = "0.1.0"
+description = "A simple, yet elegant, LLM API routing library"
+readme = "README.md"
+authors = [
+    { name = "Chak Contributors" }
+]
+license = { text = "MIT" }
+requires-python = ">=3.8"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+keywords = ["llm", "openai", "api", "routing", "chatbot", "ai"]
+
+dependencies = [
+    "openai>=1.0.0",
+    "pydantic>=2.0.0",
+    "httpx>=0.24.0",
+    "tiktoken>=0.5.0",
+]
+
+[project.optional-dependencies]
+server = [
+    "fastapi>=0.104.0",
+    "uvicorn>=0.24.0",
+    "websockets>=12.0",
+    "pyyaml>=6.0",
+]
+all = [
+    "fastapi>=0.104.0",
+    "uvicorn>=0.24.0",
+    "websockets>=12.0",
+    "pyyaml>=6.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/zhixiangxue/chak-ai"
+Repository = "https://github.com/zhixiangxue/chak-ai"
+Documentation = "https://github.com/zhixiangxue/chak-ai/blob/main/README.md"
+"Bug Tracker" = "https://github.com/zhixiangxue/chak-ai/issues"
+
+[tool.setuptools]
+packages = ["chak"]
+package-dir = {"" = "."}
+
+[tool.setuptools.package-data]
+chak = ["server/playground.html"]
