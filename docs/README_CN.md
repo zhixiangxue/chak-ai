@@ -44,7 +44,14 @@ OpenAI、Google Gemini、Azure OpenAI、Anthropic Claude、阿里百炼、百度
 ### 安装
 
 ```bash
-pip install chak
+# 基础安装（仅 SDK）
+pip install chakpy
+
+# 带服务端支持
+pip install chakpy[server]
+
+# 安装所有可选依赖
+pip install chakpy[all]
 ```
 
 ### 几行代码即可和全球模型对话

@@ -50,7 +50,14 @@ OpenAI, Google Gemini, Azure OpenAI, Anthropic Claude, Alibaba Bailian, Baidu We
 ### Installation
 
 ```bash
-pip install chak
+# Basic installation (SDK only)
+pip install chakpy
+
+# With server support
+pip install chakpy[server]
+
+# Install all optional dependencies
+pip install chakpy[all]
 ```
 
 ### Chat with global models in a few lines
