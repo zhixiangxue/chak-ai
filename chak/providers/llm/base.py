@@ -1,9 +1,13 @@
 # src/chak/providers/llm/base.py
-from pydantic import BaseModel, Field, field_validator
-from typing import Dict, Any, Optional, List, Type, Iterator
 from abc import ABC, abstractmethod
+from typing import Dict, Any, Optional, List, Iterator
+
+import httpx
+from pydantic import BaseModel, Field, field_validator
+
+from ... import __version__
+from ...exceptions import ProviderError
 from ...message import Message, MessageChunk
-from ...exceptions import ConfigError, ProviderError
 
 
 class BaseProviderConfig(BaseModel):
@@ -60,6 +64,12 @@ class Provider(ABC):
         self.converter = converter
         self._client = None
         self._initialize_client()
+
+    def _create_http_client(self) -> httpx.Client:
+        """Create HTTP client with Chak User-Agent header."""
+        return httpx.Client(
+            headers={"User-Agent": f"Chak/{__version__}"}
+        )
 
     @abstractmethod
     def _initialize_client(self):

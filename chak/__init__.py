@@ -18,23 +18,29 @@ Example:
 
 __version__ = "0.1.0"
 
+# Strategy classes
+from .context.strategies import FIFOStrategy, NoopStrategy, SummarizationStrategy, BaseContextStrategy
+from .context.strategies.base import StrategyRequest, StrategyResponse
 # Core API - import the main classes
 from .conversation import Conversation
+from .exceptions import (
+    ChakError, ProviderError, ConfigError,
+    ConversationNotFoundError, ContextError
+)
 from .message import (
     Message, MessageChunk,
     BaseMessage, HumanMessage, AIMessage, SystemMessage, ToolMessage, MarkerMessage
 )
-from .exceptions import (
-    ChakError, ProviderError, ConfigError, 
-    ConversationNotFoundError, ContextError
-)
-
-# Strategy classes
-from .context.strategies import FIFOStrategy, NoopStrategy, SummarizationStrategy, BaseContextStrategy
-from .context.strategies.base import StrategyRequest, StrategyResponse
-
 # Utility functions
 from .utils.uri import build, build_simple, parse
+
+# Server (optional dependency)
+try:
+    from .server import serve
+    _server_available = True
+except ImportError:
+    _server_available = False
+    serve = None  # type: ignore
 
 
 # Export the public API
@@ -70,6 +76,9 @@ __all__ = [
     'build',
     'build_simple',
     'parse',
+    
+    # Server
+    'serve',
 
     # Version
     '__version__',

@@ -3,6 +3,7 @@
 
 from .base import BaseContextStrategy, StrategyRequest, StrategyResponse
 from .fifo import FIFOStrategy
+from .lru import LRUStrategy
 from .noop import NoopStrategy
 from .summarize import SummarizationStrategy
 
@@ -13,4 +14,5 @@ __all__ = [
     'FIFOStrategy',
     'NoopStrategy',
     'SummarizationStrategy',
+    'LRUStrategy',
 ]

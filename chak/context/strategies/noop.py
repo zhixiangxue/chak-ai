@@ -14,7 +14,6 @@ class NoopStrategy(BaseContextStrategy):
     
     Semantics:
     - StrategyResponse.messages: returns the original messages unchanged.
-    - StrategyResponse.messages_to_send: identical to the original messages.
     
     Notes:
     - Intended for debugging, baseline comparison, or scenarios where
@@ -37,7 +36,4 @@ class NoopStrategy(BaseContextStrategy):
         Returns:
             Strategy response with all messages unchanged
         """
-        return StrategyResponse(
-            messages=request.messages,
-            messages_to_send=request.messages
-        )
+        return StrategyResponse(messages=request.messages)

@@ -3,7 +3,9 @@
 
 from abc import ABC, abstractmethod
 from typing import List, Callable, Optional
-from pydantic import BaseModel, Field
+
+from pydantic import BaseModel
+
 from ...message import Message
 
 
@@ -17,8 +19,7 @@ class StrategyRequest(BaseModel):
 
 class StrategyResponse(BaseModel):
     """Strategy 的响应"""
-    messages: List[Message]           # 完整消息列表（含标记）
-    messages_to_send: List[Message]   # 本轮发送的消息
+    messages: List[Message]  # 完整消息列表（含策略插入的标记）
     
     class Config:
         arbitrary_types_allowed = True
@@ -115,7 +116,8 @@ class BaseContextStrategy(ABC):
         try:
             import tiktoken
             encoding = tiktoken.get_encoding("cl100k_base")
-            return len(encoding.encode(text))
+            # 允许特殊 token，避免编码错误
+            return len(encoding.encode(text, disallowed_special=()))
         except ImportError:
             # Fallback: 1 token ≈ 4 characters
             return len(text) // 4

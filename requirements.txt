@@ -1,3 +1,12 @@
 pydantic>=2.0.0
 openai>=1.0.0
 tiktoken>=0.5.0
+
+# Server dependencies
+fastapi
+uvicorn[standard]
+websockets
+pyyaml
+
+# Client testing (optional)
+websocket-client

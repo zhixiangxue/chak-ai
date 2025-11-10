@@ -7,10 +7,12 @@ Official documentation: https://ollama.com/blog/openai-compatibility
 Supported models:
 - All models available in Ollama library (llama2, mistral, codellama, etc.)
 """
-from .base import BaseProviderConfig, BaseMessageConverter, Provider
-from pydantic import field_validator
 from typing import Optional, List, Dict, Any, Iterator
+
 import openai
+from pydantic import field_validator
+
+from .base import BaseProviderConfig, BaseMessageConverter, Provider
 from ...message import Message, MessageChunk, AIMessage
 
 
@@ -88,6 +90,7 @@ class OllamaProvider(Provider):
             base_url=self.config.base_url,
             timeout=self.config.timeout,
             max_retries=self.config.max_retries,
+            http_client=self._create_http_client(),
         )
     
     def _send_complete(self, messages: List, **kwargs) -> Any:

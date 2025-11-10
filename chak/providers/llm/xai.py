@@ -8,10 +8,12 @@ Supported models:
 - grok-4: Latest Grok model
 - grok-vision-beta: Grok model with vision capabilities
 """
-from .base import BaseProviderConfig, BaseMessageConverter, Provider
-from pydantic import field_validator
 from typing import Optional, List, Dict, Any, Iterator
+
 import openai
+from pydantic import field_validator
+
+from .base import BaseProviderConfig, BaseMessageConverter, Provider
 from ...message import Message, MessageChunk, AIMessage
 
 
@@ -89,6 +91,7 @@ class XAIProvider(Provider):
             base_url=self.config.base_url,
             timeout=self.config.timeout,
             max_retries=self.config.max_retries,
+            http_client=self._create_http_client(),
         )
     
     def _send_complete(self, messages: List, **kwargs) -> Any:

@@ -1,6 +1,8 @@
-from .base import BaseProviderConfig
-from pydantic import field_validator
 from typing import Optional
+
+from pydantic import field_validator
+
+from .base import BaseProviderConfig
 
 
 class BailianConfig(BaseProviderConfig):
@@ -69,7 +71,7 @@ class BailianMessageConverter(BaseMessageConverter):
 
 
 import openai
-from typing import List, Dict, Any, Iterator
+from typing import List, Any, Iterator
 from .base import Provider
 
 
@@ -84,6 +86,7 @@ class BailianProvider(Provider):
             "base_url": self.config.base_url,
             "timeout": self.config.timeout,
             "max_retries": self.config.max_retries,
+            "http_client": self._create_http_client(),
         }
         
         # Add optional organization if exists

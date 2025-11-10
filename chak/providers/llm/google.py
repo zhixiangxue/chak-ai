@@ -9,10 +9,12 @@ Supported models:
 - Gemini 1.5: gemini-1.5-pro, gemini-1.5-flash
 - Gemini Pro: gemini-pro
 """
-from .base import BaseProviderConfig, BaseMessageConverter, Provider
-from pydantic import field_validator
 from typing import Optional, List, Dict, Any, Iterator
+
 import openai
+from pydantic import field_validator
+
+from .base import BaseProviderConfig, BaseMessageConverter, Provider
 from ...message import Message, MessageChunk, AIMessage
 
 
@@ -84,6 +86,7 @@ class GoogleProvider(Provider):
             base_url=self.config.base_url,
             timeout=self.config.timeout,
             max_retries=self.config.max_retries,
+            http_client=self._create_http_client(),
         )
     
     def _send_complete(self, messages: List, **kwargs) -> Any:

@@ -2,9 +2,10 @@
 """FIFO (First In First Out) context management strategy."""
 
 from typing import List, Optional, Callable
+
 from .base import BaseContextStrategy, StrategyRequest, StrategyResponse
-from ...message import Message, MarkerMessage, SystemMessage, HumanMessage
 from ...exceptions import ContextError
+from ...message import Message, MarkerMessage, SystemMessage, HumanMessage
 
 
 class FIFOStrategy(BaseContextStrategy):
@@ -12,28 +13,27 @@ class FIFOStrategy(BaseContextStrategy):
     FIFOStrategy - FIFO (First In First Out) context strategy.
     
     Purpose:
-    - Determine the next messages to send to the LLM without mutating the conversation history.
-    - Preserve all original conversation messages; do NOT insert any marker messages.
+    - Truncate older conversation messages based on turn count or token limits.
+    - Insert a truncate marker at the truncation point to preserve audit trail.
     
     Semantics:
-    - StrategyResponse.messages: always returns the original messages unchanged.
-    - StrategyResponse.messages_to_send: computed view to send this round.
-      It consists of:
-        1) All SystemMessage(s)
-        2) The most recent turns (bounded by keep_recent_turns)
-        3) Further trimmed to satisfy max_input_tokens if specified
+    - StrategyResponse.messages: returns original messages with a truncate marker inserted
+      at the boundary where old messages are cut off.
+    - Conversation will extract: System messages + last marker (inclusive) -> end.
     
     Turn Definition:
     - A "turn" is defined by HumanMessage boundaries: from a HumanMessage (inclusive)
       up to (but not including) the next HumanMessage.
-    - This allows a turn to contain the following sequence:
-      HumanMessage -> (Assistant / Tool messages) ... -> next HumanMessage
+    - Example: HumanMessage -> AIMessage -> ... -> next HumanMessage
+    
+    Truncation Logic:
+    - Find the preserve boundary (Nth HumanMessage from the end, where N = keep_recent_turns + 1).
+    - Insert a TruncateMarker before the preserve boundary.
+    - If max_input_tokens is specified, ensure total tokens don't exceed the limit.
     
     Token Control:
-    - If tokens exceed max_input_tokens, the oldest turn is dropped first.
-    - If only the latest turn remains but still exceeds the limit, it is trimmed
-      internally by keeping the most recent messages until within the limit (always
-      preserving at least the most recent message to avoid empty context).
+    - If tokens exceed max_input_tokens after applying keep_recent_turns, drop older turns.
+    - Always preserve at least the most recent message to avoid empty context.
     
     Parameters:
     - keep_recent_turns (Optional[int]): number of recent turns to keep.
@@ -42,9 +42,9 @@ class FIFOStrategy(BaseContextStrategy):
     - token_counter (Optional[Callable[[str], int]]): custom token counter.
     
     Notes:
-    - System messages are always included in messages_to_send.
-    - MarkerMessage(s) are ignored by FIFO; no insertion or transformation is performed.
-    - This strategy does not change the conversation history (no mutation).
+    - System messages are always included when Conversation extracts messages.
+    - The truncate marker has content="从此处截断" and metadata with truncation details.
+    - Original messages before the marker are preserved for audit purposes.
     """
     
     def __init__(
@@ -59,7 +59,7 @@ class FIFOStrategy(BaseContextStrategy):
         
         Args:
             keep_recent_turns: Number of recent conversation turns to keep
-                         (HumanMessage-to-HumanMessage segments)
+                         (HumanMessage-based turn counting)
             max_input_tokens: Maximum input token count (context limit)
             max_output_tokens: Maximum output token count (declarative, for documentation)
             token_counter: Custom token counting function
@@ -71,7 +71,7 @@ class FIFOStrategy(BaseContextStrategy):
             - System messages are always preserved
             
         Raises:
-            ValueError: If neither max_messages nor max_input_tokens is specified
+            ValueError: If neither keep_recent_turns nor max_input_tokens is specified
         """
         super().__init__(token_counter=token_counter)
         
@@ -89,155 +89,182 @@ class FIFOStrategy(BaseContextStrategy):
         """
         Process messages according to FIFO strategy.
         
+        Logic:
+        1. Extract system messages and conversation messages
+        2. If no truncation needed, return original messages
+        3. Find preserve boundary based on keep_recent_turns
+        4. Apply token limit if specified
+        5. Insert truncate marker at the boundary
+        6. Return messages with marker inserted
+        
         Args:
             request: Strategy request containing messages
             
         Returns:
-            Strategy response with processed messages
+            Strategy response with truncate marker inserted if truncation occurred
         """
         messages = request.messages
         
         if not messages:
-            return StrategyResponse(messages=[], messages_to_send=[])
+            return StrategyResponse(messages=[])
         
         # 1. Separate by type
         system_messages = [m for m in messages if isinstance(m, SystemMessage)]
-        marker_messages = [m for m in messages if isinstance(m, MarkerMessage)]
         conversation_messages = [
             m for m in messages 
             if not isinstance(m, (SystemMessage, MarkerMessage))
         ]
         
-        # 2. Determine messages to analyze (FIFO does not consider markers)
-        to_analyze = conversation_messages
-        base_messages = []
+        if not conversation_messages:
+            return StrategyResponse(messages=messages)
         
-        # 4. Check if truncation needed
+        # 2. Check if truncation needed
         need_truncate = False
+        preserve_start_idx = None
+        
+        # 2a. Check turn-based truncation
         if self.keep_recent_turns is not None:
-            need_truncate = True
-        elif self.max_input_tokens:
-            pass
+            preserve_start_idx = self._find_preserve_start(list(conversation_messages))
+            if preserve_start_idx is not None and preserve_start_idx > 0:
+                need_truncate = True
         
-        # 5. Build response (no marker insertion)
-        # Split conversation messages into turns by HumanMessage boundaries
-        turns = self._split_into_turns(list(to_analyze))
-        
-        # Apply max_turns if specified
-        if self.keep_recent_turns is not None and self.keep_recent_turns > 0:
-            turns = turns[-self.keep_recent_turns:]
-        
-        # Flatten selected turns
-        selected: List[Message] = []
-        for t in turns:
-            selected.extend(t)
-        
-        # Apply token limit if specified
+        # 2b. Check token-based truncation
         if self.max_input_tokens is not None:
-            while True:
-                combined: List[Message] = list(system_messages) + list(selected)
-                total_tokens = self.count_messages_tokens(combined)
-                if total_tokens <= self.max_input_tokens:
-                    break
-                # If tokens exceed, drop oldest turn first
-                if turns:
-                    turns = turns[1:]
-                    selected = []
-                    for t in turns:
-                        selected.extend(t)
-                else:
-                    # Fallback: limit within selected messages (keep most recent)
-                    # Reserve tokens for system messages
-                    system_tokens = self.count_messages_tokens(list(system_messages))
-                    remaining = max(0, self.max_input_tokens - system_tokens)
-                    selected = self._limit_by_tokens(selected, remaining)
-                    break
+            # Calculate current tokens
+            messages_to_check = list(system_messages) + list(conversation_messages)
+            total_tokens = self.count_messages_tokens(list(messages_to_check))
+            
+            if total_tokens > self.max_input_tokens:
+                need_truncate = True
+                # Find preserve boundary that satisfies token limit
+                preserve_start_idx = self._find_preserve_start_by_tokens(
+                    list(system_messages),
+                    list(conversation_messages)
+                )
         
-        # Always return original messages unchanged
-        full_messages = messages
-        to_send_list: List[Message] = list(system_messages) + list(selected)
+        # 3. If no truncation needed, return original
+        if not need_truncate or preserve_start_idx is None or preserve_start_idx == 0:
+            return StrategyResponse(messages=messages)
         
-        return StrategyResponse(
-            messages=full_messages,
-            messages_to_send=to_send_list
+        # 4. Build truncation reason string
+        reason_parts = []
+        if self.keep_recent_turns is not None:
+            reason_parts.append(f"keep_recent_turns={self.keep_recent_turns}")
+        if self.max_input_tokens is not None:
+            reason_parts.append(f"max_input_tokens={self.max_input_tokens}")
+        reason = "FIFO truncation: " + ", ".join(reason_parts)
+        
+        # 5. Create truncate marker
+        truncated_count = preserve_start_idx
+        marker = MarkerMessage(
+            content="",
+            metadata={
+                "type": "truncate",
+                "truncated_count": truncated_count,
+                "reason": reason
+            }
         )
+        
+        # 6. Find insertion position in original messages
+        preserve_message = conversation_messages[preserve_start_idx]
+        insert_idx = self._find_message_index_in_original(messages, preserve_message)
+        
+        # 7. Build new messages with marker inserted
+        new_messages = (
+            messages[:insert_idx] + 
+            [marker] + 
+            messages[insert_idx:]
+        )
+        
+        return StrategyResponse(messages=new_messages)
     
-    def _split_into_turns(self, messages: List[Message]) -> List[List[Message]]:
-        """按 HumanMessage 边界将消息拆分为轮次（turns）。"""
-        if not messages:
-            return []
-        turns: List[List[Message]] = []
-        current: List[Message] = []
-        for msg in messages:
-            if isinstance(msg, HumanMessage):
-                # 开启新一轮：若当前非空，先结束上一轮
-                if current:
-                    turns.append(current)
-                    current = []
-                current.append(msg)
-            else:
-                # 累积到当前轮
-                current.append(msg)
-        # 最后一轮收尾
-        if current:
-            turns.append(current)
-        return turns
-    
-    def _filter_messages(self, messages: List[Message]) -> List[Message]:
+    def _find_preserve_start(self, conversation_messages: List[Message]) -> Optional[int]:
         """
-        Filter messages by count and token limits.
+        Find the start index of messages to preserve based on keep_recent_turns.
+        
+        Logic: Find the (keep_recent_turns + 1)th HumanMessage from the end.
         
         Args:
-            messages: Messages to filter
+            conversation_messages: Conversation messages (excluding system and markers)
             
         Returns:
-            Filtered messages
+            Start index in conversation_messages, or None if no truncation needed
         """
-        if not messages:
-            return []
+        if not conversation_messages or self.keep_recent_turns is None:
+            return None
         
-        # Step 1: Limit by message count (keep most recent)
-        # Turn-based count limiting is handled in process();
-        # no count-based limiting in _filter_messages.
+        # Find HumanMessage positions from end to start
+        human_indices = []
+        for i in range(len(conversation_messages) - 1, -1, -1):
+            if isinstance(conversation_messages[i], HumanMessage):
+                human_indices.append(i)
+                # Found the (keep_recent_turns + 1)th HumanMessage
+                if len(human_indices) == self.keep_recent_turns + 1:
+                    return human_indices[-1]  # Return the earliest one
         
-        # Step 2: Limit by token count (keep most recent)
-        if self.max_input_tokens is not None:
-            messages = self._limit_by_tokens(messages, self.max_input_tokens)
-        
-        return messages
+        # Not enough turns to truncate
+        return None
     
-    def _limit_by_tokens(
+    def _find_preserve_start_by_tokens(
         self,
-        messages: List[Message],
-        max_tokens: int
-    ) -> List[Message]:
+        system_messages: List[Message],
+        conversation_messages: List[Message]
+    ) -> Optional[int]:
         """
-        Limit messages by token count, keeping most recent messages.
+        Find the start index of messages to preserve based on token limit.
         
-        Ensures at least the most recent message is kept, even if it
-        exceeds the token limit (to avoid empty context).
+        Logic: Keep adding messages from the end until token limit is reached.
         
         Args:
-            messages: Messages to limit
-            max_tokens: Maximum token count
+            system_messages: System messages (always included)
+            conversation_messages: Conversation messages
             
         Returns:
-            Messages within token limit
+            Start index in conversation_messages, or None if all messages fit
         """
-        if not messages:
-            return []
+        if not conversation_messages or self.max_input_tokens is None:
+            return None
         
-        # Always keep at least the most recent message
-        result: List[Message] = [messages[-1]]
-        current_tokens = self.count_messages_tokens(result)
+        system_tokens = self.count_messages_tokens(list(system_messages))
+        remaining_budget = self.max_input_tokens - system_tokens
         
-        # Add messages from newest to oldest while within limit
-        for msg in reversed(messages[:-1]):
-            msg_tokens = 4 + self.count_tokens(msg.content or "")
-            if current_tokens + msg_tokens <= max_tokens:
-                result.insert(0, msg)
+        if remaining_budget <= 0:
+            # System messages already exceed limit, keep only last message
+            return len(conversation_messages) - 1
+        
+        # Add messages from end to start
+        current_tokens = 0
+        for i in range(len(conversation_messages) - 1, -1, -1):
+            msg_tokens = 4 + self.count_tokens(conversation_messages[i].content or "")
+            if current_tokens + msg_tokens <= remaining_budget:
                 current_tokens += msg_tokens
             else:
-                break
+                # Found the boundary, preserve from i+1 onwards
+                return i + 1
         
-        return result
+        # All messages fit within budget
+        return None
+    
+    def _find_message_index_in_original(
+        self, 
+        original_messages: List[Message], 
+        target_message: Message
+    ) -> int:
+        """
+        Find the index of target message in original message list.
+        
+        Args:
+            original_messages: Original message list
+            target_message: Target message to find
+            
+        Returns:
+            Index of target message in original list
+            
+        Raises:
+            ContextError: If target message not found
+        """
+        for i, msg in enumerate(original_messages):
+            if msg is target_message:
+                return i
+        raise ContextError("Target message not found in original messages")
+

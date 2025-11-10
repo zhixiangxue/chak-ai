@@ -1,10 +1,11 @@
 from typing import List, Dict, Any, Iterator, Union, Literal, Optional
-from .utils.uri import parse as parse_uri
-from .providers import create_provider
-from .providers.types import ProviderCategory
-from .message import Message, MessageChunk, HumanMessage, AIMessage, SystemMessage, ToolMessage, MarkerMessage
+
 from .context.strategies import BaseContextStrategy, NoopStrategy
 from .context.strategies.base import StrategyRequest
+from .message import Message, MessageChunk, HumanMessage, AIMessage, SystemMessage, ToolMessage, MarkerMessage
+from .providers import create_provider
+from .providers.types import ProviderCategory
+from .utils.uri import parse as parse_uri
 
 
 class Conversation:
@@ -22,6 +23,7 @@ class Conversation:
         self, 
         model_uri: str, 
         api_key: str,
+        system_message: Optional[str] = None,
         context_strategy: Optional[BaseContextStrategy] = None,
         **kwargs
     ):
@@ -37,12 +39,40 @@ class Conversation:
         Args:
             model_uri: Model URI string (e.g., "bailian@https://...:qwen-plus")
             api_key: API key for authentication
+            system_message: Optional system message to initialize the conversation.
+                          If you need structured content, use \n\n to separate sections.
             context_strategy: Context management strategy (default: NoopStrategy)
             **kwargs: Additional configuration parameters
+        
+        Example:
+            >>> # Simple system message
+            >>> conv = Conversation(
+            ...     model_uri="openai:gpt-4",
+            ...     api_key="sk-...",
+            ...     system_message="You are a helpful assistant."
+            ... )
+            >>> 
+            >>> # Structured system message
+            >>> system_prompt = (
+            ...     "You are a helpful assistant.\n\n"
+            ...     "Rules:\n"
+            ...     "- Always respond in Chinese\n"
+            ...     "- Be concise and professional"
+            ... )
+            >>> conv = Conversation(
+            ...     model_uri="openai:gpt-4",
+            ...     api_key="sk-...",
+            ...     system_message=system_prompt
+            ... )
         """
         self.model_uri = model_uri
         self.api_key = api_key
         self.messages = []
+        
+        # Initialize system message
+        self._initial_system_message = self._normalize_system_message(system_message)
+        if self._initial_system_message:
+            self.messages.append(self._initial_system_message)
         
         # Initialize context strategy
         self.context_strategy = context_strategy or NoopStrategy()
@@ -60,6 +90,24 @@ class Conversation:
             category=self.PROVIDER_CATEGORY
         )
 
+    def _normalize_system_message(self, system_message: Optional[str]) -> Optional[SystemMessage]:
+        """
+        Convert system message string to SystemMessage object.
+        
+        Args:
+            system_message: System message string
+            
+        Returns:
+            SystemMessage object, or None if input is empty
+        """
+        if not system_message:
+            return None
+        
+        if not isinstance(system_message, str):
+            raise TypeError(f"system_message must be str, got {type(system_message)}")
+        
+        return SystemMessage(content=system_message)
+    
     def _build_config_dict(self, parsed_uri: Dict, kwargs: Dict) -> Dict[str, Any]:
         """Build configuration dictionary from URI and kwargs."""
         config_dict = {}
@@ -82,24 +130,24 @@ class Conversation:
 
     def add_messages(self, messages: List[Union[Message, Dict[str, str]]]) -> None:
         """
-        批量添加消息到对话历史，用于恢复历史对话。
+        Batch add messages to conversation history for restoring previous conversations.
         
         Args:
-            messages: 消息列表，可以是Message对象列表或字典列表
-                     字典格式: {"role": "user", "content": "hello"}
+            messages: List of messages, can be Message objects or dicts
+                     Dict format: {"role": "user", "content": "hello"}
         
         Example:
             >>> conv = Conversation(...)
-            >>> # 恢复历史对话
+            >>> # Restore conversation history
             >>> conv.add_messages([
-            ...     {"role": "user", "content": "你好"},
-            ...     {"role": "assistant", "content": "你好！有什么可以帮助你的？"},
-            ...     {"role": "user", "content": "介绍一下你自己"}
+            ...     {"role": "user", "content": "Hello"},
+            ...     {"role": "assistant", "content": "Hi! How can I help you?"},
+            ...     {"role": "user", "content": "Tell me about yourself"}
             ... ])
         """
         for msg in messages:
             if isinstance(msg, dict):
-                # 如果是字典，转换为Message对象
+                # Convert dict to Message object
                 role = msg['role']
                 content = msg.get('content')
                 
@@ -118,12 +166,12 @@ class Conversation:
                     else:
                         self.messages.append(MarkerMessage(content=content))
                 else:
-                    raise ValueError(f"无效的角色: {role}")
+                    raise ValueError(f"Invalid role: {role}")
             elif isinstance(msg, (HumanMessage, AIMessage, SystemMessage, ToolMessage, MarkerMessage)):
-                # 如果已经是Message对象，直接添加
+                # Already a Message object, add directly
                 self.messages.append(msg)
             else:
-                raise TypeError(f"消息必须是Message对象或字典，收到: {type(msg)}")
+                raise TypeError(f"Message must be Message object or dict, got: {type(msg)}")
 
     def send(
             self,
@@ -184,31 +232,44 @@ class Conversation:
 
         # Convert to standard chunks and collect content
         complete_content = ""
+        last_chunk_was_final = False
+        
         for provider_chunk in provider_chunks:
             chunk = self.provider.converter.from_provider_chunk(provider_chunk)
             complete_content += chunk.content
+            
+            # Check if this chunk is already marked as final
+            if chunk.is_final:
+                last_chunk_was_final = True
+            
             yield chunk
 
-        # Create complete message from chunks and send final chunk
-        if complete_content:
+        # Only send additional final chunk if provider didn't send one
+        if complete_content and not last_chunk_was_final:
             final_message = AIMessage(
                 content=complete_content
             )
             self.messages.append(final_message)
             
-            # 发送一个特殊的 final chunk，包含完整消息
+            # Send a special final chunk containing the complete message
             yield MessageChunk(
                 content="",
                 is_final=True,
                 final_message=final_message
             )
+        elif complete_content:
+            # Provider sent final chunk, just save the message
+            final_message = AIMessage(
+                content=complete_content
+            )
+            self.messages.append(final_message)
 
     def _apply_context_strategy(self) -> List[Message]:
         """
         Apply context strategy to process messages.
         
         Returns:
-            Processed message list according to the strategy
+            Complete processed message list (strategy may insert markers)
         """
         if not self.messages:
             return []
@@ -222,10 +283,55 @@ class Conversation:
         # Update messages (may include markers)
         self.messages = response.messages
         
-        # Prepare messages for LLM (convert context role to system)
-        messages_for_llm = self._prepare_for_llm(response.messages_to_send)
+        # Extract messages to send: system messages + last marker (inclusive) → end
+        messages_to_send = self._extract_messages_to_send(response.messages)
+        
+        # Convert MarkerMessage to SystemMessage for LLM compatibility
+        messages_for_llm = self._prepare_for_llm(messages_to_send)
         
         return messages_for_llm
+    
+    def _extract_messages_to_send(self, messages: List[Message]) -> List[Message]:
+        """
+        Extract messages to send from complete message list.
+        
+        Extraction rules:
+        - Always include all system messages
+        - If markers exist: last marker (inclusive) → last message
+        - If no markers: all conversation messages
+        
+        Args:
+            messages: Complete message list
+            
+        Returns:
+            Messages to send to LLM
+        """
+        if not messages:
+            return []
+        
+        # 1. Extract system messages
+        system_messages = [m for m in messages if isinstance(m, SystemMessage)]
+        
+        # 2. Find last marker
+        last_marker_idx = None
+        for i in range(len(messages) - 1, -1, -1):
+            if isinstance(messages[i], MarkerMessage):
+                last_marker_idx = i
+                break
+        
+        # 3. Extract messages based on marker presence
+        if last_marker_idx is not None:
+            # Has marker: from last marker to end
+            context_messages = messages[last_marker_idx:]
+        else:
+            # No marker: all non-system messages
+            context_messages = [
+                m for m in messages 
+                if not isinstance(m, SystemMessage)
+            ]
+        
+        # 4. Combine: system messages + context messages
+        return list(system_messages) + list(context_messages)
     
     def _prepare_for_llm(self, messages: List[Message]) -> List[Message]:
         """
@@ -249,6 +355,102 @@ class Conversation:
     def clear(self):
         """Clear conversation history."""
         self.messages.clear()
+    
+    def reset(self):
+        """
+        Reset conversation to initial state.
+        
+        Clear all message history but preserve the initial system message.
+        This is very useful when using Conversation as a tool to avoid message pollution.
+        
+        Example:
+            >>> conv = Conversation(
+            ...     model_uri="openai:gpt-4",
+            ...     api_key="sk-...",
+            ...     system_message="You are a helpful assistant."
+            ... )
+            >>> conv.send("Hello")
+            >>> conv.send("How are you?")
+            >>> len(conv.messages)  # 3 (1 system + 2 conversations)
+            >>> conv.reset()
+            >>> len(conv.messages)  # 1 (only system message)
+        """
+        self.messages.clear()
+        if self._initial_system_message:
+            self.messages.append(self._initial_system_message)
+        
+        # Reset context strategy cache (if strategy has reset method)
+        # Some strategies (like SummarizationStrategy) may have cache that needs cleanup
+        if hasattr(self.context_strategy, 'reset') and callable(getattr(self.context_strategy, 'reset')):
+            self.context_strategy.reset()  # type: ignore
+
+    def stats(self) -> Dict[str, Any]:
+        """
+        Get conversation statistics.
+        
+        Returns:
+            Dictionary containing:
+            - total_messages: Total number of messages
+            - by_type: Message count by type
+            - total_tokens: Total tokens (displayed as xxK format)
+            - input_tokens: Input tokens
+            - output_tokens: Output tokens
+        
+        Example:
+            >>> conv.stats()
+            {
+                'total_messages': 10,
+                'by_type': {
+                    'user': 5,
+                    'assistant': 4,
+                    'context': 1
+                },
+                'total_tokens': '12.5K',
+                'input_tokens': '8.2K',
+                'output_tokens': '4.3K'
+            }
+        """
+        stats = {
+            'total_messages': len(self.messages),
+            'by_type': {},
+            'total_tokens': 0,
+            'input_tokens': 0,
+            'output_tokens': 0
+        }
+        
+        # Count messages by type
+        for msg in self.messages:
+            msg_type = msg.role
+            stats['by_type'][msg_type] = stats['by_type'].get(msg_type, 0) + 1
+            
+            # Count tokens (from metadata)
+            if 'usage' in msg.metadata:
+                usage = msg.metadata['usage']
+                if isinstance(usage, dict):
+                    stats['total_tokens'] += usage.get('total_tokens', 0)
+                    stats['input_tokens'] += usage.get('prompt_tokens', 0) or usage.get('input_tokens', 0)
+                    stats['output_tokens'] += usage.get('completion_tokens', 0) or usage.get('output_tokens', 0)
+        
+        # Format token counts (use K for numbers over 1000)
+        stats['total_tokens'] = self._format_tokens(stats['total_tokens'])
+        stats['input_tokens'] = self._format_tokens(stats['input_tokens'])
+        stats['output_tokens'] = self._format_tokens(stats['output_tokens'])
+        
+        return stats
+    
+    def _format_tokens(self, tokens: int) -> str:
+        """
+        Format token count, use K notation for numbers over 1000.
+        
+        Args:
+            tokens: Token count
+            
+        Returns:
+            Formatted string
+        """
+        if tokens >= 1000:
+            return f"{tokens / 1000:.1f}K"
+        return str(tokens)
 
     def close(self):
         """Close the provider."""

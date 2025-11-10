@@ -9,10 +9,12 @@ Supported models:
 - GPT-3.5 series: gpt-3.5-turbo
 - O1 series: o1, o1-mini, o1-preview
 """
-from .base import BaseProviderConfig, BaseMessageConverter, Provider
-from pydantic import field_validator
 from typing import Optional, List, Dict, Any, Iterator
+
 import openai
+from pydantic import field_validator
+
+from .base import BaseProviderConfig, BaseMessageConverter, Provider
 from ...message import Message, MessageChunk, AIMessage
 
 
@@ -84,6 +86,7 @@ class OpenAIProvider(Provider):
             base_url=self.config.base_url,
             timeout=self.config.timeout,
             max_retries=self.config.max_retries,
+            http_client=self._create_http_client(),
         )
     
     def _send_complete(self, messages: List, **kwargs) -> Any:

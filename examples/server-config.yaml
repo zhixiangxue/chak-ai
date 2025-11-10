@@ -1,0 +1,45 @@
+# Chak Server Configuration Example
+# 
+# This file shows how to configure the chak server.
+# Copy this file and modify it for your own use.
+
+api_keys:
+  # Method 1: Environment variable (recommended for production)
+  # Set environment variable first: export OPENAI_API_KEY=sk-your-key-here
+  openai: ${OPENAI_API_KEY}
+  
+  # Method 2: Plain text (convenient for development/testing)
+  # Replace with your actual API key
+  bailian: "sk-your-bailian-api-key-here"
+  deepseek: "sk-your-deepseek-api-key-here"
+  
+  # Custom base_url format (must use quotes)
+  # Format: "provider@base_url": "api_key"
+  # 
+  # Example: Ollama running locally
+  "ollama@http://localhost:11434/v1": "ollama"
+  
+  # Example: vLLM server on another machine
+  # "vllm@http://192.168.1.100:8000/v1": "dummy-key"
+  
+  # More providers (uncomment and add your keys as needed):
+  # anthropic: ${ANTHROPIC_API_KEY}
+  # google: ${GOOGLE_API_KEY}
+  # zhipu: ${ZHIPU_API_KEY}
+  # moonshot: ${MOONSHOT_API_KEY}
+  # minimax: ${MINIMAX_API_KEY}
+  # mistral: ${MISTRAL_API_KEY}
+  # xai: ${XAI_API_KEY}
+
+# Server settings
+server:
+  host: "0.0.0.0"  # Listen on all interfaces
+  port: 8000       # Server port
+  cors_origins:    # CORS allowed origins
+    - "*"          # Allow all origins (change for production)
+
+# Tips:
+#   - Use environment variables for API keys in production
+#   - Plain text keys are convenient for development only
+#   - Custom base_url allows you to use local/private deployments
+#   - Server will show available providers in Playground

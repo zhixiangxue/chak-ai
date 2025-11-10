@@ -1,4 +1,6 @@
+from datetime import datetime
 from typing import Literal, Optional, List, Union, Dict, Any
+
 from pydantic import BaseModel, Field
 
 
@@ -25,6 +27,7 @@ class BaseMessage(BaseModel):
     tool_calls: Optional[List[ChatCompletionMessageToolCall]] = None
     refusal: Optional[str] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)  # 元数据（provider、model、usage等）
+    timestamp: datetime = Field(default_factory=datetime.now)  # 消息创建时间
 
 
 # ===== Real Conversation Messages =====
