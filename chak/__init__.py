@@ -16,7 +16,7 @@ Example:
 >>> conv = chak.Conversation('deepseek@https://custom.api.com:deepseek-chat', api_key='xxx')
 """
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 
 # Strategy classes
 from .context.strategies import FIFOStrategy, NoopStrategy, SummarizationStrategy, BaseContextStrategy

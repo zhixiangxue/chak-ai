@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "chakpy"
-version = "0.1.1"
+version = "0.1.2"
 description = "A simple, yet elegant, LLM API routing library"
 readme = "README.md"
 authors = [
@@ -32,6 +32,7 @@ dependencies = [
     "pydantic>=2.0.0",
     "httpx>=0.24.0",
     "tiktoken>=0.5.0",
+    "loguru>=0.7.0",
 ]
 
 [project.optional-dependencies]
