@@ -58,8 +58,8 @@ PROVIDER_MODELS = {
         "moonshot-v1-128k": "moonshot-v1-128k"
     },
     "ollama": {
+        "qwen3-8b": "qwen3:8b",
         "llama3.1": "llama3.1:latest",
-        "qwen2.5": "qwen2.5:latest",
         "phi3": "phi3:latest"
     },
     "openai": {

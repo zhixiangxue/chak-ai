@@ -480,7 +480,10 @@
                 updateStatus(true);
                 
                 // Initialize conversation
-                const modelUri = `${currentProvider}/${currentModel}`;
+                // For providers with custom base_url (format: provider@base_url), use : separator
+                // For simple providers, use / separator
+                const separator = currentProvider.includes('@') ? ':' : '/';
+                const modelUri = `${currentProvider}${separator}${currentModel}`;
                 ws.send(JSON.stringify({
                     type: 'init',
                     model_uri: modelUri
@@ -520,8 +523,8 @@
                 console.log('Conversation initialized:', data.model_uri);
                 addConversationBadge(data.model_uri);
             } else if (data.type === 'chunk') {
-                // Remove loading and create message on first non-empty chunk
-                if (!currentAssistantMessage && data.content) {
+                // Remove loading and create message on first chunk (even if empty)
+                if (!currentAssistantMessage) {
                     if (loadingElement) {
                         loadingElement.remove();
                         loadingElement = null;
@@ -530,8 +533,8 @@
                     currentAssistantContent = '';
                 }
                 
-                // Append content if we have a message element
-                if (currentAssistantMessage && data.content) {
+                // Append content if we have content
+                if (data.content) {
                     currentAssistantContent += data.content;
                     
                     // Render markdown in real-time if marked.js is available

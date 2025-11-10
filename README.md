@@ -1,51 +1,59 @@
 # chak
 
-一个多模型 LLM 客户端，内置上下文管理能力。
+<div align="center">
 
-chak 不是另一个 one-api 或 OpenRouter，而是一个会主动帮你管理对话上下文的客户端库。你只需要专注对话本身，上下文工程交给 chak。
+[![Demo Video](docs/assets/logo.png)](https://youtube.com/watch?v=xOKQ7EQcggw)
+
+[English](README.md) | [中文](docs/README_CN.md)
+
+A multi-model LLM client with built-in context management.
+
+chak is not another one-api or OpenRouter, but a client library that actively manages conversation context for you. Just focus on the conversation, let chak handle the context engineering.
+
+</div>
 
 ---
 
-## 核心特性
+## Core Features
 
-**1. 内置上下文管理**
+**1. Built-in Context Management**
 
-chak 的核心能力是上下文管理。提供多种策略（FIFO、Summarization、LRU）自动帮你处理对话历史，既保持完整记录，又节省 token 开销。你只管对话，上下文交给 chak。
+Context management is chak's core capability. It provides multiple strategies (FIFO, Summarization, LRU) to automatically handle conversation history, maintaining complete records while saving token costs. You focus on conversations, chak handles the context.
 
-**2. 简洁的 URI 调用**
+**2. Concise URI Invocation**
 
-一行代码连接全球主流模型，无需记忆复杂的 SDK 配置：
+Connect to mainstream models globally with one line of code, no need to remember complex SDK configurations:
 
 ```python
-# 简洁形式（推荐）
+# Simple format (recommended)
 conv = chak.Conversation("openai/gpt-4o-mini", api_key="YOUR_KEY")
 
-# 完整形式（自定义 base_url）
+# Complete format (custom base_url)
 conv = chak.Conversation("deepseek@https://api.deepseek.com:deepseek-chat", api_key="YOUR_KEY")
 ```
 
-**3. 短期记忆 → 长期记忆**
+**3. Short-term Memory → Long-term Memory**
 
-- 现在：短期记忆管理（FIFO 截断、Summarization 归纳、LRU主动遗忘），开箱可用
-- 未来：长期记忆能力（RAG、记忆库），让对话真正"记得住"，计划中
-
----
-
-## 已集成供应商（18+）
-
-OpenAI、Google Gemini、Azure OpenAI、Anthropic Claude、阿里百炼、百度文心、腾讯混元、字节火山、智谱 GLM、Moonshot、DeepSeek、科大讯飞、MiniMax、Mistral、SiliconFlow、xAI Grok、Ollama、vLLM 等。
+- Now: Short-term memory management (FIFO truncation, Summarization, LRU forgetting), ready to use
+- Future: Long-term memory capabilities (RAG, memory bank), making conversations truly "memorable", in planning
 
 ---
 
-## 快速开始
+## Integrated Providers (18+)
 
-### 安装
+OpenAI, Google Gemini, Azure OpenAI, Anthropic Claude, Alibaba Bailian, Baidu Wenxin, Tencent Hunyuan, ByteDance Doubao, Zhipu GLM, Moonshot, DeepSeek, iFlytek Spark, MiniMax, Mistral, SiliconFlow, xAI Grok, Ollama, vLLM, and more.
+
+---
+
+## Quick Start
+
+### Installation
 
 ```bash
 pip install chak
 ```
 
-### 几行代码即可和全球模型对话
+### Chat with global models in a few lines
 
 ```python
 import chak
@@ -55,19 +63,19 @@ conv = chak.Conversation(
     api_key="YOUR_KEY"
 )
 
-resp = conv.send("用一句话解释什么是上下文管理")
+resp = conv.send("Explain context management in one sentence")
 print(resp.content)
 ```
 
-chak 帮你处理了：连接初始化、消息对齐、异常重试、上下文管理、模型格式转换……你只需要 `send` 消息就行了。
+chak handles: connection initialization, message alignment, retry logic, context management, model format conversion... You just need to `send` messages.
 
 ---
 
-## 开启上下文自动管理
+## Enable Automatic Context Management
 
-### 策略 A：`FIFOStrategy` - 保留最近 N 轮
+### Strategy A: `FIFOStrategy` - Keep Recent N Turns
 
-适合快节奏对话，像滚动窗口一样保持对话新鲜：
+Suitable for fast-paced conversations, like a rolling window keeping conversations fresh:
 
 ```python
 from chak import Conversation, FIFOStrategy
@@ -76,21 +84,21 @@ conv = Conversation(
     "deepseek/deepseek-chat",
     api_key="YOUR_KEY",
     context_strategy=FIFOStrategy(
-        keep_recent_turns=3,       # 只保留最近 3 轮对话
-        max_input_tokens=120_000   # 上下文窗口大小
+        keep_recent_turns=3,       # Keep only the last 3 turns
+        max_input_tokens=120_000   # Context window size
     )
 )
 ```
 
-**参数说明：**
-- `keep_recent_turns`：保留最近几轮？一轮 = 从一个用户消息到下一个用户消息之间的所有内容。
-- `max_input_tokens`：给策略一个"胃容量"上限，超过这个数就往前挪,确保不会爆掉模型的上下文窗口。
+**Parameters:**
+- `keep_recent_turns`: How many recent turns to keep? A turn = all content from one user message to the next user message.
+- `max_input_tokens`: Set a "stomach capacity" limit for the strategy, ensuring it won't overflow the model's context window.
 
-工作方式：策略在保留区间之前插入一个截断 Marker，实际发送时只发送 Marker 之后的内容。原始对话？一条不少，全在 `conversation.messages` 里。
+How it works: The strategy inserts a truncation marker before the retention interval, sending only content after the marker. Original conversation? All preserved in `conversation.messages`.
 
-### 策略 B：`SummarizationStrategy` - 智能归纳历史
+### Strategy B: `SummarizationStrategy` - Smart History Summarization
 
-适合长对话，像一个贴心的总结助手：
+Suitable for long conversations, like a thoughtful summarization assistant:
 
 ```python
 from chak import Conversation, SummarizationStrategy
@@ -99,30 +107,30 @@ conv = Conversation(
     "openai/gpt-5",
     api_key="YOUR_KEY",
     context_strategy=SummarizationStrategy(
-        max_input_tokens=128_000,            # 上下文窗口大小
-        summarize_threshold=0.75,            # 触发归纳的阈值
-        prefer_recent_turns=2,               # 保留最近几轮
-        summarizer_model_uri="openai/gpt-4o-mini",  # 总结模型
+        max_input_tokens=128_000,            # Context window size
+        summarize_threshold=0.75,            # Trigger threshold
+        prefer_recent_turns=2,               # Keep recent turns
+        summarizer_model_uri="openai/gpt-4o-mini",  # Summarizer model
         summarizer_api_key="YOUR_KEY"
     )
 )
 ```
 
-**参数说明：**
-- `max_input_tokens`：你的模型上下文窗口有多大？策略会参考这个值来决定何时触发。
-- `summarize_threshold`：到达窗口的多少比例时触发归纳？0.75 = 75%，给后续对话留点余地。
-- `prefer_recent_turns`：最近几轮不要动，保持对话的"现场感"。
-- `summarizer_model_uri` / `summarizer_api_key`：用哪个模型来做归纳？可以和主对话用同一个，也可以用更便宜的。
+**Parameters:**
+- `max_input_tokens`: How large is your model's context window? The strategy uses this to decide when to trigger.
+- `summarize_threshold`: At what percentage of the window should summarization trigger? 0.75 = 75%, leaving room for future conversation.
+- `prefer_recent_turns`: Keep the last few turns untouched to maintain the "live feel" of the conversation.
+- `summarizer_model_uri` / `summarizer_api_key`: Which model to use for summarization? Can be the same as main conversation or a cheaper one.
 
-**工作方式：**
+**How it works:**
 
-当对话积累到一定长度时，chak 会自动触发归纳。把早期对话浓缩成几条要点，插入一个标记到消息链中。后续发送时，只发送这个标记及之后的内容。这样既保留了完整历史，又大幅减少了实际发送的 token 数，可以让你一直对话下去，而无需担心上下文窗口的大小。
+When conversations accumulate to a certain length, chak automatically triggers summarization. It condenses early conversations into key points and inserts a marker into the message chain. Subsequent sends only include this marker and content after it. This preserves complete history while significantly reducing actual tokens sent, allowing you to continue conversations without worrying about context window size.
 
-原始对话依然完整保存在 `conversation.messages`，你随时可以查看、导出、分析。
+Original conversations remain fully preserved in `conversation.messages`, ready for viewing, export, or analysis anytime.
 
-### 策略 C：`LRUStrategy` - 智能遗忘冷话题
+### Strategy C: `LRUStrategy` - Smart Cold Topic Forgetting
 
-适合话题跳跃的长对话，自动淡化不再讨论的话题，保留热点内容：
+Suitable for long conversations with topic jumps, automatically fades out topics no longer discussed, preserving hot content:
 
 ```python
 from chak import Conversation, LRUStrategy
@@ -131,38 +139,38 @@ conv = Conversation(
     "deepseek/deepseek-chat",
     api_key="YOUR_KEY",
     context_strategy=LRUStrategy(
-        max_input_tokens=128_000,            # 上下文窗口大小
-        summarize_threshold=0.75,            # 触发归纳的阈值
-        prefer_recent_turns=2,               # 保留最近几轮
-        summarizer_model_uri="deepseek/deepseek-chat", # 总结模型
+        max_input_tokens=128_000,            # Context window size
+        summarize_threshold=0.75,            # Trigger threshold
+        prefer_recent_turns=2,               # Keep recent turns
+        summarizer_model_uri="deepseek/deepseek-chat", # Summarizer model
         summarizer_api_key="YOUR_KEY"
     )
 )
 ```
 
-**参数说明：**
-- 参数与 `SummarizationStrategy` 完全相同，使用方式也一致
-- 内部增强：基于 Summarization 策略，额外分析最近 5 个摘要标记
-- 智能遗忘：检测哪些话题不再被讨论，自动淡化冷话题，强化热点内容
+**Parameters:**
+- Same parameters as `SummarizationStrategy`, usage is identical
+- Internal enhancement: Based on Summarization strategy, additionally analyzes the last 5 summary markers
+- Smart forgetting: Detects which topics are no longer discussed, automatically fades cold topics, reinforces hot content
 
-**工作方式：**
+**How it works:**
 
-1. 首先像 `SummarizationStrategy` 一样工作，生成摘要标记
-2. 当摘要标记积累到一定数量时，LRU 增强机制启动
-3. 分析最近 5 个标记，识别"热话题"（持续被讨论的）和"冷话题"（不再提及的）
-4. 创建 LRU 标记，只保留热话题内容，淡化冷话题
-5. 原始摘要标记和完整历史依然保留，随时可查看
+1. First works like `SummarizationStrategy`, generating summary markers
+2. When summary markers accumulate to a certain amount, LRU enhancement activates
+3. Analyzes the last 5 markers, identifying "hot topics" (continuously discussed) and "cold topics" (no longer mentioned)
+4. Creates LRU markers, keeping only hot topic content, fading cold topics
+5. Original summary markers and complete history remain preserved for viewing anytime
 
-**适用场景：**
-- 话题经常切换的对话（如：Python → Java → 机器学习）
-- 长时间对话中只关心当前讨论的主题
-- 希望模型"遗忘"早期不相关的话题，聚焦当前任务
+**Use cases:**
+- Conversations with frequent topic switches (e.g., Python → Java → Machine Learning)
+- Long conversations focusing only on current discussion topics
+- Want the model to "forget" early irrelevant topics, focusing on current task
 
 ---
 
-## 实用工具
+## Practical Utilities
 
-### 查看对话统计
+### View Conversation Statistics
 
 ```python
 stats = conv.stats()
@@ -176,33 +184,33 @@ print(stats)
 # }
 ```
 
-### 调试策略行为
+### Debug Strategy Behavior
 
-设置环境变量查看策略内部运作：
+Set environment variables to see strategy internals:
 
 ```bash
 export CHAK_LOG_LEVEL=DEBUG
 python your_script.py
 ```
 
-chak 会输出详细的策略执行日志：触发点、保留区间、摘要预览等。
+chak will output detailed strategy execution logs: trigger points, retention intervals, summary previews, etc.
 
 ---
 
-## 本地服务模式（可选）
+## Local Server Mode (Optional)
 
-2 行代码即可启动一个本地网关服务：
+Start a local gateway service with 2 lines of code:
 
-### 1. 创建配置文件
+### 1. Create Configuration File
 
 ```yaml
 # chak-config.yaml
 api_keys:
-  # 简单格式 - 使用默认 base_url
-  openai: ${OPENAI_API_KEY}           # 从环境变量读取（推荐）
-  bailian: "sk-your-api-key-here"    # 明文配置（开发测试用）
+  # Simple format - use default base_url
+  openai: ${OPENAI_API_KEY}           # Read from environment variable (recommended)
+  bailian: "sk-your-api-key-here"    # Plain text (for development/testing)
   
-  # 自定义 base_url（需加引号）
+  # Custom base_url (requires quotes)
   "ollama@http://localhost:11434": "ollama"
   "vllm@http://192.168.1.100:8000": "dummy-key"
 
@@ -211,7 +219,7 @@ server:
   port: 8000
 ```
 
-### 2. 启动服务
+### 2. Start Server
 
 ```python
 import chak
@@ -219,7 +227,7 @@ import chak
 chak.serve('chak-config.yaml')
 ```
 
-就这样！服务就启动了，你会看到：
+That's it! The server starts and you'll see:
 
 ```
 ======================================================================
@@ -238,51 +246,51 @@ chak.serve('chak-config.yaml')
 ======================================================================
 ```
 
-### 3. 使用 Playground 快速和模型对话
+### 3. Use Playground for Quick Model Conversations
 
-打开 `http://localhost:8000/playground`，选择供应商和模型，立即开始对话。实时体验和全球LLM进行交互。
+Open `http://localhost:8000/playground`, select a provider and model, start chatting immediately. Experience real-time interaction with global LLMs.
 
-### 4. 用任意语言调用
+### 4. Call from Any Language
 
-服务提供 WebSocket API，你可以用 JavaScript、Go、Java、Rust 等任何语言调用：
+The service provides a WebSocket API, callable from JavaScript, Go, Java, Rust, or any language:
 
 ```javascript
-// JavaScript 示例
+// JavaScript example
 const ws = new WebSocket('ws://localhost:8000/ws/conversation');
 
-// 初始化会话
+// Initialize session
 ws.send(JSON.stringify({
   type: 'init',
   model_uri: 'openai/gpt-4o-mini'
 }));
 
-// 发送消息
+// Send message
 ws.send(JSON.stringify({
   type: 'send',
-  message: '你好！',
+  message: 'Hello!',
   stream: true
 }));
 ```
 
-这样 chak 就成了你的本地 LLM 网关，统一管理所有厂商的 API key，任意语言都能调用。
+This way chak becomes your local LLM gateway, centrally managing all provider API keys, callable from any language.
 
 ---
 
-## 支持的 LLM 厂商
+## Supported LLM Providers
 
-| 厂商 | 注册地址 | URI 示例 |
-|------|---------|----------|
+| Provider | Registration | URI Example |
+|----------|-------------|-------------|
 | OpenAI | https://platform.openai.com | `openai/gpt-4o` |
 | Anthropic | https://console.anthropic.com | `anthropic/claude-3-5-sonnet` |
 | Google Gemini | https://ai.google.dev | `google/gemini-1.5-pro` |
 | DeepSeek | https://platform.deepseek.com | `deepseek/deepseek-chat` |
-| 阿里百炼 | https://bailian.console.aliyun.com | `bailian/qwen-max` |
-| 智谱 GLM | https://open.bigmodel.cn | `zhipu/glm-4` |
+| Alibaba Bailian | https://bailian.console.aliyun.com | `bailian/qwen-max` |
+| Zhipu GLM | https://open.bigmodel.cn | `zhipu/glm-4` |
 | Moonshot | https://platform.moonshot.cn | `moonshot/moonshot-v1-8k` |
-| 百度文心 | https://console.bce.baidu.com/qianfan | `baidu/ernie-bot-4` |
-| 腾讯混元 | https://cloud.tencent.com/product/hunyuan | `tencent/hunyuan-standard` |
-| 字节豆包 | https://console.volcengine.com/ark | `volcengine/doubao-pro` |
-| 科大讯飞 | https://xinghuo.xfyun.cn | `iflytek/spark-v3.5` |
+| Baidu Wenxin | https://console.bce.baidu.com/qianfan | `baidu/ernie-bot-4` |
+| Tencent Hunyuan | https://cloud.tencent.com/product/hunyuan | `tencent/hunyuan-standard` |
+| ByteDance Doubao | https://console.volcengine.com/ark | `volcengine/doubao-pro` |
+| iFlytek Spark | https://xinghuo.xfyun.cn | `iflytek/spark-v3.5` |
 | MiniMax | https://platform.minimaxi.com | `minimax/abab-5.5` |
 | Mistral | https://console.mistral.ai | `mistral/mistral-large` |
 | xAI Grok | https://console.x.ai | `xai/grok-beta` |
@@ -291,16 +299,15 @@ ws.send(JSON.stringify({
 | Ollama | https://ollama.com | `ollama/llama3.1` |
 | vLLM | https://github.com/vllm-project/vllm | `vllm/custom-model` |
 
-**说明：**
+**Notes:**
+- URI format: `provider/model`
+- Custom base_url: Use complete format `provider@base_url:model`
+- Local deployments (Ollama, vLLM) require custom base_url configuration
 
-- URI 格式：`provider/model`
-- 自定义 base_url：使用完整格式 `provider@base_url:model`
-- 本地部署（Ollama、vLLM）需配置自定义 base_url
+## Is chak for You?
 
-## 适合你吗？
+If you:
+- Need to connect to multiple model platforms
+- Want "ready-to-use" context management instead of reinventing the wheel
 
-如果你：
-- 需要连接多个模型平台
-- 想要"开箱即用"的上下文管理，而不是自己造轮子
-
-那 chak 就是为你准备的。
+Then chak is made for you.

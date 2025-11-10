@@ -128,22 +128,11 @@ class ConversationWebSocketHandler:
             )
             raise ValueError(f"API key not found for provider: {provider}")
         
-        # Build model_uri with custom base_url if configured
+        # Use model_uri as-is from frontend
+        # Frontend already constructs the correct format:
+        # - Simple: provider/model or provider:model
+        # - Custom base_url: provider@base_url:model
         final_model_uri = msg.model_uri
-        if 'base_url' in provider_config:
-            # User configured custom base_url, reconstruct URI
-            # Format: provider@base_url/model or provider@base_url:model
-            base_url = provider_config['base_url']
-            # Extract model from original URI
-            if '/' in msg.model_uri:
-                model = msg.model_uri.split('/', 1)[1]
-            elif ':' in msg.model_uri:
-                model = msg.model_uri.split(':', 1)[1]
-            else:
-                model = msg.model_uri
-            
-            # Reconstruct with @ format
-            final_model_uri = f"{provider}@{base_url}/{model}"
         
         # Create context strategy
         context_strategy = self._create_strategy(msg.context_strategy)
