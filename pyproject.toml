@@ -3,7 +3,7 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "chak"
+name = "chakpy"
 version = "0.1.0"
 description = "A simple, yet elegant, LLM API routing library"
 readme = "README.md"

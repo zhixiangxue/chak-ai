@@ -38,7 +38,7 @@ jobs:
 
     environment:
       name: pypi
-      url: https://pypi.org/p/chak
+      url: https://pypi.org/p/chakpy
 
     steps:
       - name: Retrieve release distributions
