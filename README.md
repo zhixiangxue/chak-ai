@@ -2,7 +2,7 @@
 
 <div align="center">
 
-[![Demo Video](docs/assets/logo.png)](https://youtube.com/watch?v=xOKQ7EQcggw)
+[![Demo Video](https://raw.githubusercontent.com/zhixiangxue/chak-ai/main/docs/assets/logo.png)](https://youtube.com/watch?v=xOKQ7EQcggw)
 
 [English](README.md) | [中文](docs/README_CN.md)
 

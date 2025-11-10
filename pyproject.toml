@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "chakpy"
-version = "0.1.0"
+version = "0.1.1"
 description = "A simple, yet elegant, LLM API routing library"
 readme = "README.md"
 authors = [
@@ -54,9 +54,8 @@ Repository = "https://github.com/zhixiangxue/chak-ai"
 Documentation = "https://github.com/zhixiangxue/chak-ai/blob/main/README.md"
 "Bug Tracker" = "https://github.com/zhixiangxue/chak-ai/issues"
 
-[tool.setuptools]
-packages = ["chak"]
-package-dir = {"" = "."}
+[tool.setuptools.packages.find]
+where = ["."]
 
 [tool.setuptools.package-data]
 chak = ["server/playground.html"]
