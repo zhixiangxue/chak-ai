@@ -34,6 +34,22 @@ from .message import (
 # Utility functions
 from .utils.uri import build, build_simple, parse
 
+# MCP integration (optional)
+try:
+    from .mcp import tools
+    _mcp_available = True
+except ImportError:
+    _mcp_available = False
+    
+    # Provide helpful error message when MCP dependencies are missing
+    async def tools(*args, **kwargs):
+        raise ImportError(
+            "MCP dependencies not installed. Install with:\n"
+            "  pip install mcp\n"
+            "or:\n"
+            "  pip install chakpy[mcp]"
+        )
+
 # Server (optional dependency)
 try:
     from .server import serve
@@ -87,6 +103,9 @@ __all__ = [
     
     # Server
     'serve',
+    
+    # MCP
+    'tools',
 
     # Version
     '__version__',

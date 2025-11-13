@@ -1,4 +1,5 @@
-from typing import List, Dict, Any, Iterator, Union, Literal, Optional
+import asyncio
+from typing import TYPE_CHECKING, List, Dict, Any, Iterator, Union, Optional, AsyncIterator
 
 from .context.strategies import BaseContextStrategy, NoopStrategy
 from .context.strategies.base import StrategyRequest
@@ -6,6 +7,10 @@ from .message import Message, MessageChunk, HumanMessage, AIMessage, SystemMessa
 from .providers import create_provider
 from .providers.types import ProviderCategory
 from .utils.uri import parse as parse_uri
+
+if TYPE_CHECKING:
+    from .mcp.tool import Tool
+    from .mcp.manager import ToolManager
 
 
 class Conversation:
@@ -25,6 +30,7 @@ class Conversation:
         api_key: str,
         system_message: Optional[str] = None,
         context_strategy: Optional[BaseContextStrategy] = None,
+        tools: Optional[List["Tool"]] = None,
         **kwargs
     ):
         """
@@ -42,6 +48,7 @@ class Conversation:
             system_message: Optional system message to initialize the conversation.
                           If you need structured content, use \n\n to separate sections.
             context_strategy: Context management strategy (default: NoopStrategy)
+            tools: Optional list of MCP tools (requires async asend() method)
             **kwargs: Additional configuration parameters
         
         Example:
@@ -68,6 +75,13 @@ class Conversation:
         self.model_uri = model_uri
         self.api_key = api_key
         self.messages = []
+        self.tools = tools
+        
+        # Initialize tool manager if tools provided
+        self._tool_manager: Optional["ToolManager"] = None
+        if tools:
+            from .mcp.manager import ToolManager
+            self._tool_manager = ToolManager(tools)
         
         # Initialize system message
         self._initial_system_message = self._normalize_system_message(system_message)
@@ -175,30 +189,74 @@ class Conversation:
 
     def send(
             self,
-            message: str,
-            role: Literal["user", "assistant", "system", "tool"] = "user",
+            message: Union[str, Message],
             stream: bool = False,
             **kwargs
     ) -> Union[Message, Iterator[MessageChunk]]:
-        """Send message to the provider."""
-        # Create user message based on role
-        if role == "user":
+        """
+        Send message (sync, no MCP tools support).
+        
+        Supports:
+        - ✅ Streaming
+        - ✅ Non-streaming
+        - ❌ MCP tools (not supported)
+        
+        For MCP tool usage, please use: await conv.asend(message)
+        
+        Args:
+            message: Message content (str will be converted to HumanMessage)
+            stream: Enable streaming
+            **kwargs: Additional LLM parameters
+        
+        Returns:
+            - If stream=False: Complete Message
+            - If stream=True: Iterator[MessageChunk]
+        
+        Raises:
+            RuntimeError: If tools are configured
+        
+        Examples:
+            # Simple usage
+            response = conv.send("Hello")
+            
+            # With streaming
+            for chunk in conv.send("Hello", stream=True):
+                print(chunk.content, end="")
+            
+            # Advanced: Send specific message type
+            conv.send(SystemMessage(content="You are helpful"))
+            conv.send(HumanMessage(content="Hello"))
+        """
+        # Check if tools are configured
+        if self.tools:
+            raise RuntimeError(
+                "MCP tools require async execution. "
+                "Please use: await conv.asend(message)"
+            )
+        
+        # Check if in async context
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                raise RuntimeError(
+                    "Cannot use sync send() in async context. "
+                    "Please use: await conv.asend(message)"
+                )
+        except RuntimeError:
+            pass
+        
+        # Convert str to HumanMessage
+        if isinstance(message, str):
             user_message = HumanMessage(content=message)
-        elif role == "assistant":
-            user_message = AIMessage(content=message)
-        elif role == "system":
-            user_message = SystemMessage(content=message)
-        elif role == "tool":
-            user_message = ToolMessage(content=message)
         else:
-            user_message = HumanMessage(content=message)
+            user_message = message
         
         self.messages.append(user_message)
 
         # Apply context strategy
         messages_to_send = self._apply_context_strategy()
 
-        # Send to provider (model is already in provider config)
+        # Normal LLM call (no tools)
         if stream:
             return self._send_stream(messages_to_send, **kwargs)
         else:
@@ -220,6 +278,178 @@ class Conversation:
                 ai_response = response  # type: ignore
             self.messages.append(ai_response)
             return ai_response
+    
+    async def asend(
+            self,
+            message: Union[str, Message],
+            stream: bool = False,
+            **kwargs
+    ) -> Union[Message, AsyncIterator[MessageChunk]]:
+        """
+        Send message (async, full featured).
+        
+        Supports:
+        - ✅ Streaming
+        - ✅ Non-streaming
+        - ✅ MCP tools (both modes)
+        
+        Args:
+            message: Message content (str will be converted to HumanMessage)
+            stream: Enable streaming
+            **kwargs: Additional LLM parameters
+        
+        Returns:
+            - If stream=False: Complete Message
+            - If stream=True: AsyncIterator[MessageChunk]
+        
+        Examples:
+            # Non-streaming
+            response = await conv.asend("Hello")
+            
+            # Streaming
+            async for chunk in await conv.asend("Hello", stream=True):
+                print(chunk.content, end="")
+            
+            # With MCP tools (non-streaming)
+            conv = Conversation("gpt-4", tools=mcp_tools)
+            response = await conv.asend("What's the weather?")
+            
+            # With MCP tools (streaming)
+            conv = Conversation("gpt-4", tools=mcp_tools)
+            async for chunk in await conv.asend("What's the weather?", stream=True):
+                print(chunk.content, end="")
+            
+            # Advanced: Send specific message type
+            await conv.asend(SystemMessage(content="You are helpful"))
+            await conv.asend(HumanMessage(content="Hello"))
+        """
+        # Convert str to HumanMessage
+        if isinstance(message, str):
+            user_message = HumanMessage(content=message)
+        else:
+            user_message = message
+        
+        self.messages.append(user_message)
+
+        # Apply context strategy
+        messages_to_send = self._apply_context_strategy()
+
+        # Check if tools are configured
+        if self._tool_manager:
+            # MCP tools mode
+            if stream:
+                return self._asend_stream_with_tools(messages_to_send, **kwargs)
+            else:
+                return await self._asend_nonstream_with_tools(messages_to_send, **kwargs)
+        else:
+            # Normal LLM mode
+            if stream:
+                return self._asend_stream(messages_to_send, **kwargs)
+            else:
+                return await self._asend_nonstream(messages_to_send, **kwargs)
+    
+    async def _asend_stream(self, messages: List[Message], **kwargs) -> AsyncIterator[MessageChunk]:
+        """Handle async streaming response."""
+        # Get provider chunks (sync iterator)
+        def _get_sync_chunks():
+            return self.provider.send(
+                messages=messages,
+                stream=True,
+                **kwargs
+            )
+        
+        # Run in thread to avoid blocking
+        provider_chunks = await asyncio.to_thread(_get_sync_chunks)
+
+        # Convert to standard chunks and collect content
+        complete_content = ""
+        last_chunk_was_final = False
+        
+        for provider_chunk in provider_chunks:
+            chunk = self.provider.converter.from_provider_chunk(provider_chunk)
+            complete_content += chunk.content
+            
+            # Check if this chunk is already marked as final
+            if chunk.is_final:
+                last_chunk_was_final = True
+            
+            yield chunk
+
+        # Only send additional final chunk if provider didn't send one
+        if complete_content and not last_chunk_was_final:
+            final_message = AIMessage(
+                content=complete_content
+            )
+            self.messages.append(final_message)
+            
+            # Send a special final chunk containing the complete message
+            yield MessageChunk(
+                content="",
+                is_final=True,
+                final_message=final_message
+            )
+        elif complete_content:
+            # Provider sent final chunk, just save the message
+            final_message = AIMessage(
+                content=complete_content
+            )
+            self.messages.append(final_message)
+    
+    async def _asend_stream_with_tools(self, messages: List[Message], **kwargs) -> AsyncIterator[MessageChunk]:
+        """Handle async streaming response with MCP tools."""
+        if not self._tool_manager:
+            raise RuntimeError("Tool manager not initialized")
+        
+        complete_content = ""
+        
+        # Use tool manager's streaming loop
+        async for chunk in self._tool_manager.execute_loop_stream(
+            provider=self.provider,
+            messages=messages,
+            model_uri=self.model_uri
+        ):
+            complete_content += chunk.content
+            yield chunk
+        
+        # Save final message
+        if complete_content:
+            final_message = AIMessage(content=complete_content)
+            self.messages.append(final_message)
+    
+    async def _asend_nonstream_with_tools(self, messages: List[Message], **kwargs) -> Message:
+        """Handle async non-streaming response with MCP tools."""
+        if not self._tool_manager:
+            raise RuntimeError("Tool manager not initialized")
+        
+        response = await self._tool_manager.execute_loop(
+            provider=self.provider,
+            messages=messages,
+            model_uri=self.model_uri
+        )
+        self.messages.append(response)
+        return response
+    
+    async def _asend_nonstream(self, messages: List[Message], **kwargs) -> Message:
+        """Handle async non-streaming response without tools."""
+        # Use asyncio.to_thread to wrap sync provider call
+        response = await asyncio.to_thread(
+            self.provider.send,
+            messages=messages,
+            stream=False,
+            **kwargs
+        )
+        # Convert to AIMessage
+        if not isinstance(response, (HumanMessage, AIMessage, SystemMessage, ToolMessage, MarkerMessage)):
+            ai_response = AIMessage(
+                content=response.content,  # type: ignore
+                reasoning_content=response.reasoning_content,  # type: ignore
+                tool_calls=response.tool_calls,  # type: ignore
+                refusal=response.refusal  # type: ignore
+            )
+        else:
+            ai_response = response  # type: ignore
+        self.messages.append(ai_response)
+        return ai_response
 
     def _send_stream(self, messages: List[Message], **kwargs) -> Iterator[MessageChunk]:
         """Handle streaming response."""

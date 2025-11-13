@@ -6,9 +6,9 @@
 
 [English](README.md) | [中文](docs/README_CN.md)
 
-A multi-model LLM client with built-in context management.
+A multi-model LLM client with built-in context management and MCP tool integration.
 
-chak is not another one-api or OpenRouter, but a client library that actively manages conversation context for you. Just focus on the conversation, let chak handle the context engineering.
+chak is not another liteLLM, one-api, or OpenRouter, but a client library that actively manages conversation context and tool calls for you. Just focus on building your application, let chak handle the complexity.
 
 </div>
 
@@ -16,26 +16,57 @@ chak is not another one-api or OpenRouter, but a client library that actively ma
 
 ## Core Features
 
-**1. Built-in Context Management**
+**1. Minimalist API Design**
 
-Context management is chak's core capability. It provides multiple strategies (FIFO, Summarization, LRU) to automatically handle conversation history, maintaining complete records while saving token costs. You focus on conversations, chak handles the context.
-
-**2. Concise URI Invocation**
-
-Connect to mainstream models globally with one line of code, no need to remember complex SDK configurations:
+No complex configurations, no learning curve. chak is designed to be intuitive:
 
 ```python
-# Simple format (recommended)
+# Use as SDK - connect to any LLM with a simple URI
 conv = chak.Conversation("openai/gpt-4o-mini", api_key="YOUR_KEY")
+response = conv.send("Hello!")
 
-# Complete format (custom base_url)
-conv = chak.Conversation("deepseek@https://api.deepseek.com:deepseek-chat", api_key="YOUR_KEY")
+# Or run as a local gateway - start in 2 lines
+import chak
+chak.serve('chak-config.yaml')
 ```
 
-**3. Short-term Memory → Long-term Memory**
+Whether you're building an application or running a gateway, chak keeps things simple.
 
-- Now: Short-term memory management (FIFO truncation, Summarization, LRU forgetting), ready to use
-- Future: Long-term memory capabilities (RAG, memory bank), making conversations truly "memorable", in planning
+**2. Pluggable Context Management**
+
+Chak handles context automatically with multiple strategies:
+
+```python
+# Context is managed automatically
+conv = chak.Conversation(
+    "openai/gpt-4o",
+    context_strategy=chak.FIFOStrategy(keep_recent_turns=5)
+)
+```
+
+- **Now**: Short-term memory strategies (FIFO, Summarization, LRU) - production ready
+- **Planning**: Long-term memory (RAG, memory bank) - making conversations truly "memorable"
+
+No one else automates context management at this level. chak's strategy pattern makes it fully pluggable and extensible.
+
+**3. Seamless Tool Calling (MCP Protocol)**
+
+Extreme simplicity - just point to an MCP server:
+
+```python
+from chak import Conversation
+from chak.mcp import Server
+
+# Load tools from MCP server
+tools = await Server(url="...").tools()
+
+# That's it! Tool calling just works
+conv = Conversation("openai/gpt-4o", tools=tools)
+response = await conv.asend("What's the weather in San Francisco?")
+```
+
+- **Now**: Full async support with both streaming and non-streaming modes
+- **Planning**: Smart tool selection - intelligently filter relevant tools based on context
 
 ---
 
@@ -80,98 +111,76 @@ chak handles: connection initialization, message alignment, retry logic, context
 
 ## Enable Automatic Context Management
 
-### Strategy A: `FIFOStrategy` - Keep Recent N Turns
+Three built-in strategies:
 
-Suitable for fast-paced conversations, like a rolling window keeping conversations fresh:
+- FIFO: Keep the last N turns, automatically drops older ones.
+- Summarization: When context reaches a threshold, early history is summarized; recent turns stay in full.
+- LRU: Built on Summarization, keeps hot topics and prunes cold ones.
+
+Quick start:
 
 ```python
 from chak import Conversation, FIFOStrategy
 
 conv = Conversation(
-    "deepseek/deepseek-chat",
+    "bailian/qwen-flash",
     api_key="YOUR_KEY",
-    context_strategy=FIFOStrategy(
-        keep_recent_turns=3,       # Keep only the last 3 turns
-        max_input_tokens=120_000   # Context window size
-    )
+    context_strategy=FIFOStrategy(keep_recent_turns=3)
 )
 ```
 
-**Parameters:**
-- `keep_recent_turns`: How many recent turns to keep? A turn = all content from one user message to the next user message.
-- `max_input_tokens`: Set a "stomach capacity" limit for the strategy, ensuring it won't overflow the model's context window.
+See full examples (parameters, how it works, tips):
 
-How it works: The strategy inserts a truncation marker before the retention interval, sending only content after the marker. Original conversation? All preserved in `conversation.messages`.
+- FIFO: [examples/strategy_chat_fifo.py](examples/strategy_chat_fifo.py)
+- Summarization: [examples/strategy_chat_summarization.py](examples/strategy_chat_summarization.py)
+- LRU: [examples/strategy_chat_lru.py](examples/strategy_chat_lru.py)
 
-### Strategy B: `SummarizationStrategy` - Smart History Summarization
+---
 
-Suitable for long conversations, like a thoughtful summarization assistant:
+## MCP Tool Calling
+
+chak integrates the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) for seamless tool calling.
+
+Quick start:
 
 ```python
-from chak import Conversation, SummarizationStrategy
+import asyncio
+from chak import Conversation
+from chak.mcp import Server
 
-conv = Conversation(
-    "openai/gpt-5",
-    api_key="YOUR_KEY",
-    context_strategy=SummarizationStrategy(
-        max_input_tokens=128_000,            # Context window size
-        summarize_threshold=0.75,            # Trigger threshold
-        prefer_recent_turns=2,               # Keep recent turns
-        summarizer_model_uri="openai/gpt-4o-mini",  # Summarizer model
-        summarizer_api_key="YOUR_KEY"
+async def main():
+    # Connect to MCP server and load tools
+    tools = await Server(
+        url="https://your-mcp-server.com/sse",
+        headers={"Authorization": "Bearer YOUR_TOKEN"}
+    ).tools()
+    
+    # Create conversation with tools
+    conv = Conversation(
+        "openai/gpt-4o",
+        api_key="YOUR_KEY",
+        tools=tools
     )
-)
+    
+    # Model automatically calls tools when needed
+    response = await conv.asend("What's the weather in San Francisco?")
+    print(response.content)
+
+asyncio.run(main())
 ```
 
-**Parameters:**
-- `max_input_tokens`: How large is your model's context window? The strategy uses this to decide when to trigger.
-- `summarize_threshold`: At what percentage of the window should summarization trigger? 0.75 = 75%, leaving room for future conversation.
-- `prefer_recent_turns`: Keep the last few turns untouched to maintain the "live feel" of the conversation.
-- `summarizer_model_uri` / `summarizer_api_key`: Which model to use for summarization? Can be the same as main conversation or a cheaper one.
+Supports three transport types:
 
-**How it works:**
+- **SSE** (Server-Sent Events): Cloud-hosted MCP services
+- **stdio**: Local MCP servers
+- **HTTP**: HTTP-based MCP services
 
-When conversations accumulate to a certain length, chak automatically triggers summarization. It condenses early conversations into key points and inserts a marker into the message chain. Subsequent sends only include this marker and content after it. This preserves complete history while significantly reducing actual tokens sent, allowing you to continue conversations without worrying about context window size.
+See full examples (parameters, how it works, tips):
 
-Original conversations remain fully preserved in `conversation.messages`, ready for viewing, export, or analysis anytime.
+- SSE: [examples/mcp_chat_sse.py](examples/mcp_chat_sse.py)
+- stdio: [examples/mcp_chat_stdio.py](examples/mcp_chat_stdio.py)
+- HTTP: [examples/mcp_chat_http.py](examples/mcp_chat_http.py)
 
-### Strategy C: `LRUStrategy` - Smart Cold Topic Forgetting
-
-Suitable for long conversations with topic jumps, automatically fades out topics no longer discussed, preserving hot content:
-
-```python
-from chak import Conversation, LRUStrategy
-
-conv = Conversation(
-    "deepseek/deepseek-chat",
-    api_key="YOUR_KEY",
-    context_strategy=LRUStrategy(
-        max_input_tokens=128_000,            # Context window size
-        summarize_threshold=0.75,            # Trigger threshold
-        prefer_recent_turns=2,               # Keep recent turns
-        summarizer_model_uri="deepseek/deepseek-chat", # Summarizer model
-        summarizer_api_key="YOUR_KEY"
-    )
-)
-```
-
-**Parameters:**
-- Same parameters as `SummarizationStrategy`, usage is identical
-- Internal enhancement: Based on Summarization strategy, additionally analyzes the last 5 summary markers
-- Smart forgetting: Detects which topics are no longer discussed, automatically fades cold topics, reinforces hot content
-
-**How it works:**
-
-1. First works like `SummarizationStrategy`, generating summary markers
-2. When summary markers accumulate to a certain amount, LRU enhancement activates
-3. Analyzes the last 5 markers, identifying "hot topics" (continuously discussed) and "cold topics" (no longer mentioned)
-4. Creates LRU markers, keeping only hot topic content, fading cold topics
-5. Original summary markers and complete history remain preserved for viewing anytime
-
-**Use cases:**
-- Conversations with frequent topic switches (e.g., Python → Java → Machine Learning)
-- Long conversations focusing only on current discussion topics
-- Want the model to "forget" early irrelevant topics, focusing on current task
 
 ---
 
@@ -191,16 +200,18 @@ print(stats)
 # }
 ```
 
-### Debug Strategy Behavior
+### Debug Mode
 
-Set environment variables to see strategy internals:
+Set environment variables to see internal execution details:
 
 ```bash
 export CHAK_LOG_LEVEL=DEBUG
 python your_script.py
 ```
 
-chak will output detailed strategy execution logs: trigger points, retention intervals, summary previews, etc.
+chak will output detailed logs for:
+- **Context strategies**: trigger points, retention intervals, summary previews, token counts
+- **MCP tool calls**: tool invocation, request/response details, execution results
 
 ---
 
@@ -311,10 +322,33 @@ This way chak becomes your local LLM gateway, centrally managing all provider AP
 - Custom base_url: Use complete format `provider@base_url:model`
 - Local deployments (Ollama, vLLM) require custom base_url configuration
 
+---
+
+## MCP Server Resources
+
+Explore thousands of ready-to-use MCP servers:
+
+| Platform | Description | URL |
+|----------|-------------|-----|
+| **Mcp.so** | 8,000+ servers, supports STDIO & SSE, with API playground | https://mcp.so |
+| **Smithery** | 4,500+ servers, beginner-friendly, one-click config for Cursor | https://smithery.ai |
+| **Alibaba Bailian** | Enterprise-grade MCP marketplace with cloud-hosted services | https://bailian.console.aliyun.com/?tab=mcp#/mcp-market |
+| **ModelScope** | Largest Chinese MCP community by Alibaba Cloud | https://modelscope.cn/mcp |
+| **Awesome MCP** | 200+ curated servers organized by category (GitHub) | https://github.com/punkpeye/awesome-mcp-servers |
+| **ByteDance Volcengine** | Enterprise-level stable and secure MCP services | https://www.volcengine.com/mcp-marketplace |
+| **iFlytek Spark** | MCP servers for Spark AI platform | https://mcp.xfyun.cn |
+| **Baidu SAI** | Explore massive available MCP servers | https://sai.baidu.com/mcp |
+| **PulseMCP** | 3,290+ servers with weekly updates and tutorials | https://www.pulsemcp.com |
+| **mcp.run** | 200+ templates with one-click web deployment | https://www.mcp.run |
+
+
+
 ## Is chak for You?
 
 If you:
 - Need to connect to multiple model platforms
-- Want "ready-to-use" context management instead of reinventing the wheel
+- Want simple, automatic context management
+- Need seamless MCP tool integration with minimal code
+- Want to focus on building applications, not wrestling with context and tools
 
 Then chak is made for you.

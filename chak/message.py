@@ -49,6 +49,7 @@ class SystemMessage(BaseMessage):
 class ToolMessage(BaseMessage):
     """工具消息"""
     role: Literal["tool"] = "tool"
+    tool_call_id: Optional[str] = None  # OpenAI required field for tool response
 
 
 # ===== Strategy Marker Message =====

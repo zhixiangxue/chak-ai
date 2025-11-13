@@ -13,13 +13,20 @@ Usage:
 
 import os
 
+import dotenv
+
+dotenv.load_dotenv()
+
 import chak
 
+# ============================================================================
+# 🔑🔑🔑 IMPORTANT: Set your API key here 🔑🔑🔑
+# ============================================================================
 # Get API key from environment variable (recommended for security)
-api_key = os.getenv("BAILIAN_API_KEY")
+api_key = os.getenv("BAILIAN_API_KEY", "Your API key here")
 if not api_key:
-    print("Error: Please set BAILIAN_API_KEY environment variable")
-    print("Example: export BAILIAN_API_KEY=sk-your-key-here")
+    print("❌ Error: Please set BAILIAN_API_KEY environment variable")
+    print("   Example: export BAILIAN_API_KEY=sk-your-key-here")
     exit(1)
 
 # Create conversation with simple URI format

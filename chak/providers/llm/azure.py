@@ -13,11 +13,12 @@ Supported models (via deployments):
 - GPT-4 series: gpt-4, gpt-4-turbo, gpt-4o
 - GPT-3.5 series: gpt-3.5-turbo
 """
-from .base import BaseProviderConfig, BaseMessageConverter, Provider
-from pydantic import field_validator
-from typing import Optional, List, Dict, Any, Iterator
+from typing import Optional, Dict, Any
+
 import openai
-from ...message import Message, MessageChunk, AIMessage
+from pydantic import field_validator
+
+from .base import BaseProviderConfig, OpenAICompatibleMessageConverter, OpenAICompatibleProvider
 
 
 class AzureConfig(BaseProviderConfig):
@@ -37,58 +38,27 @@ class AzureConfig(BaseProviderConfig):
         return v
 
 
-class AzureMessageConverter(BaseMessageConverter):
+class AzureMessageConverter(OpenAICompatibleMessageConverter):
     """Converter for Azure OpenAI message formats."""
     
-    def to_provider_format(self, messages: List[Message]) -> List[Dict[str, Any]]:
-        """Convert to Azure OpenAI message format (same as OpenAI)."""
-        return [
-            {
-                "role": msg.role or "user",
-                "content": msg.content or ""
-            }
-            for msg in messages
-        ]
+    def _build_metadata(self, response: Any, choice: Any) -> Dict[str, Any]:
+        """Build metadata with 'azure' as provider name."""
+        metadata = super()._build_metadata(response, choice)
+        metadata["provider"] = "azure"
+        return metadata
     
-    def from_provider_response(self, response: Any) -> AIMessage:
-        """Convert Azure OpenAI response to standard AIMessage."""
-        choice = response.choices[0]
-        message = choice.message
-        
-        return AIMessage(
-            content=message.content or "",
-            metadata={
-                "provider": "azure",
-                "model": response.model,
-                "usage": getattr(response, 'usage', {}),
-                "finish_reason": choice.finish_reason,
-            }
-        )
-    
-    def from_provider_chunk(self, chunk: Any) -> MessageChunk:
-        """Convert Azure OpenAI streaming chunk to standard MessageChunk."""
-        choice = chunk.choices[0] if chunk.choices else None
-        delta = choice.delta if choice else None
-        
-        content = delta.content if delta and delta.content else ""
-        is_final = bool(choice and choice.finish_reason is not None)
-        
-        return MessageChunk(
-            content=content,
-            is_final=is_final,
-            metadata={
-                "provider": "azure",
-                "model": chunk.model,
-                "finish_reason": choice.finish_reason if choice else None
-            }
-        )
+    def _build_chunk_metadata(self, chunk: Any, choice: Any) -> Dict[str, Any]:
+        """Build chunk metadata with 'azure' as provider name."""
+        metadata = super()._build_chunk_metadata(chunk, choice)
+        metadata["provider"] = "azure"
+        return metadata
 
 
-class AzureProvider(Provider):
+class AzureProvider(OpenAICompatibleProvider):
     """Azure OpenAI provider implementation."""
     
     def _initialize_client(self):
-        """Initialize Azure OpenAI client."""
+        """Initialize Azure OpenAI client with AzureOpenAI class."""
         # Ensure base_url is not None (already validated in config)
         if not self.config.base_url:
             raise ValueError("Azure OpenAI requires base_url")
@@ -101,22 +71,3 @@ class AzureProvider(Provider):
             timeout=self.config.timeout,
             max_retries=self.config.max_retries,
         )
-    
-    def _send_complete(self, messages: List, **kwargs) -> Any:
-        """Send non-streaming request to Azure OpenAI."""
-        return self._client.chat.completions.create(
-            model=self.config.model,  # This is the deployment name in Azure
-            messages=messages,
-            **kwargs
-        )
-    
-    def _send_stream(self, messages: List, **kwargs) -> Iterator[Any]:
-        """Send streaming request to Azure OpenAI."""
-        stream = self._client.chat.completions.create(
-            model=self.config.model,  # This is the deployment name in Azure
-            messages=messages,
-            stream=True,
-            **kwargs
-        )
-        for chunk in stream:
-            yield chunk
