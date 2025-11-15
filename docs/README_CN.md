@@ -8,17 +8,17 @@
 [![Downloads](https://img.shields.io/pypi/dm/chakpy)](https://pypi.org/project/chakpy/)
 [![GitHub Stars](https://img.shields.io/github/stars/zhixiangxue/chak-ai?style=social)](https://github.com/zhixiangxue/chak-ai)
 
-</div>
-
-<div align="center">
-
-![Demo Video](https://raw.githubusercontent.com/zhixiangxue/chak-ai/main/docs/assets/demo.gif)
-
 [English](README.md) | [中文](docs/README_CN.md)
 
 一个极简的多模型LLM客户端，支持上下文管理和工具调用。
 
 chak不是另一个liteLLM、one-api或OpenRouter，而是一个为您主动管理对话上下文和工具调用的客户端库。你只需专注于对话，让chak处理上下文工程。
+
+</div>
+
+<div align="center">
+
+![Demo Video](https://raw.githubusercontent.com/zhixiangxue/chak-ai/main/docs/assets/demo.gif)
 
 </div>
 

@@ -8,17 +8,17 @@
 [![Downloads](https://img.shields.io/pypi/dm/chakpy)](https://pypi.org/project/chakpy/)
 [![GitHub Stars](https://img.shields.io/github/stars/zhixiangxue/chak-ai?style=social)](https://github.com/zhixiangxue/chak-ai)
 
-</div>
-
-<div align="center">
-
-![Demo Video](https://raw.githubusercontent.com/zhixiangxue/chak-ai/main/docs/assets/demo.gif)
-
 [English](README.md) | [中文](docs/README_CN.md)
 
 A multi-model LLM client with built-in context management and MCP tool integration.
 
 chak is not another liteLLM, one-api, or OpenRouter, but a client library that actively manages conversation context and tool calls for you. Just focus on building your application, let chak handle the complexity.
+
+</div>
+
+<div align="center">
+
+![Demo Video](https://raw.githubusercontent.com/zhixiangxue/chak-ai/main/docs/assets/demo.gif)
 
 </div>
 
