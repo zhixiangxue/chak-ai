@@ -2,7 +2,7 @@
 
 <div align="center">
 
-[![Demo Video](https://raw.githubusercontent.com/zhixiangxue/chak-ai/main/docs/assets/logo.png)](https://youtube.com/watch?v=xOKQ7EQcggw)
+![Demo Video](https://raw.githubusercontent.com/zhixiangxue/chak-ai/main/docs/assets/demo.gif)
 
 [English](README.md) | [中文](docs/README_CN.md)
 
@@ -341,3 +341,5 @@ ws.send(JSON.stringify({
 - 希望专注于构建应用程序，而不是纠结于上下文和工具
 
 那么chak就是为您打造的。
+
+<div align="right"><a href="https://youtube.com/watch?v=xOKQ7EQcggw"><img src="https://raw.githubusercontent.com/zhixiangxue/chak-ai/main/docs/assets/logo.png" alt="Demo Video" width="120"></a></div>

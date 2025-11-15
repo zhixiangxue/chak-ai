@@ -2,7 +2,7 @@
 
 <div align="center">
 
-[![Demo Video](https://raw.githubusercontent.com/zhixiangxue/chak-ai/main/docs/assets/logo.png)](https://youtube.com/watch?v=xOKQ7EQcggw)
+![Demo Video](https://raw.githubusercontent.com/zhixiangxue/chak-ai/main/docs/assets/demo.gif)
 
 [English](README.md) | [中文](docs/README_CN.md)
 
@@ -352,3 +352,5 @@ If you:
 - Want to focus on building applications, not wrestling with context and tools
 
 Then chak is made for you.
+
+<div align="right"><a href="https://youtube.com/watch?v=xOKQ7EQcggw"><img src="https://raw.githubusercontent.com/zhixiangxue/chak-ai/main/docs/assets/logo.png" alt="Demo Video" width="120"></a></div>
