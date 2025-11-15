@@ -1,4 +1,14 @@
-# chak
+<div align="center">
+
+<a href="https://youtube.com/watch?v=xOKQ7EQcggw"><img src="https://raw.githubusercontent.com/zhixiangxue/chak-ai/main/docs/assets/logo.png" alt="Demo Video" width="120"></a>
+
+[![PyPI version](https://badge.fury.io/py/chakpy.svg)](https://badge.fury.io/py/chakpy)
+[![Python Version](https://img.shields.io/pypi/pyversions/chakpy)](https://pypi.org/project/chakpy/)
+[![License](https://img.shields.io/github/license/zhixiangxue/chak-ai)](https://github.com/zhixiangxue/chak-ai/blob/main/LICENSE)
+[![Downloads](https://img.shields.io/pypi/dm/chakpy)](https://pypi.org/project/chakpy/)
+[![GitHub Stars](https://img.shields.io/github/stars/zhixiangxue/chak-ai?style=social)](https://github.com/zhixiangxue/chak-ai)
+
+</div>
 
 <div align="center">
 
