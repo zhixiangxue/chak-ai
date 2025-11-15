@@ -10,7 +10,7 @@
 
 [English](README.md) | [中文](docs/README_CN.md)
 
-A multi-model LLM client with built-in context management and MCP tool integration.
+**A multi-model LLM client with built-in context management and MCP tool integration.**
 
 chak is not another liteLLM, one-api, or OpenRouter, but a client library that actively manages conversation context and tool calls for you. Just focus on building your application, let chak handle the complexity.
 
