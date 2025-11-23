@@ -208,11 +208,15 @@ class OpenAICompatibleMessageConverter(BaseMessageConverter):
     
     def _build_chunk_metadata(self, chunk: Any, choice: Any) -> Dict[str, Any]:
         """Build chunk metadata - subclasses can override."""
-        return {
+        metadata = {
             "provider": "openai",
             "model": chunk.model,
             "finish_reason": choice.finish_reason if choice else None
         }
+        # Add usage info if available (for stream chunks with stream_options)
+        if hasattr(chunk, 'usage') and chunk.usage:
+            metadata["usage"] = chunk.usage
+        return metadata
 
 
 class OpenAICompatibleProvider(Provider):
@@ -247,6 +251,10 @@ class OpenAICompatibleProvider(Provider):
     
     def _send_stream(self, messages: List, **kwargs) -> Iterator[Any]:
         """Send streaming request to OpenAI-compatible API."""
+        # Add stream_options to include usage in streaming mode (if not already set)
+        if 'stream_options' not in kwargs:
+            kwargs['stream_options'] = {"include_usage": True}
+        
         stream = self._client.chat.completions.create(
             model=self.config.model,
             messages=messages,

@@ -103,6 +103,10 @@ class Conversation:
             config_dict,
             category=self.PROVIDER_CATEGORY
         )
+        
+        # Store provider name and model name for easy access
+        self._provider_name = parsed['provider']
+        self._model_name = parsed['model']
 
     def _normalize_system_message(self, system_message: Optional[str]) -> Optional[SystemMessage]:
         """
@@ -272,7 +276,8 @@ class Conversation:
                     content=response.content,  # type: ignore
                     reasoning_content=response.reasoning_content,  # type: ignore
                     tool_calls=response.tool_calls,  # type: ignore
-                    refusal=response.refusal  # type: ignore
+                    refusal=response.refusal,  # type: ignore
+                    metadata=response.metadata  # type: ignore
                 )
             else:
                 ai_response = response  # type: ignore
@@ -364,6 +369,7 @@ class Conversation:
         # Convert to standard chunks and collect content
         complete_content = ""
         last_chunk_was_final = False
+        last_chunk_metadata = {}
         
         for provider_chunk in provider_chunks:
             chunk = self.provider.converter.from_provider_chunk(provider_chunk)
@@ -373,12 +379,17 @@ class Conversation:
             if chunk.is_final:
                 last_chunk_was_final = True
             
+            # Save metadata from last chunk (may contain usage info)
+            if chunk.metadata:
+                last_chunk_metadata = chunk.metadata
+            
             yield chunk
 
         # Only send additional final chunk if provider didn't send one
         if complete_content and not last_chunk_was_final:
             final_message = AIMessage(
-                content=complete_content
+                content=complete_content,
+                metadata=last_chunk_metadata
             )
             self.messages.append(final_message)
             
@@ -391,7 +402,8 @@ class Conversation:
         elif complete_content:
             # Provider sent final chunk, just save the message
             final_message = AIMessage(
-                content=complete_content
+                content=complete_content,
+                metadata=last_chunk_metadata
             )
             self.messages.append(final_message)
     
@@ -444,7 +456,8 @@ class Conversation:
                 content=response.content,  # type: ignore
                 reasoning_content=response.reasoning_content,  # type: ignore
                 tool_calls=response.tool_calls,  # type: ignore
-                refusal=response.refusal  # type: ignore
+                refusal=response.refusal,  # type: ignore
+                metadata=response.metadata  # type: ignore
             )
         else:
             ai_response = response  # type: ignore
@@ -463,6 +476,7 @@ class Conversation:
         # Convert to standard chunks and collect content
         complete_content = ""
         last_chunk_was_final = False
+        last_chunk_metadata = {}
         
         for provider_chunk in provider_chunks:
             chunk = self.provider.converter.from_provider_chunk(provider_chunk)
@@ -472,12 +486,17 @@ class Conversation:
             if chunk.is_final:
                 last_chunk_was_final = True
             
+            # Save metadata from last chunk (may contain usage info)
+            if chunk.metadata:
+                last_chunk_metadata = chunk.metadata
+            
             yield chunk
 
         # Only send additional final chunk if provider didn't send one
         if complete_content and not last_chunk_was_final:
             final_message = AIMessage(
-                content=complete_content
+                content=complete_content,
+                metadata=last_chunk_metadata
             )
             self.messages.append(final_message)
             
@@ -490,7 +509,8 @@ class Conversation:
         elif complete_content:
             # Provider sent final chunk, just save the message
             final_message = AIMessage(
-                content=complete_content
+                content=complete_content,
+                metadata=last_chunk_metadata
             )
             self.messages.append(final_message)
 
@@ -656,10 +676,16 @@ class Conversation:
             # Count tokens (from metadata)
             if 'usage' in msg.metadata:
                 usage = msg.metadata['usage']
+                # Handle both dict and object types (e.g., CompletionUsage)
                 if isinstance(usage, dict):
                     stats['total_tokens'] += usage.get('total_tokens', 0)
                     stats['input_tokens'] += usage.get('prompt_tokens', 0) or usage.get('input_tokens', 0)
                     stats['output_tokens'] += usage.get('completion_tokens', 0) or usage.get('output_tokens', 0)
+                elif hasattr(usage, 'total_tokens'):
+                    # Object type (e.g., CompletionUsage from OpenAI SDK)
+                    stats['total_tokens'] += getattr(usage, 'total_tokens', 0)
+                    stats['input_tokens'] += getattr(usage, 'prompt_tokens', 0) or getattr(usage, 'input_tokens', 0)
+                    stats['output_tokens'] += getattr(usage, 'completion_tokens', 0) or getattr(usage, 'output_tokens', 0)
         
         # Format token counts (use K for numbers over 1000)
         stats['total_tokens'] = self._format_tokens(stats['total_tokens'])
@@ -681,6 +707,34 @@ class Conversation:
         if tokens >= 1000:
             return f"{tokens / 1000:.1f}K"
         return str(tokens)
+    
+    @property
+    def provider_name(self) -> str:
+        """
+        Get provider name.
+        
+        Returns:
+            Provider name (e.g., 'openai', 'bailian', 'anthropic')
+        
+        Example:
+            >>> conv = Conversation("openai/gpt-4", api_key="...")
+            >>> print(conv.provider_name)  # 'openai'
+        """
+        return self._provider_name
+    
+    @property
+    def model_name(self) -> str:
+        """
+        Get model name.
+        
+        Returns:
+            Model name (e.g., 'gpt-4', 'qwen-plus', 'claude-3-opus')
+        
+        Example:
+            >>> conv = Conversation("bailian/qwen-plus", api_key="...")
+            >>> print(conv.model_name)  # 'qwen-plus'
+        """
+        return self._model_name
 
     def close(self):
         """Close the provider."""
