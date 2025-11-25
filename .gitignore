@@ -209,3 +209,4 @@ __marimo__/
 # Playground - test and sample files
 playground/
 .idea/
+.qoder/

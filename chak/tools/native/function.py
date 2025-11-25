@@ -1,0 +1,211 @@
+"""
+NativeFunctionTool: Wrap ordinary Python functions as tools
+
+Supports automatic parsing of function signatures, type annotations, and docstrings,
+implements the same interface as MCPTool, can be mixed.
+"""
+
+import asyncio
+import inspect
+from typing import Any, Callable, Dict, get_args, get_origin
+
+try:
+    from docstring_parser import parse as parse_docstring
+except ImportError:
+    # If docstring_parser is not installed, use simple parsing
+    parse_docstring = None
+
+
+class NativeFunctionTool:
+    """
+    Native Python function tool
+    
+    Automatically extracts from function:
+    - Function name (name)
+    - Function description (from docstring)
+    - Parameter definitions (from type annotations and docstring)
+    
+    Example:
+        def get_weather(city: str, unit: str = "celsius") -> str:
+            '''
+            Get city weather information
+            
+            Args:
+                city: City name
+                unit: Temperature unit
+            '''
+            return f"{city} sunny"
+        
+        tool = NativeFunctionTool(get_weather)
+        result = await tool.call({"city": "Beijing", "unit": "celsius"})
+    """
+    
+    def __init__(self, func: Callable):
+        """
+        Args:
+            func: Python function (can be sync or async)
+        """
+        self.func = func
+        self._name = func.__name__
+        
+        # Automatically parse function information
+        self._description, self._input_schema = self._parse_function()
+    
+    def _parse_function(self) -> tuple:
+        """Parse information from function signature and docstring"""
+        # 1. Parse docstring to get description
+        if parse_docstring and self.func.__doc__:
+            doc = parse_docstring(self.func.__doc__)
+            description = doc.short_description or doc.long_description or self._name
+            param_docs = {p.arg_name: p.description for p in doc.params}
+        else:
+            # Simple parsing: use first line as description
+            if self.func.__doc__:
+                description = self.func.__doc__.strip().split('\n')[0]
+            else:
+                description = self._name
+            param_docs = {}
+        
+        # 2. Get function signature
+        sig = inspect.signature(self.func)
+        
+        # 3. Build JSON Schema
+        properties = {}
+        required = []
+        
+        for param_name, param in sig.parameters.items():
+            # Get type from type annotation
+            param_type = self._python_type_to_json_type(param.annotation)
+            
+            # Get parameter description from docstring
+            param_desc = param_docs.get(param_name, "")
+            
+            properties[param_name] = {
+                "type": param_type,
+                "description": param_desc
+            }
+            
+            # Determine if required (no default value)
+            if param.default == inspect.Parameter.empty:
+                required.append(param_name)
+        
+        input_schema = {
+            "type": "object",
+            "properties": properties,
+        }
+        
+        if required:
+            input_schema["required"] = required
+        
+        return description, input_schema
+    
+    def _python_type_to_json_type(self, py_type) -> str:
+        """Python type → JSON Schema type"""
+        if py_type == inspect.Parameter.empty:
+            return "string"
+        
+        # Handle basic types
+        if py_type == str:
+            return "string"
+        elif py_type == int:
+            return "integer"
+        elif py_type == float:
+            return "number"
+        elif py_type == bool:
+            return "boolean"
+        
+        # Handle generic types (e.g., List[str])
+        origin = get_origin(py_type)
+        if origin is list:
+            args = get_args(py_type)
+            if args:
+                item_type = self._python_type_to_json_type(args[0])
+                return "array"
+            return "array"
+        elif origin is dict:
+            return "object"
+        
+        # Default to string
+        return "string"
+    
+    @property
+    def name(self) -> str:
+        """Tool name"""
+        return self._name
+    
+    @property
+    def description(self) -> str:
+        """Tool description"""
+        return self._description
+    
+    @property
+    def input_schema(self) -> Dict[str, Any]:
+        """Input parameters JSON Schema"""
+        return self._input_schema
+    
+    def to_openai_tool(self) -> Dict[str, Any]:
+        """
+        Convert to OpenAI function calling format
+        
+        Returns:
+            OpenAI tool definition dict
+        """
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": self.input_schema
+            }
+        }
+    
+    async def call(self, arguments: Dict[str, Any], retry: bool = True) -> Any:
+        """
+        Call function
+        
+        Args:
+            arguments: Function arguments (dict)
+            retry: Enable retry (meaningless for native functions, kept for interface consistency)
+        
+        Returns:
+            Function execution result
+        """
+        # Detect if sync or async function
+        if asyncio.iscoroutinefunction(self.func):
+            # Async function: call directly
+            return await self.func(**arguments)
+        else:
+            # Sync function: execute in thread pool to avoid blocking event loop
+            return await asyncio.to_thread(self.func, **arguments)
+    
+    def __repr__(self) -> str:
+        """Detailed representation"""
+        lines = [f"NativeFunctionTool(name='{self.name}')"]
+        
+        # Add description
+        if self.description:
+            desc = self.description[:80] + "..." if len(self.description) > 80 else self.description
+            lines.append(f"  Description: {desc}")
+        
+        # Add parameters
+        schema = self.input_schema
+        if schema and isinstance(schema, dict):
+            properties = schema.get('properties', {})
+            required = schema.get('required', [])
+            
+            if properties:
+                lines.append("  Parameters:")
+                for param_name, param_info in properties.items():
+                    param_type = param_info.get('type', 'any')
+                    param_desc = param_info.get('description', '')
+                    required_mark = " (required)" if param_name in required else " (optional)"
+                    
+                    param_line = f"    - {param_name}: {param_type}{required_mark}"
+                    if param_desc:
+                        param_line += f" - {param_desc[:60]}..." if len(param_desc) > 60 else f" - {param_desc}"
+                    lines.append(param_line)
+        
+        return "\n".join(lines)
+    
+    def __str__(self) -> str:
+        return f"{self.name} - {self.description}"

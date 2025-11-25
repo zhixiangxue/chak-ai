@@ -1,41 +1,41 @@
 """
-Server 类：服务器配置
+Server class: Server configuration
 
-简单的配置构建器，用于声明 MCP 服务器连接信息。
+Simple configuration builder for declaring MCP server connection information.
 """
 
 import fnmatch
 import json
 from typing import Any, Dict, List, Optional, Union
 
-from .tool import Tool
+from .tool import MCPTool
 
 
 class Server:
     """
-    服务器配置
+    Server configuration
     
-    极简的配置对象，支持三种传输类型：
-    - stdio: 本地进程（command + args）
-    - SSE: 长连接HTTP（url + headers）
-    - Streamable HTTP: 无状态HTTP（url + headers）
+    Minimal configuration object supporting three transport types:
+    - stdio: Local process (command + args)
+    - SSE: Long-lived HTTP connection (url + headers)
+    - Streamable HTTP: Stateless HTTP (url + headers)
     
     Example:
-        # 方式 1：直接构造
+        # Method 1: Direct construction
         server = Server(
             url="https://dashscope.aliyuncs.com/api/v1/mcps/amap-maps/sse",
             headers={"Authorization": f"Bearer {api_key}"}
         )
         
-        # 方式 2：从 JSON 字符串
+        # Method 2: From JSON string
         config_json = '{"url": "...", "headers": {...}}'
         server = Server.from_config(config_json)
         
-        # 方式 3：从 Dict
+        # Method 3: From Dict
         config_dict = {"url": "...", "headers": {...}}
         server = Server.from_config(config_dict)
         
-        # stdio 服务器
+        # stdio server
         server = Server(
             command="python",
             args=["calculator.py"]
@@ -52,11 +52,11 @@ class Server:
     ):
         """
         Args:
-            url: HTTP(S) URL（用于 SSE 或 Streamable HTTP）
-            command: 命令行程序（用于 stdio）
-            args: 命令行参数（用于 stdio）
-            headers: HTTP 请求头（用于 SSE 或 Streamable HTTP）
-            **kwargs: 其他配置（如 type, env, baseUrl 等）
+            url: HTTP(S) URL (for SSE or Streamable HTTP)
+            command: Command line program (for stdio)
+            args: Command line arguments (for stdio)
+            headers: HTTP request headers (for SSE or Streamable HTTP)
+            **kwargs: Other configurations (such as type, env, baseUrl, etc.)
         """
         self._config: Dict[str, Any] = {
             "url": url,
@@ -66,24 +66,24 @@ class Server:
             **kwargs
         }
         
-        # 删除 None 值
+        # Remove None values
         self._config = {k: v for k, v in self._config.items() if v is not None}
     
     @classmethod
     def from_config(cls, config: Union[str, Dict[str, Any]]) -> "Server":
         """
-        从 JSON 字符串或 Dict 创建 Server
+        Create Server from JSON string or Dict
         
-        这是为了方便开发者直接使用从 MCP 托管平台复制的配置。
+        This is for convenience when using configurations copied from MCP hosting platforms.
         
         Args:
-            config: JSON 字符串或 Dict 配置
+            config: JSON string or Dict configuration
         
         Returns:
-            Server 实例
+            Server instance
         
         Example:
-            # 从 JSON 字符串（从托管平台复制）
+            # From JSON string (copied from hosting platform)
             config_json = '''
             {
                 "type": "sse",
@@ -95,7 +95,7 @@ class Server:
             '''
             server = Server.from_config(config_json)
             
-            # 从 Dict
+            # From Dict
             config_dict = {
                 "url": "https://...",
                 "headers": {"Authorization": "Bearer xxx"}
@@ -103,24 +103,24 @@ class Server:
             server = Server.from_config(config_dict)
         """
         if isinstance(config, str):
-            # JSON 字符串
+            # JSON string
             config_dict: Dict[str, Any] = json.loads(config)
         else:
             config_dict = config
         
-        # 从 Dict 创建
+        # Create from Dict
         return cls(**config_dict)
     
     def get_config(self) -> Dict[str, Any]:
         """
-        获取配置字典
+        Get configuration dict
         
         Returns:
-            配置字典的副本
+            Copy of configuration dict
         """
         return self._config.copy()
     
-    async def tools(self, patterns: Optional[List[str]] = None) -> List[Tool]:
+    async def tools(self, patterns: Optional[List[str]] = None) -> List[MCPTool]:
         """
         Get tools from this server
         
@@ -153,16 +153,16 @@ class Server:
         # Create MCP client (pass Server instance)
         client = MCPClient(self)
         
-        # 发现所有工具
+        # Discover all tools
         all_mcp_tools = await client.list_tools()
         
-        # 筛选匹配的工具
+        # Filter matching tools
         selected_mcp_tools = []
         for pattern in patterns:
             matched = _match_pattern(all_mcp_tools, pattern)
             selected_mcp_tools.extend(matched)
         
-        # 去重（保持顺序）
+        # Deduplicate (maintain order)
         seen = set()
         unique_mcp_tools = []
         for mcp_tool in selected_mcp_tools:
@@ -170,15 +170,15 @@ class Server:
                 seen.add(mcp_tool.name)
                 unique_mcp_tools.append(mcp_tool)
         
-        # 创建 Tool 对象
+        # Create MCPTool objects
         result = [
-            Tool(mcp_tool, client)
+            MCPTool(mcp_tool, client)
             for mcp_tool in unique_mcp_tools
         ]
         
         return result
     
-    async def tool(self, name: str) -> Optional[Tool]:
+    async def tool(self, name: str) -> Optional[MCPTool]:
         """
         Get a single tool by exact name
         
@@ -213,14 +213,14 @@ class Server:
 
 def _match_pattern(tools: List[Any], pattern: str) -> List[Any]:
     """
-    根据模式匹配工具
+    Match tools based on pattern
     
     Args:
-        tools: mcp.types.Tool 列表
-        pattern: 匹配模式（支持通配符 *）
+        tools: List of mcp.types.Tool
+        pattern: Match pattern (supports wildcard *)
     
     Returns:
-        匹配的工具列表
+        List of matched tools
     """
     if pattern == "*":
         return tools

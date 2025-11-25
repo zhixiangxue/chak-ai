@@ -1,14 +1,14 @@
 """
-MCPClient 类：统一的 MCP 客户端
+MCPClient class: Unified MCP client
 
-自动检测传输类型（stdio/SSE/Streamable HTTP），管理连接生命周期。
+Automatically detects transport type (stdio/SSE/Streamable HTTP), manages connection lifecycle.
 """
 
 import os
 import re
 from typing import TYPE_CHECKING, Any, Dict, List
 
-# MCP Python SDK 导入
+# MCP Python SDK imports
 try:
     from mcp import ClientSession, StdioServerParameters
     from mcp.client.stdio import stdio_client
@@ -25,21 +25,21 @@ if TYPE_CHECKING:
 
 class MCPClient:
     """
-    统一的 MCP 客户端
+    Unified MCP client
     
-    特性：
-    - 自动检测传输类型（stdio/SSE/Streamable HTTP）
-    - 每次调用都正确管理上下文（不复用连接，避免清理问题）
-    - 线程安全
+    Features:
+    - Auto-detect transport type (stdio/SSE/Streamable HTTP)
+    - Properly manage context for each call (no connection reuse, avoid cleanup issues)
+    - Thread-safe
     
-    注意：MCP SDK 使用上下文管理器，不适合长期连接复用。
-    每次 list_tools() 或 call_tool() 都会创建新连接。
+    Note: MCP SDK uses context managers, not suitable for long-lived connection reuse.
+    Each list_tools() or call_tool() creates a new connection.
     """
     
     def __init__(self, server: "Server"):
         """
         Args:
-            server: Server 实例，包含所有配置信息
+            server: Server instance containing all configuration
         """
         self.server = server
         self.config = server.get_config()
@@ -47,12 +47,12 @@ class MCPClient:
     
     def _detect_transport(self) -> str:
         """
-        自动检测传输类型
+        Auto-detect transport type
         
-        检测规则：
-        - 有 "command" 字段 → stdio
-        - type="sse" 或 URL 包含 "/sse" → SSE
-        - type="streamable-http" 或其他 HTTP URL → Streamable HTTP
+        Detection rules:
+        - Has "command" field → stdio
+        - type="sse" or URL contains "/sse" → SSE
+        - type="streamable-http" or other HTTP URL → Streamable HTTP
         
         Returns:
             "stdio" | "sse" | "streamable-http"
@@ -66,7 +66,7 @@ class MCPClient:
         if self.config.get("type") == "streamable-http":
             return "streamable-http"
         
-        # 根据 URL 推断
+        # Infer from URL
         url = self.config.get("url", "")
         if "/sse" in url.lower():
             return "sse"
@@ -80,10 +80,10 @@ class MCPClient:
     
     async def list_tools(self) -> List[Any]:
         """
-        发现服务器提供的所有工具
+        Discover all tools provided by server
         
         Returns:
-            List[mcp.types.Tool]: 工具列表
+            List[mcp.types.Tool]: List of tools
         """
         if self.transport_type == "stdio":
             return await self._list_tools_stdio()
@@ -95,7 +95,7 @@ class MCPClient:
             raise NotImplementedError(f"Transport type {self.transport_type} not yet supported")
     
     async def _list_tools_stdio(self) -> List[Any]:
-        """通过 stdio 列出工具"""
+        """List tools via stdio"""
         command = self.config["command"]
         args = self.config.get("args", [])
         env = self.config.get("env")
@@ -116,7 +116,7 @@ class MCPClient:
                 return result.tools
     
     async def _list_tools_sse(self) -> List[Any]:
-        """通过 SSE 列出工具"""
+        """List tools via SSE"""
         url = self.config.get("url") or self.config.get("baseUrl")
         if not url:
             raise ValueError("SSE transport requires 'url' or 'baseUrl'")
@@ -131,7 +131,7 @@ class MCPClient:
                 return result.tools
     
     async def _list_tools_http(self) -> List[Any]:
-        """通过 Streamable HTTP 列出工具"""
+        """List tools via Streamable HTTP"""
         url = self.config.get("url") or self.config.get("baseUrl")
         if not url:
             raise ValueError("HTTP transport requires 'url' or 'baseUrl'")
@@ -147,15 +147,15 @@ class MCPClient:
     
     def _expand_env_vars(self, obj: Any) -> Any:
         """
-        递归展开环境变量
+        Recursively expand environment variables
         
-        支持格式：${VAR_NAME}
+        Supported format: ${VAR_NAME}
         
         Example:
             "Bearer ${DASHSCOPE_API_KEY}" → "Bearer sk-xxx"
         """
         if isinstance(obj, str):
-            # 替换 ${VAR_NAME}
+            # Replace ${VAR_NAME}
             def replace_var(match):
                 var_name = match.group(1)
                 return os.environ.get(var_name, match.group(0))
@@ -173,14 +173,14 @@ class MCPClient:
     
     async def call_tool(self, tool_name: str, arguments: Dict[str, Any]) -> Any:
         """
-        调用工具
+        Call tool
         
         Args:
-            tool_name: 工具名称
-            arguments: 工具参数
+            tool_name: Tool name
+            arguments: Tool arguments
         
         Returns:
-            工具执行结果
+            Tool execution result
         """
         if self.transport_type == "stdio":
             return await self._call_tool_stdio(tool_name, arguments)
@@ -192,7 +192,7 @@ class MCPClient:
             raise NotImplementedError(f"Transport type {self.transport_type} not yet supported")
     
     async def _call_tool_stdio(self, tool_name: str, arguments: Dict[str, Any]) -> Any:
-        """通过 stdio 调用工具"""
+        """Call tool via stdio"""
         command = self.config["command"]
         args = self.config.get("args", [])
         env = self.config.get("env")
@@ -213,7 +213,7 @@ class MCPClient:
                 return result
     
     async def _call_tool_sse(self, tool_name: str, arguments: Dict[str, Any]) -> Any:
-        """通过 SSE 调用工具"""
+        """Call tool via SSE"""
         url = self.config.get("url") or self.config.get("baseUrl")
         if not url:
             raise ValueError("SSE transport requires 'url' or 'baseUrl'")
@@ -228,7 +228,7 @@ class MCPClient:
                 return result
     
     async def _call_tool_http(self, tool_name: str, arguments: Dict[str, Any]) -> Any:
-        """通过 Streamable HTTP 调用工具"""
+        """Call tool via Streamable HTTP"""
         url = self.config.get("url") or self.config.get("baseUrl")
         if not url:
             raise ValueError("HTTP transport requires 'url' or 'baseUrl'")

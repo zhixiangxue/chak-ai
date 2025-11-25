@@ -1,7 +1,7 @@
 """
-Tool 类：单个 MCP 工具对象
+MCPTool class: Single MCP tool object
 
-开发者直接使用的工具对象，封装了 mcp.types.Tool 和相关的客户端。
+Tool object used directly by developers, encapsulating mcp.types.Tool and related client.
 """
 
 import asyncio
@@ -11,55 +11,55 @@ if TYPE_CHECKING:
     from .client import MCPClient
 
 
-class Tool:
+class MCPTool:
     """
-    单个 MCP 工具
+    Single MCP tool
     
-    这是开发者直接操作的工具对象，提供：
-    - 工具元信息（name, description, input_schema）
-    - 工具调用方法（自动重试）
-    - 访问底层 MCP Client（高级用法）
+    Tool object used directly by developers, providing:
+    - Tool metadata (name, description, input_schema)
+    - Tool invocation methods (with auto-retry)
+    - Access to underlying MCP Client (advanced usage)
     """
     
     def __init__(self, mcp_tool: Any, client: "MCPClient"):
         """
         Args:
-            mcp_tool: mcp.types.Tool 对象（来自 mcp-python SDK）
-            client: MCPClient 实例
+            mcp_tool: mcp.types.Tool object (from mcp-python SDK)
+            client: MCPClient instance
         """
         self._mcp_tool = mcp_tool
         self._client = client
     
     @property
     def name(self) -> str:
-        """工具名称"""
+        """Tool name"""
         return self._mcp_tool.name
     
     @property
     def description(self) -> str:
-        """工具描述"""
+        """Tool description"""
         return self._mcp_tool.description or ""
     
     @property
     def input_schema(self) -> Dict[str, Any]:
-        """输入模式（JSON Schema）"""
+        """Input schema (JSON Schema)"""
         return self._mcp_tool.inputSchema
     
     @property
     def mcp_tool(self) -> Any:
         """
-        获取底层的 mcp.types.Tool 对象
+        Get underlying mcp.types.Tool object
         
-        用于传给 LLM（内部使用）
+        For passing to LLM (internal use)
         """
         return self._mcp_tool
     
     def to_openai_tool(self) -> Dict[str, Any]:
         """
-        转换为 OpenAI 工具格式
+        Convert to OpenAI tool format
         
         Returns:
-            OpenAI 工具定义字典
+            OpenAI tool definition dict
         """
         return {
             "type": "function",
@@ -73,40 +73,40 @@ class Tool:
     @property
     def client(self) -> "MCPClient":
         """
-        获取底层的 MCP Client
+        Get underlying MCP Client
         
-        高级用法：直接使用 MCP 客户端
+        Advanced usage: Direct access to MCP client
         
-        注意：MCPClient 的方法会自动管理连接，
-        无需手动调用 get_session()。
+        Note: MCPClient methods automatically manage connections,
+        no need to manually call get_session().
         
         Example:
             tool = tools[0]
             client = tool.client
-            # 直接调用工具
-            result = await client.call_tool("maps_geo", {"address": "西湖"})
-            # 列出工具
+            # Call tool directly
+            result = await client.call_tool("maps_geo", {"address": "West Lake"})
+            # List tools
             tools = await client.list_tools()
         """
         return self._client
     
     async def call(self, arguments: Dict[str, Any], retry: bool = True) -> Any:
         """
-        调用工具
+        Call tool
         
         Args:
-            arguments: 工具参数（dict）
-            retry: 是否启用重试（默认 True）
+            arguments: Tool arguments (dict)
+            retry: Enable retry (default True)
         
         Returns:
-            工具执行结果
+            Tool execution result
         
         Raises:
-            Exception: 工具调用失败（重试后仍失败）
+            Exception: Tool call failed (after retries)
         
         Example:
             tool = next(t for t in tools if t.name == "maps_geo")
-            result = await tool.call({"address": "杭州西湖"})
+            result = await tool.call({"address": "Hangzhou West Lake"})
             print(result)
         """
         if retry:
@@ -120,12 +120,12 @@ class Tool:
         max_attempts: int = 3
     ) -> Any:
         """
-        带指数退避的重试
+        Retry with exponential backoff
         
-        重试策略：
-        - 第 1 次失败：等待 1 秒
-        - 第 2 次失败：等待 2 秒
-        - 第 3 次失败：抛出异常
+        Retry strategy:
+        - 1st failure: wait 1 second
+        - 2nd failure: wait 2 seconds
+        - 3rd failure: raise exception
         """
         for attempt in range(max_attempts):
             try:
@@ -133,17 +133,17 @@ class Tool:
                 return result
             except Exception as e:
                 if attempt < max_attempts - 1:
-                    # 指数退避
+                    # Exponential backoff
                     await asyncio.sleep(2 ** attempt)
                     continue
-                # 最后一次尝试也失败了，抛出异常
+                # Last attempt also failed, raise exception
                 raise Exception(
                     f"Tool '{self.name}' failed after {max_attempts} attempts: {str(e)}"
                 ) from e
     
     def __repr__(self) -> str:
         """Detailed representation with input schema"""
-        lines = [f"Tool(name='{self.name}')"]
+        lines = [f"MCPTool(name='{self.name}')"]
         
         # Add description
         if self.description:

@@ -66,7 +66,7 @@ dotenv.load_dotenv()
 os.environ["CHAK_LOG_LEVEL"] = "DEBUG"
 
 import chak
-from chak.mcp import Server
+from chak.tools.mcp import Server
 
 # ============================================================================
 # 🔑🔑🔑 IMPORTANT: Set your API key here 🔑🔑🔑

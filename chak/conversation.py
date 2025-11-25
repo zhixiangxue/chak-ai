@@ -9,8 +9,8 @@ from .providers.types import ProviderCategory
 from .utils.uri import parse as parse_uri
 
 if TYPE_CHECKING:
-    from .mcp.tool import Tool
-    from .mcp.manager import ToolManager
+    from .tools.mcp.tool import MCPTool
+    from .tools.manager import ToolManager
 
 
 class Conversation:
@@ -30,7 +30,7 @@ class Conversation:
         api_key: str,
         system_message: Optional[str] = None,
         context_strategy: Optional[BaseContextStrategy] = None,
-        tools: Optional[List["Tool"]] = None,
+        tools: Optional[List["MCPTool"]] = None,
         **kwargs
     ):
         """
@@ -48,7 +48,7 @@ class Conversation:
             system_message: Optional system message to initialize the conversation.
                           If you need structured content, use \n\n to separate sections.
             context_strategy: Context management strategy (default: NoopStrategy)
-            tools: Optional list of MCP tools (requires async asend() method)
+            tools: Optional list of MCP tools or native functions (requires async asend() method)
             **kwargs: Additional configuration parameters
         
         Example:
@@ -80,8 +80,10 @@ class Conversation:
         # Initialize tool manager if tools provided
         self._tool_manager: Optional["ToolManager"] = None
         if tools:
-            from .mcp.manager import ToolManager
-            self._tool_manager = ToolManager(tools)
+            from .tools import wrap_tools
+            from .tools.manager import ToolManager
+            wrapped_tools = wrap_tools(tools)
+            self._tool_manager = ToolManager(wrapped_tools)
         
         # Initialize system message
         self._initial_system_message = self._normalize_system_message(system_message)

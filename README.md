@@ -10,7 +10,7 @@
 
 [English](README.md) | [中文](docs/README_CN.md)
 
-**A multi-model LLM client with built-in context management and MCP tool integration.**
+**A multi-model LLM client with built-in context management and flexible tool calling.**
 
 chak is not another liteLLM, one-api, or OpenRouter, but a client library that actively manages conversation context and tool calls for you. Just focus on building your application, let chak handle the complexity.
 
@@ -26,7 +26,7 @@ chak is not another liteLLM, one-api, or OpenRouter, but a client library that a
 
 ## Core Features
 
-**1. Minimalist API Design**
+### 🌱 Minimalist API Design
 
 No complex configurations, no learning curve. chak is designed to be intuitive:
 
@@ -42,7 +42,7 @@ chak.serve('chak-config.yaml')
 
 Whether you're building an application or running a gateway, chak keeps things simple.
 
-**2. Pluggable Context Management**
+### 🪴 Pluggable Context Management
 
 Chak handles context automatically with multiple strategies:
 
@@ -59,24 +59,37 @@ conv = chak.Conversation(
 
 No one else automates context management at this level. chak's strategy pattern makes it fully pluggable and extensible.
 
-**3. Seamless Tool Calling (MCP Protocol)**
+### 🌻 Simple Tool Calling
 
-Extreme simplicity - just point to an MCP server:
+Write tools your way - functions, objects, or MCP servers, chak handles the rest:
 
 ```python
-from chak import Conversation
-from chak.mcp import Server
+# Functions
+def get_weather(city: str) -> str:
+    ...
 
-# Load tools from MCP server
-tools = await Server(url="...").tools()
+# Objects
+class ShoppingCart:
+    def add_item(self, name: str, price: float): ...
+    def get_total(self) -> float: ...
 
-# That's it! Tool calling just works
-conv = Conversation("openai/gpt-4o", tools=tools)
-response = await conv.asend("What's the weather in San Francisco?")
+cart = ShoppingCart()
+
+# MCP servers
+from chak.tools.mcp import Server
+mcp_tools = await Server(url="...").tools()
+
+# Use them, that's all
+conv = Conversation(
+    "openai/gpt-4o",
+    tools=[get_weather, cart, *mcp_tools]
+)
 ```
 
-- **Now**: Full async support with both streaming and non-streaming modes
-- **Planning**: Smart tool selection - intelligently filter relevant tools based on context
+
+
+- **Now**: Functions, objects, and MCP tools all work the same way
+- **Planning**: Smart tool selection based on context
 
 ---
 
@@ -147,16 +160,89 @@ See full examples (parameters, how it works, tips):
 
 ---
 
-## MCP Tool Calling
+## Tool Calling
 
-chak integrates the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) for seamless tool calling.
+Write tools the way you like - functions, objects, or MCP servers. chak handles the rest.
 
-Quick start:
+Just pass what you have, and it works.
+
+### Pass Functions
+
+Just pass regular Python functions:
+
+```python
+from datetime import datetime
+
+def get_current_time() -> str:
+    """Get current date and time"""
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+def calculate(a: int, b: int, operation: str = "add") -> int:
+    """Perform calculation on two numbers"""
+    if operation == "add":
+        return a + b
+    elif operation == "multiply":
+        return a * b
+    # ...
+
+conv = chak.Conversation(
+    "openai/gpt-4o",
+    tools=[get_current_time, calculate]
+)
+
+response = await conv.asend("What time is it? Then calculate 50 times 20")
+```
+
+### Pass Objects
+
+Pass Python objects, their methods become tools. Object state persists across calls:
+
+```python
+class ShoppingCart:
+    def __init__(self):
+        self.items = []
+        self.discount = 0
+    
+    def add_item(self, name: str, price: float, quantity: int = 1):
+        """Add item to cart"""
+        self.items.append({"name": name, "price": price, "quantity": quantity})
+    
+    def apply_discount(self, percent: float):
+        """Apply discount percentage"""
+        self.discount = percent
+    
+    def get_total(self) -> float:
+        """Calculate total price"""
+        subtotal = sum(item["price"] * item["quantity"] for item in self.items)
+        return subtotal * (1 - self.discount / 100)
+
+cart = ShoppingCart()
+
+conv = chak.Conversation(
+    "openai/gpt-4o",
+    tools=[cart]  # Pass object directly!
+)
+
+# LLM modifies cart state through natural language!
+response = await conv.asend(
+    "Add 2 iPhones at $999 each, then apply 10% discount and tell me the total"
+)
+
+print(cart.items)     # [{'name': 'iPhone', 'price': 999, 'quantity': 2}]
+print(cart.discount)  # 10
+print(cart.get_total())  # 1798.2
+```
+
+The LLM modifies object state through method calls.
+
+### Pass MCP Tools
+
+chak integrates the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/):
 
 ```python
 import asyncio
 from chak import Conversation
-from chak.mcp import Server
+from chak.tools.mcp import Server
 
 async def main():
     # Connect to MCP server and load tools
@@ -185,11 +271,38 @@ Supports three transport types:
 - **stdio**: Local MCP servers
 - **HTTP**: HTTP-based MCP services
 
-See full examples (parameters, how it works, tips):
+### Mix Everything
 
-- SSE: [examples/mcp_chat_sse.py](examples/mcp_chat_sse.py)
-- stdio: [examples/mcp_chat_stdio.py](examples/mcp_chat_stdio.py)
-- HTTP: [examples/mcp_chat_http.py](examples/mcp_chat_http.py)
+Functions, objects, and MCP tools work together:
+
+```python
+def send_email(to: str, subject: str): ...
+
+class OrderWorkflow:
+    def add_items(self, items): ...
+    def submit_order(self): ...
+
+mcp_tools = await Server(url="...").tools()  # External tools
+
+conv = Conversation(
+    "openai/gpt-4o",
+    tools=[
+        send_email,           # Native function
+        OrderWorkflow(),      # Native object (stateful!)
+        *mcp_tools           # MCP tools
+    ]
+)
+```
+
+### Examples
+
+See complete examples:
+
+- **Native Functions**: [examples/tool_calling_chat_functions.py](examples/tool_calling_chat_functions.py)
+- **Stateful Objects**: [examples/tool_calling_chat_objects_stateful.py](examples/tool_calling_chat_objects_stateful.py)
+- **MCP (SSE)**: [examples/tool_calling_chat_mcp_sse.py](examples/tool_calling_chat_mcp_sse.py)
+- **MCP (stdio)**: [examples/tool_calling_chat_mcp_stdio.py](examples/tool_calling_chat_mcp_stdio.py)
+- **MCP (HTTP)**: [examples/tool_calling_chat_mcp_http.py](examples/tool_calling_chat_mcp_http.py)
 
 
 ---
@@ -221,7 +334,7 @@ python your_script.py
 
 chak will output detailed logs for:
 - **Context strategies**: trigger points, retention intervals, summary previews, token counts
-- **MCP tool calls**: tool invocation, request/response details, execution results
+- **Tool calls**: tool invocation, request/response details, execution results
 
 ---
 
@@ -358,7 +471,7 @@ Explore thousands of ready-to-use MCP servers:
 If you:
 - Need to connect to multiple model platforms
 - Want simple, automatic context management
-- Need seamless MCP tool integration with minimal code
+- Want the simplest tool calling experience - just pass functions or objects or mcp tools
 - Want to focus on building applications, not wrestling with context and tools
 
 Then chak is made for you.

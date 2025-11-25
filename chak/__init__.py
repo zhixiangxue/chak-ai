@@ -16,7 +16,7 @@ Example:
 >>> conv = chak.Conversation('deepseek@https://custom.api.com:deepseek-chat', api_key='xxx')
 """
 
-__version__ = "0.1.4"
+__version__ = "0.2.0"
 
 # Strategy classes
 from .context.strategies import FIFOStrategy, NoopStrategy, SummarizationStrategy, BaseContextStrategy
@@ -36,19 +36,20 @@ from .utils.uri import build, build_simple, parse
 
 # MCP integration (optional)
 try:
-    from .mcp import tools
+    from .tools.mcp import Server
     _mcp_available = True
 except ImportError:
     _mcp_available = False
     
     # Provide helpful error message when MCP dependencies are missing
-    async def tools(*args, **kwargs):
-        raise ImportError(
-            "MCP dependencies not installed. Install with:\n"
-            "  pip install mcp\n"
-            "or:\n"
-            "  pip install chakpy[mcp]"
-        )
+    class Server:
+        def __init__(self, *args, **kwargs):
+            raise ImportError(
+                "MCP dependencies not installed. Install with:\n"
+                "  pip install mcp\n"
+                "or:\n"
+                "  pip install chakpy[mcp]"
+            )
 
 # Server (optional dependency)
 try:
@@ -104,8 +105,8 @@ __all__ = [
     # Server
     'serve',
     
-    # MCP
-    'tools',
+    # Tools (MCP)
+    'Server',
 
     # Version
     '__version__',

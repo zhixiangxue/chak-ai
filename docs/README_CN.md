@@ -10,9 +10,9 @@
 
 [English](README.md) | [中文](docs/README_CN.md)
 
-**一个极简的多模型LLM客户端，支持上下文管理和工具调用。**
+**一个内置上下文管理和灵活工具调用的多模型 LLM 客户端。**
 
-chak不是另一个liteLLM、one-api或OpenRouter，而是一个为您主动管理对话上下文和工具调用的客户端库。你只需专注于对话，让chak处理上下文工程。
+chak 不是另一个 liteLLM、one-api 或 OpenRouter，而是一个为你主动管理对话上下文和工具调用的客户端库。你只需专注于构建应用，让 chak 处理复杂性。
 
 </div>
 
@@ -26,55 +26,74 @@ chak不是另一个liteLLM、one-api或OpenRouter，而是一个为您主动管�
 
 ## 核心特性
 
-**1. 极简API设计**
+### 🌱 极简 API 设计
 
-没有复杂的配置，没有学习曲线。chak设计直观：
+没有复杂的配置，没有学习曲线。chak 设计得直观易懂：
 
 ```python
-# 作为SDK使用 - 通过简单的URI连接任何LLM
+# 作为 SDK 使用 - 通过简单 URI 连接任何 LLM
 conv = chak.Conversation("openai/gpt-4o-mini", api_key="YOUR_KEY")
 response = conv.send("Hello!")
 
-# 或作为本地网关运行 - 2行代码启动
+# 或作为本地网关运行 - 2 行代码启动
 import chak
 chak.serve('chak-config.yaml')
 ```
 
-无论您是构建应用程序还是运行网关，chak都保持简单。
+无论你是构建应用还是运行网关，chak 都保持简单。
 
-**2. 可插拔的上下文管理**
+### 🪴 可插拔的上下文管理
 
-Chak通过多种策略自动处理上下文：
-
-- **当前**：短期记忆策略（FIFO、摘要、LRU）- 已可用于生产
-- **规划中**：长期记忆（RAG、记忆库）- 使对话真正"有记忆"
-
-没有其他工具能在这一级别自动化上下文管理。chak的策略模式使其完全可插拔和可扩展。
-
-**3. 无缝工具调用（MCP协议）**
-
-极其简单 - 只需指向一个MCP服务器：
+Chak 自动处理上下文，提供多种策略：
 
 ```python
-from chak import Conversation
-from chak.mcp import Server
-
-# 从MCP服务器加载工具
-tools = await Server(url="...").tools()
-
-# 就这样！工具调用即可工作
-conv = Conversation("openai/gpt-4o", tools=tools)
-response = await conv.asend("What's the weather in San Francisco?")
+# 上下文自动管理
+conv = chak.Conversation(
+    "openai/gpt-4o",
+    context_strategy=chak.FIFOStrategy(keep_recent_turns=5)
+)
 ```
 
-- **当前**：完整的异步支持，包括流式和非流式模式
-- **规划中**：智能工具选择 - 根据上下文智能筛选相关工具
+- **当前**: 短期记忆策略（FIFO、摘要、LRU）- 生产就绪
+- **规划中**: 长期记忆（RAG、记忆库）- 让对话真正"有记忆"
+
+没有其他库在这个级别自动化上下文管理。chak 的策略模式使其完全可插拔和可扩展。
+
+### 🌻 简单的工具调用
+
+用你喜欢的方式编写工具——函数、对象或 MCP 服务器，chak 处理其余部分：
+
+```python
+# 函数
+def get_weather(city: str) -> str:
+    ...
+
+# 对象
+class ShoppingCart:
+    def add_item(self, name: str, price: float): ...
+    def get_total(self) -> float: ...
+
+cart = ShoppingCart()
+
+# MCP 服务器
+from chak.tools.mcp import Server
+mcp_tools = await Server(url="...").tools()
+
+# 使用它们，就这样简单
+conv = Conversation(
+    "openai/gpt-4o",
+    tools=[get_weather, cart, *mcp_tools]
+)
+```
+
+- **当前**: 函数、对象和 MCP 工具都以相同方式工作
+- **规划中**: 基于上下文的智能工具选择
 
 ---
 
-## 集成提供商（18+）
+## 集成提供商 (18+)
 
-OpenAI、Google Gemini、Azure OpenAI、Anthropic Claude、阿里巴巴百炼、百度文心、腾讯混元、字节跳动豆包、智谱GLM、月之暗面、深度求索、讯飞星火、MiniMax、Mistral、SiliconFlow、xAI Grok、Ollama、vLLM等。
+OpenAI、Google Gemini、Azure OpenAI、Anthropic Claude、阿里巴巴百炼、百度文心、腾讯混元、字节跳动豆包、智谱 GLM、Moonshot、DeepSeek、科大讯飞星火、MiniMax、Mistral、SiliconFlow、xAI Grok、Ollama、vLLM 等。
 
 ---
 
@@ -83,7 +102,7 @@ OpenAI、Google Gemini、Azure OpenAI、Anthropic Claude、阿里巴巴百炼、
 ### 安装
 
 ```bash
-# 基础安装（仅SDK）
+# 基础安装（仅 SDK）
 pip install chakpy
 
 # 带服务器支持
@@ -107,7 +126,7 @@ resp = conv.send("用一句话解释上下文管理")
 print(resp.content)
 ```
 
-chak处理：连接初始化、消息对齐、重试逻辑、上下文管理、模型格式转换...您只需要`send`消息。
+chak 处理：连接初始化、消息对齐、重试逻辑、上下文管理、模型格式转换……你只需 `send` 消息。
 
 ---
 
@@ -115,9 +134,9 @@ chak处理：连接初始化、消息对齐、重试逻辑、上下文管理、�
 
 三种内置策略：
 
-- FIFO：保留最近N轮对话，自动丢弃较早的。
-- 摘要：当上下文达到阈值时，早期历史被摘要；最近几轮保持完整。
-- LRU：基于摘要构建，保留热门话题并修剪冷门话题。
+- FIFO：保留最近 N 轮对话，自动丢弃较早的。
+- 摘要：当上下文达到阈值时，早期历史被摘要；近期对话保持完整。
+- LRU：基于摘要构建，保留热门话题并修剪冷门内容。
 
 快速开始：
 
@@ -131,27 +150,98 @@ conv = Conversation(
 )
 ```
 
-查看完整示例（参数、工作原理、技巧）：
+查看完整示例(参数、工作原理、技巧):
 
-- FIFO: examples/strategy_chat_fifo.py
-- 摘要: examples/strategy_chat_summarization.py
-- LRU: examples/strategy_chat_lru.py
+- FIFO: [examples/strategy_chat_fifo.py](examples/strategy_chat_fifo.py)
+- 摘要: [examples/strategy_chat_summarization.py](examples/strategy_chat_summarization.py)
+- LRU: [examples/strategy_chat_lru.py](examples/strategy_chat_lru.py)
 
 ---
 
-## MCP工具调用
+## 工具调用
 
-chak集成了https://modelcontextprotocol.io/以实现无缝工具调用。
+用你喜欢的方式编写工具——函数、对象或 MCP 服务器。chak 处理其余部分。
 
-快速开始：
+### 传递函数
+
+只需传递常规 Python 函数：
+
+```python
+from datetime import datetime
+
+def get_current_time() -> str:
+    """获取当前日期和时间"""
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+def calculate(a: int, b: int, operation: str = "add") -> int:
+    """对两个数字执行计算"""
+    if operation == "add":
+        return a + b
+    elif operation == "multiply":
+        return a * b
+    # ...
+
+conv = chak.Conversation(
+    "openai/gpt-4o",
+    tools=[get_current_time, calculate]
+)
+
+response = await conv.asend("现在几点了？然后计算 50 乘以 20")
+```
+
+### 传递对象
+
+传递 Python 对象，它们的方法成为工具。对象状态在调用间持久化：
+
+```python
+class ShoppingCart:
+    def __init__(self):
+        self.items = []
+        self.discount = 0
+    
+    def add_item(self, name: str, price: float, quantity: int = 1):
+        """添加商品到购物车"""
+        self.items.append({"name": name, "price": price, "quantity": quantity})
+    
+    def apply_discount(self, percent: float):
+        """应用折扣百分比"""
+        self.discount = percent
+    
+    def get_total(self) -> float:
+        """计算总价"""
+        subtotal = sum(item["price"] * item["quantity"] for item in self.items)
+        return subtotal * (1 - self.discount / 100)
+
+cart = ShoppingCart()
+
+conv = chak.Conversation(
+    "openai/gpt-4o",
+    tools=[cart]  # 直接传递对象！
+)
+
+# LLM 通过自然语言修改购物车状态！
+response = await conv.asend(
+    "添加 2 部 iPhone，每部 999 美元，然后应用 10% 折扣并告诉我总价"
+)
+
+print(cart.items)     # [{'name': 'iPhone', 'price': 999, 'quantity': 2}]
+print(cart.discount)  # 10
+print(cart.get_total())  # 1798.2
+```
+
+LLM 通过方法调用修改对象状态。
+
+### 传递 MCP 工具
+
+chak 集成了 https://modelcontextprotocol.io/：
 
 ```python
 import asyncio
 from chak import Conversation
-from chak.mcp import Server
+from chak.tools.mcp import Server
 
 async def main():
-    # 连接到MCP服务器并加载工具
+    # 连接到 MCP 服务器并加载工具
     tools = await Server(
         url="https://your-mcp-server.com/sse",
         headers={"Authorization": "Bearer YOUR_TOKEN"}
@@ -173,15 +263,42 @@ asyncio.run(main())
 
 支持三种传输类型：
 
-- **SSE**（服务器发送事件）：云托管的MCP服务
-- **stdio**：本地MCP服务器
-- **HTTP**：基于HTTP的MCP服务
+- **SSE**（服务器发送事件）：云托管的 MCP 服务
+- **stdio**: 本地 MCP 服务器
+- **HTTP**: 基于 HTTP 的 MCP 服务
 
-查看完整示例（参数、工作原理、技巧）：
+### 混合使用所有内容
 
-- SSE: examples/mcp_chat_sse.py
-- stdio: examples/mcp_chat_stdio.py
-- HTTP: examples/mcp_chat_http.py
+函数、对象和 MCP 工具协同工作：
+
+```python
+def send_email(to: str, subject: str): ...
+
+class OrderWorkflow:
+    def add_items(self, items): ...
+    def submit_order(self): ...
+
+mcp_tools = await Server(url="...").tools()  # 外部工具
+
+conv = Conversation(
+    "openai/gpt-4o",
+    tools=[
+        send_email,           # 原生函数
+        OrderWorkflow(),      # 原生对象（有状态！）
+        *mcp_tools           # MCP 工具
+    ]
+)
+```
+
+### 示例
+
+查看完整示例：
+
+- **原生函数**: examples/tool_calling_chat_functions.py
+- **有状态对象**: examples/tool_calling_chat_objects_stateful.py
+- **MCP (SSE)**: examples/tool_calling_chat_mcp_sse.py
+- **MCP (stdio)**: examples/tool_calling_chat_mcp_stdio.py
+- **MCP (HTTP)**: examples/tool_calling_chat_mcp_http.py
 
 ---
 
@@ -210,26 +327,26 @@ export CHAK_LOG_LEVEL=DEBUG
 python your_script.py
 ```
 
-chak将输出详细日志：
-- **上下文策略**：触发点、保留间隔、摘要预览、令牌计数
-- **MCP工具调用**：工具调用、请求/响应详情、执行结果
+chak 将输出详细日志：
+- **上下文策略**: 触发点、保留间隔、摘要预览、令牌计数
+- **工具调用**: 工具调用、请求/响应详情、执行结果
 
 ---
 
 ## 本地服务器模式（可选）
 
-用2行代码启动本地网关服务：
+用 2 行代码启动本地网关服务：
 
 ### 1. 创建配置文件
 
 ```yaml
 # chak-config.yaml
 api_keys:
-  # 简单格式 - 使用默认base_url
+  # 简单格式 - 使用默认 base_url
   openai: ${OPENAI_API_KEY}           # 从环境变量读取（推荐）
-  bailian: "sk-your-api-key-here"    # 纯文本（用于开发/测试）
+  bailian: "sk-your-api-key-here"    # 明文（用于开发/测试）
   
-  # 自定义base_url（需要引号）
+  # 自定义 base_url（需要引号）
   "ollama@http://localhost:11434": "ollama"
   "vllm@http://192.168.1.100:8000": "dummy-key"
 
@@ -246,35 +363,35 @@ import chak
 chak.serve('chak-config.yaml')
 ```
 
-就这样！服务器启动后您将看到：
+就这样！服务器启动后你会看到：
 
 ```
 ======================================================================
 
-  ✨✨ Chak AI 网关
-  一个简单却方便的LLM网关
+  ✨ Chak AI Gateway
+  A simple, yet handy, LLM gateway
 
 ======================================================================
 
-  🚀🚀🚀 服务器运行在:     http://localhost:8000
-  🎮🎮🎮  playground:            http://localhost:8000/playground
-  📡📡 WebSocket端点:    ws://localhost:8000/ws/conversation
+  🚀 Server running at:     http://localhost:8000
+  🎮 Playground:            http://localhost:8000/playground
+  📡 WebSocket endpoint:    ws://localhost:8000/ws/conversation
 
-  ⭐⭐ GitHub上点赞:        https://github.com/zhixiangxue/chak-ai
+  ⭐ Star on GitHub:        https://github.com/zhixiangxue/chak-ai
 
 ======================================================================
 ```
 
-### 3. 使用Playground快速进行模型对话
+### 3. 使用 Playground 快速与模型对话
 
-打开`http://localhost:8000/playground`，选择提供商和模型，立即开始聊天。体验与全球LLM的实时交互。
+打开 `http://localhost:8000/playground`，选择提供商和模型，立即开始聊天。体验与全球 LLM 的实时交互。
 
 ### 4. 从任何语言调用
 
-该服务提供WebSocket API，可从JavaScript、Go、Java、Rust或任何语言调用：
+该服务提供 WebSocket API，可从 JavaScript、Go、Java、Rust 或任何语言调用：
 
 ```javascript
-// JavaScript示例
+// JavaScript 示例
 const ws = new WebSocket('ws://localhost:8000/ws/conversation');
 
 // 初始化会话
@@ -291,25 +408,25 @@ ws.send(JSON.stringify({
 }));
 ```
 
-这样chak就成为您的本地LLM网关，集中管理所有提供商API密钥，可从任何语言调用。
+这样 chak 就成为你的本地 LLM 网关，集中管理所有提供商 API 密钥，可从任何语言调用。
 
 ---
 
-## 支持的LLM提供商
+## 支持的 LLM 提供商
 
-| 提供商 | 注册 | URI示例 |
+| 提供商 | 注册地址 | URI 示例 |
 |----------|-------------|-------------|
 | OpenAI | https://platform.openai.com | `openai/gpt-4o` |
 | Anthropic | https://console.anthropic.com | `anthropic/claude-3-5-sonnet` |
 | Google Gemini | https://ai.google.dev | `google/gemini-1.5-pro` |
 | DeepSeek | https://platform.deepseek.com | `deepseek/deepseek-chat` |
 | 阿里巴巴百炼 | https://bailian.console.aliyun.com | `bailian/qwen-max` |
-| 智谱GLM | https://open.bigmodel.cn | `zhipu/glm-4` |
-| 月之暗面 | https://platform.moonshot.cn | `moonshot/moonshot-v1-8k` |
+| 智谱 GLM | https://open.bigmodel.cn | `zhipu/glm-4` |
+| Moonshot | https://platform.moonshot.cn | `moonshot/moonshot-v1-8k` |
 | 百度文心 | https://console.bce.baidu.com/qianfan | `baidu/ernie-bot-4` |
 | 腾讯混元 | https://cloud.tencent.com/product/hunyuan | `tencent/hunyuan-standard` |
 | 字节跳动豆包 | https://console.volcengine.com/ark | `volcengine/doubao-pro` |
-| 讯飞星火 | https://xinghuo.xfyun.cn | `iflytek/spark-v3.5` |
+| 科大讯飞星火 | https://xinghuo.xfyun.cn | `iflytek/spark-v3.5` |
 | MiniMax | https://platform.minimaxi.com | `minimax/abab-5.5` |
 | Mistral | https://console.mistral.ai | `mistral/mistral-large` |
 | xAI Grok | https://console.x.ai | `xai/grok-beta` |
@@ -319,37 +436,37 @@ ws.send(JSON.stringify({
 | vLLM | https://github.com/vllm-project/vllm | `vllm/custom-model` |
 
 **注意：**
-- URI格式：`provider/model`
-- 自定义base_url：使用完整格式`provider@base_url:model`
-- 本地部署（Ollama、vLLM）需要自定义base_url配置
+- URI 格式：`provider/model`
+- 自定义 base_url：使用完整格式 `provider@base_url:model`
+- 本地部署（Ollama、vLLM）需要自定义 base_url 配置
 
 ---
 
-## MCP服务器资源
+## MCP 服务器资源
 
-探索数千个即用型MCP服务器：
+探索数千个现成的 MCP 服务器：
 
 | 平台 | 描述 | 网址 |
 |----------|-------------|-----|
-| **Mcp.so** | 8,000+服务器，支持STDIO和SSE，带API playground | https://mcp.so |
-| **Smithery** | 4,500+服务器，对新手友好，Cursor一键配置 | https://smithery.ai |
-| **阿里巴巴百炼** | 企业级MCP市场，提供云托管服务 | https://bailian.console.aliyun.com/?tab=mcp#/mcp-market |
-| **ModelScope** | 阿里云运营的最大中文MCP社区 | https://modelscope.cn/mcp |
-| **Awesome MCP** | 200+精选服务器，按类别组织（GitHub） | https://github.com/punkpeye/awesome-mcp-servers |
-| **字节跳动火山引擎** | 企业级稳定安全的MCP服务 | https://www.volcengine.com/mcp-marketplace |
-| **讯飞星火** | 星火AI平台的MCP服务器 | https://mcp.xfyun.cn |
-| **百度SAI** | 探索海量可用MCP服务器 | https://sai.baidu.com/mcp |
-| **PulseMCP** | 3,290+服务器，每周更新和教程 | https://www.pulsemcp.com |
-| **mcp.run** | 200+模板，支持一键Web部署 | https://www.mcp.run |
+| **Mcp.so** | 8,000+ 服务器，支持 STDIO 和 SSE，带 API 游乐场 | https://mcp.so |
+| **Smithery** | 4,500+ 服务器，新手友好，Cursor 一键配置 | https://smithery.ai |
+| **阿里巴巴百炼** | 企业级 MCP 市场，提供云托管服务 | https://bailian.console.aliyun.com/?tab=mcp#/mcp-market |
+| **ModelScope** | 阿里巴巴云运营的最大中文 MCP 社区 | https://modelscope.cn/mcp |
+| **Awesome MCP** | 200+ 精选服务器，按类别组织（GitHub） | https://github.com/punkpeye/awesome-mcp-servers |
+| **字节跳动火山引擎** | 企业级稳定安全的 MCP 服务 | https://www.volcengine.com/mcp-marketplace |
+| **科大讯飞星火** | 星火 AI 平台的 MCP 服务器 | https://mcp.xfyun.cn |
+| **百度 SAI** | 探索海量可用 MCP 服务器 | https://sai.baidu.com/mcp |
+| **PulseMCP** | 3,290+ 服务器，每周更新和教程 | https://www.pulsemcp.com |
+| **mcp.run** | 200+ 模板，支持一键网页部署 | https://www.mcp.run |
 
-## chak适合您吗？
+## chak 适合你吗？
 
-如果您：
-- 需要连接多个模型平台
+如果你：
+- 需要连接到多个模型平台
 - 想要简单、自动的上下文管理
-- 需要以最少代码无缝集成MCP工具
-- 希望专注于构建应用程序，而不是纠结于上下文和工具
+- 想要最简单的工具调用体验——只需传递函数、对象或 MCP 工具
+- 想要专注于构建应用，而不是纠结于上下文和工具
 
-那么chak就是为您打造的。
+那么 chak 就是为你而生的。
 
 <div align="right"><a href="https://youtube.com/watch?v=xOKQ7EQcggw"><img src="https://raw.githubusercontent.com/zhixiangxue/chak-ai/main/docs/assets/logo.png" alt="Demo Video" width="120"></a></div>

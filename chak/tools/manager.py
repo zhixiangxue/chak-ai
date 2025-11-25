@@ -1,22 +1,27 @@
 """
-ToolManager 类：管理 LLM + MCP 工具调用循环
+ToolManager 类：管理 LLM + 工具调用循环
 
 核心功能：
 - 自动管理多轮工具调用循环
 - 并行执行多个工具调用
 - 自动重试和错误处理
 - 与上下文策略集成
+- 支持 MCP 工具和原生函数工具
 """
 
 import asyncio
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, List
+from typing import TYPE_CHECKING, Any, List, Union
 
 from loguru import logger
 
 if TYPE_CHECKING:
     from ..message import Message
-    from .tool import Tool
+
+# Import tool types for type hints
+from .mcp.tool import MCPTool
+from .native.function import NativeFunctionTool
+from .native.object import NativeObjectTool
 
 
 @dataclass
@@ -29,15 +34,35 @@ class ToolCallResult:
 
 class ToolManager:
     """
-    Manage LLM + MCP tool calling loop.
+    管理 LLM + 工具调用循环（通用工具管理器）
     
-    Auto-handles:
-    1. Call LLM with tools
-    2. If LLM returns tool_calls -> execute tools -> add results -> back to step 1
-    3. If LLM doesn't call tools -> return final answer
+    支持任意类型的工具，只要实现了以下接口（鸭子类型）：
+    - name: str - 工具名称
+    - to_openai_tool() -> dict - 转换为 OpenAI 格式
+    - call(arguments: dict) -> Any - 调用工具
+    
+    自动处理：
+    1. 调用 LLM（带工具列表）
+    2. 如果 LLM 返回 tool_calls → 执行工具 → 添加结果 → 回到步骤 1
+    3. 如果 LLM 不调用工具 → 返回最终答案
+    
+    支持的工具类型：
+    - MCPTool: MCP 协议工具
+    - NativeFunctionTool: 原生 Python 函数
+    - NativeObjectTool: 原生 Python 对象（多方法）
+    - 任何实现了上述接口的自定义工具
     
     Example:
-        manager = ToolManager(tools)
+        from chak.tools.mcp import Server
+        
+        # 混合使用 MCP 工具和原生函数
+        def my_func(x: int) -> int:
+            return x * 2
+        
+        server = Server(url="...")
+        mcp_tools = await server.tools()
+        
+        manager = ToolManager([my_func, *mcp_tools])
         response = await manager.execute_loop(
             provider=provider,
             messages=messages,
@@ -45,15 +70,34 @@ class ToolManager:
         )
     """
     
-    def __init__(self, tools: List["Tool"], max_iterations: int = 10):
+    def __init__(self, tools: List[Union[MCPTool, NativeFunctionTool, NativeObjectTool]], max_iterations: int = 10):
         """
         Args:
-            tools: 工具列表
+            tools: 工具列表（MCPTool、NativeFunctionTool 或 NativeObjectTool）
             max_iterations: 最大迭代次数（防止无限循环）
         """
         self.tools = tools
-        self._tool_map = {t.name: t for t in tools}
+        self._tool_map = self._build_tool_map()
         self.max_iterations = max_iterations
+    
+    def _build_tool_map(self) -> dict:
+        """
+        构建工具名 -> 工具对象映射
+        
+        对于 NativeObjectTool，需要展开其所有方法
+        """
+        tool_map = {}
+        
+        for tool in self.tools:
+            if isinstance(tool, NativeObjectTool):
+                # 展开对象的所有方法
+                for method_name, method_tool in tool._method_tools.items():
+                    tool_map[method_name] = method_tool
+            else:
+                # MCPTool 或 NativeFunctionTool
+                tool_map[tool.name] = tool
+        
+        return tool_map
     
     async def execute_loop(
         self, 
@@ -87,11 +131,18 @@ class ToolManager:
         current_messages = messages.copy()
         
         # Convert tools to OpenAI format
-        openai_tools = [t.to_openai_tool() for t in self.tools]
+        openai_tools = []
+        for tool in self.tools:
+            if isinstance(tool, NativeObjectTool):
+                # NativeObjectTool produces multiple tool definitions
+                openai_tools.extend(tool.to_openai_tools())
+            else:
+                # MCPTool or NativeFunctionTool produces single tool definition
+                openai_tools.append(tool.to_openai_tool())
         
         for iteration in range(self.max_iterations):
             # Step 1: Call LLM with tools
-            logger.debug(f"💬 [MCP Tool Loop] Iteration {iteration}: Calling LLM with {len(openai_tools)} tools...")
+            logger.debug(f"💬 [Tool Loop] Iteration {iteration}: Calling LLM with {len(openai_tools)} tools...")
             try:
                 response = await asyncio.to_thread(
                     provider.send,
@@ -103,8 +154,8 @@ class ToolManager:
                 error_msg = str(e).lower()
                 # Check if model doesn't support function calling
                 if any(keyword in error_msg for keyword in ['tool', 'function', 'not support', 'invalid']):
-                    logger.warning(f"⚠️ [MCP] Model doesn't support function calling, gracefully degrading...")
-                    logger.debug(f"📝 [MCP Tool Loop] Error message: {str(e)}")
+                    logger.warning(f"⚠️ [Tool] Model doesn't support function calling, gracefully degrading...")
+                    logger.debug(f"📝 [Tool Loop] Error message: {str(e)}")
                     # Graceful degradation: call without tools and return
                     response = await asyncio.to_thread(
                         provider.send,
@@ -116,29 +167,29 @@ class ToolManager:
                     )
                 else:
                     # Other errors, re-raise
-                    logger.error(f"❌ [MCP] LLM call failed: {str(e)}")
+                    logger.error(f"❌ [Tool] LLM call failed: {str(e)}")
                     raise
             
             # Step 2: Check if LLM wants to call tools
             tool_calls = getattr(response, 'tool_calls', None)
             
-            logger.debug(f"📊 [MCP Tool Loop] Iteration {iteration}: tool_calls_count={len(tool_calls) if tool_calls else 0}")
+            logger.debug(f"📊 [Tool Loop] Iteration {iteration}: tool_calls_count={len(tool_calls) if tool_calls else 0}")
             
             if not tool_calls:
                 # No tool calls -> LLM finished, return final answer
-                logger.info(f"ℹ️ [MCP] No tool calls in this iteration, LLM returned final answer")
-                logger.debug(f"✅ [MCP Tool Loop] No tool calls, finishing...")
+                logger.info(f"ℹ️ [Tool] No tool calls in this iteration, LLM returned final answer")
+                logger.debug(f"✅ [Tool Loop] No tool calls, finishing...")
                 return AIMessage(
                     content=response.content if hasattr(response, 'content') else str(response)
                 )
             
-            logger.info(f"🔧 [MCP] LLM wants to call {len(tool_calls)} tool(s): {[tc.function.name for tc in tool_calls]}")
-            logger.debug(f"📤 [MCP Tool Loop] Calling tools: {[tc.function.name for tc in tool_calls]}")
+            logger.info(f"🔧 [Tool] LLM wants to call {len(tool_calls)} tool(s): {[tc.function.name for tc in tool_calls]}")
+            logger.debug(f"📤 [Tool Loop] Calling tools: {[tc.function.name for tc in tool_calls]}")
             
             # Step 3: Execute tools in parallel
-            logger.debug(f"⏳ [MCP Tool Loop] Executing {len(tool_calls)} tools...")
+            logger.debug(f"⏳ [Tool Loop] Executing {len(tool_calls)} tools...")
             tool_results = await self._execute_tools_parallel(tool_calls)
-            logger.debug(f"📥 [MCP Tool Loop] Tool results: {[r.content[:50] + '...' if len(r.content) > 50 else r.content for r in tool_results]}")
+            logger.debug(f"📥 [Tool Loop] Tool results: {[r.content[:50] + '...' if len(r.content) > 50 else r.content for r in tool_results]}")
             
             # Step 4: Add assistant message (with tool_calls) to conversation
             current_messages.append(AIMessage(
@@ -153,7 +204,7 @@ class ToolManager:
                     tool_call_id=result.call_id
                 ))
             
-            logger.debug(f"🔁 [MCP Tool Loop] Loop continues to iteration {iteration + 1}...")
+            logger.debug(f"🔁 [Tool Loop] Loop continues to iteration {iteration + 1}...")
             # Step 6: Loop back to step 1 (LLM will see tool results and decide next action)
         
         # Max iteration reached (possible infinite loop)
@@ -187,7 +238,12 @@ class ToolManager:
         from ..message import AIMessage, ToolMessage, MessageChunk
         
         current_messages = messages.copy()
-        openai_tools = [t.to_openai_tool() for t in self.tools]
+        openai_tools = []
+        for tool in self.tools:
+            if isinstance(tool, NativeObjectTool):
+                openai_tools.extend(tool.to_openai_tools())
+            else:
+                openai_tools.append(tool.to_openai_tool())
         
         for iteration in range(self.max_iterations):
             accumulated_content = ""
@@ -195,7 +251,7 @@ class ToolManager:
             finish_reason = None
             
             # Step 1: Call LLM with streaming
-            logger.debug(f"💬 [MCP Tool Loop] Iteration {iteration}: Calling LLM with {len(openai_tools)} tools (streaming)...")
+            logger.debug(f"💬 [Tool Loop] Iteration {iteration}: Calling LLM with {len(openai_tools)} tools (streaming)...")
             try:
                 # Get stream iterator synchronously in thread
                 def _get_stream():
@@ -209,8 +265,8 @@ class ToolManager:
             except Exception as e:
                 error_msg = str(e).lower()
                 if any(keyword in error_msg for keyword in ['tool', 'function', 'not support', 'invalid']):
-                    logger.warning(f"⚠️ [MCP] Model doesn't support function calling, gracefully degrading to streaming mode...")
-                    logger.debug(f"📝 [MCP Tool Loop] Error message: {str(e)}")
+                    logger.warning(f"⚠️ [Tool] Model doesn't support function calling, gracefully degrading to streaming mode...")
+                    logger.debug(f"📝 [Tool Loop] Error message: {str(e)}")
                     # Graceful degradation: streaming without tools
                     def _get_fallback_stream():
                         return provider.send(
@@ -234,7 +290,7 @@ class ToolManager:
                     yield MessageChunk(content="", is_final=True)
                     return
                 else:
-                    logger.error(f"❌ [MCP] LLM call failed: {str(e)}")
+                    logger.error(f"❌ [Tool] LLM call failed: {str(e)}")
                     raise
             
             # Step 2: Process streaming chunks (in event loop friendly way)
@@ -280,11 +336,11 @@ class ToolManager:
                                 accumulated_tool_calls[index]["function"]["arguments"] += tc_delta.function.arguments
             
             # Step 3: Check finish_reason
-            logger.debug(f"📊 [MCP Tool Loop] Iteration {iteration}: finish_reason={finish_reason}, tool_calls_count={len(accumulated_tool_calls)}")
+            logger.debug(f"📊 [Tool Loop] Iteration {iteration}: finish_reason={finish_reason}, tool_calls_count={len(accumulated_tool_calls)}")
             
             if finish_reason == "tool_calls" and accumulated_tool_calls:
-                logger.info(f"🔧 [MCP] LLM wants to call {len(accumulated_tool_calls)} tool(s): {[tc['function']['name'] for tc in accumulated_tool_calls]}")
-                logger.debug(f"📤 [MCP Tool Loop] Calling tools: {[tc['function']['name'] for tc in accumulated_tool_calls]}")
+                logger.info(f"🔧 [Tool] LLM wants to call {len(accumulated_tool_calls)} tool(s): {[tc['function']['name'] for tc in accumulated_tool_calls]}")
+                logger.debug(f"📤 [Tool Loop] Calling tools: {[tc['function']['name'] for tc in accumulated_tool_calls]}")
                 
                 # Convert to proper tool_call objects
                 from ..message import ChatCompletionMessageToolCall, Function
@@ -301,9 +357,9 @@ class ToolManager:
                 ]
                 
                 # Execute tools
-                logger.debug(f"⏳ [MCP Tool Loop] Executing {len(tool_calls_objects)} tools...")
+                logger.debug(f"⏳ [Tool Loop] Executing {len(tool_calls_objects)} tools...")
                 tool_results = await self._execute_tools_parallel(tool_calls_objects)
-                logger.debug(f"📥 [MCP Tool Loop] Tool results: {[r.content[:50] + '...' if len(r.content) > 50 else r.content for r in tool_results]}")
+                logger.debug(f"📥 [Tool Loop] Tool results: {[r.content[:50] + '...' if len(r.content) > 50 else r.content for r in tool_results]}")
                 
                 # Add assistant message (with tool_calls)
                 current_messages.append(AIMessage(
@@ -318,12 +374,12 @@ class ToolManager:
                         tool_call_id=result.call_id
                     ))
                 
-                logger.debug(f"🔁 [MCP Tool Loop] Loop continues to iteration {iteration + 1}...")
+                logger.debug(f"🔁 [Tool Loop] Loop continues to iteration {iteration + 1}...")
                 # Loop continues (next iteration will call LLM with tool results)
             else:
                 # No tool calls or finish_reason != 'tool_calls' -> done
-                logger.info(f"ℹ️ [MCP] No tool calls in this iteration, LLM returned final answer")
-                logger.debug(f"✅ [MCP Tool Loop] No tool calls, finishing...")
+                logger.info(f"ℹ️ [Tool] No tool calls in this iteration, LLM returned final answer")
+                logger.debug(f"✅ [Tool Loop] No tool calls, finishing...")
                 yield MessageChunk(content="", is_final=True)
                 return
         
@@ -364,18 +420,18 @@ class ToolManager:
         call_id = tool_call.id
         arguments = tool_call.function.arguments if hasattr(tool_call, 'function') else tool_call.arguments
         
-        logger.info(f"🔧 [MCP] Calling tool: {tool_name}")
-        logger.debug(f"📨 [MCP] Tool call ID: {call_id}")
-        logger.debug(f"📨 [MCP] Arguments: {arguments}")
+        logger.info(f"🔧 [Tool] Calling tool: {tool_name}")
+        logger.debug(f"📨 [Tool] Tool call ID: {call_id}")
+        logger.debug(f"📨 [Tool] Arguments: {arguments}")
         
         # 解析 arguments（可能是 JSON 字符串）
         if isinstance(arguments, str):
             import json
             try:
                 arguments = json.loads(arguments)
-                logger.debug(f"🔄 [MCP] Parsed arguments: {arguments}")
+                logger.debug(f"🔄 [Tool] Parsed arguments: {arguments}")
             except json.JSONDecodeError:
-                logger.error(f"❌ [MCP] Invalid JSON arguments: {arguments}")
+                logger.error(f"❌ [Tool] Invalid JSON arguments: {arguments}")
                 return ToolCallResult(
                     call_id=call_id,
                     content=f"Error: Invalid JSON arguments: {arguments}",
@@ -384,7 +440,7 @@ class ToolManager:
         
         tool = self._tool_map.get(tool_name)
         if not tool:
-            logger.error(f"❌ [MCP] Tool not found: {tool_name}")
+            logger.error(f"❌ [Tool] Tool not found: {tool_name}")
             return ToolCallResult(
                 call_id=call_id,
                 content=f"Error: Tool not found: {tool_name}",
@@ -392,8 +448,8 @@ class ToolManager:
             )
         
         try:
-            # 调用工具（自带重试）
-            logger.debug(f"⚙️  [MCP] Executing tool: {tool_name}...")
+            # 调用工具（支持 MCPTool 和 NativeFunctionTool）
+            logger.debug(f"⚙️  [Tool] Executing tool: {tool_name}...")
             result = await tool.call(arguments)
             
             # 提取结果内容
@@ -405,8 +461,8 @@ class ToolManager:
             else:
                 content = str(result)
             
-            logger.info(f"✅ [MCP] Tool '{tool_name}' succeeded")
-            logger.debug(f"📦 [MCP] Result: {content[:200]}..." if len(content) > 200 else f"📦 [MCP] Result: {content}")
+            logger.info(f"✅ [Tool] Tool '{tool_name}' succeeded")
+            logger.debug(f"📦 [Tool] Result: {content[:200]}..." if len(content) > 200 else f"📦 [Tool] Result: {content}")
             
             return ToolCallResult(
                 call_id=call_id,
@@ -414,7 +470,7 @@ class ToolManager:
                 is_error=False
             )
         except Exception as e:
-            logger.error(f"❌ [MCP] Tool '{tool_name}' failed: {str(e)}")
+            logger.error(f"❌ [Tool] Tool '{tool_name}' failed: {str(e)}")
             return ToolCallResult(
                 call_id=call_id,
                 content=f"Error: {str(e)}",
