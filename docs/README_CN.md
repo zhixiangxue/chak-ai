@@ -229,7 +229,7 @@ print(cart.discount)  # 10
 print(cart.get_total())  # 1798.2
 ```
 
-LLM 通过方法调用修改对象状态。
+Chak 帮你维护对象的状态。
 
 ### 传递 MCP 工具
 

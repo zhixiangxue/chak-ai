@@ -75,15 +75,23 @@ class NativeFunctionTool:
         
         for param_name, param in sig.parameters.items():
             # Get type from type annotation
-            param_type = self._python_type_to_json_type(param.annotation)
+            param_schema = self._python_type_to_json_type(param.annotation)
             
             # Get parameter description from docstring
             param_desc = param_docs.get(param_name, "")
             
-            properties[param_name] = {
-                "type": param_type,
-                "description": param_desc
-            }
+            # If schema is a dict (Pydantic), use it directly; otherwise wrap in type
+            if isinstance(param_schema, dict):
+                # Pydantic schema, merge with description
+                properties[param_name] = {**param_schema}
+                if param_desc:
+                    properties[param_name]["description"] = param_desc
+            else:
+                # Simple type
+                properties[param_name] = {
+                    "type": param_schema,
+                    "description": param_desc
+                }
             
             # Determine if required (no default value)
             if param.default == inspect.Parameter.empty:
@@ -99,10 +107,18 @@ class NativeFunctionTool:
         
         return description, input_schema
     
-    def _python_type_to_json_type(self, py_type) -> str:
-        """Python type → JSON Schema type"""
+    def _python_type_to_json_type(self, py_type):
+        """Python type → JSON Schema type or full schema for Pydantic models"""
         if py_type == inspect.Parameter.empty:
             return "string"
+        
+        # Handle Pydantic BaseModel - return full schema
+        try:
+            from pydantic import BaseModel
+            if isinstance(py_type, type) and issubclass(py_type, BaseModel):
+                return py_type.model_json_schema()
+        except (ImportError, TypeError):
+            pass
         
         # Handle basic types
         if py_type == str:
@@ -170,13 +186,39 @@ class NativeFunctionTool:
         Returns:
             Function execution result
         """
+        # Convert arguments if Pydantic models are expected
+        sig = inspect.signature(self.func)
+        converted_args = {}
+        
+        try:
+            from pydantic import BaseModel
+            for param_name, value in arguments.items():
+                param = sig.parameters.get(param_name)
+                if param and isinstance(param.annotation, type) and issubclass(param.annotation, BaseModel):
+                    # Parameter is Pydantic, convert dict to model instance
+                    converted_args[param_name] = param.annotation.model_validate(value)
+                else:
+                    converted_args[param_name] = value
+        except (ImportError, TypeError):
+            converted_args = arguments
+        
         # Detect if sync or async function
         if asyncio.iscoroutinefunction(self.func):
             # Async function: call directly
-            return await self.func(**arguments)
+            result = await self.func(**converted_args)
         else:
             # Sync function: execute in thread pool to avoid blocking event loop
-            return await asyncio.to_thread(self.func, **arguments)
+            result = await asyncio.to_thread(self.func, **converted_args)
+        
+        # Serialize result if it's a Pydantic model
+        try:
+            from pydantic import BaseModel
+            if isinstance(result, BaseModel):
+                return result.model_dump()
+        except ImportError:
+            pass
+        
+        return result
     
     def __repr__(self) -> str:
         """Detailed representation"""

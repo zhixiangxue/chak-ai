@@ -193,6 +193,35 @@ conv = chak.Conversation(
 response = await conv.asend("What time is it? Then calculate 50 times 20")
 ```
 
+**Type Safety with Pydantic**: Functions support [Pydantic](https://docs.pydantic.dev/) models for parameters and return values. Automatic validation and serialization included:
+
+```python
+from pydantic import BaseModel, Field
+
+class UserInput(BaseModel):
+    name: str = Field(description="User's full name")
+    email: str = Field(description="User's email address")
+    age: int = Field(description="User's age")
+
+class UserOutput(BaseModel):
+    id: int
+    name: str
+    status: str = "active"
+
+def create_user(user: UserInput) -> UserOutput:
+    """Create a new user"""
+    return UserOutput(id=123, name=user.name, status="active")
+
+conv = chak.Conversation(
+    "openai/gpt-4o",
+    tools=[create_user]
+)
+
+response = await conv.asend("Create a user: John Doe, john@example.com, 30 years old")
+```
+
+See full example: [tool_calling_chat_functions_pydantic.py](examples/tool_calling_chat_functions_pydantic.py)
+
 ### Pass Objects
 
 Pass Python objects, their methods become tools. Object state persists across calls:
@@ -234,6 +263,54 @@ print(cart.get_total())  # 1798.2
 ```
 
 The LLM modifies object state through method calls.
+
+**Pydantic + Stateful Objects**: Combine type safety with state persistence:
+
+```python
+from pydantic import BaseModel
+
+class Product(BaseModel):
+    name: str
+    price: float
+    quantity: int = 1
+
+class Order(BaseModel):
+    order_id: int
+    products: list[Product]
+    total: float
+
+class OrderManager:
+    def __init__(self):
+        self.orders = []  # State persists!
+    
+    def create_order(self, product: Product) -> Order:
+        """Create order with type-safe Product"""
+        order = Order(
+            order_id=len(self.orders) + 1,
+            products=[product],
+            total=product.price * product.quantity
+        )
+        self.orders.append(order)
+        return order
+    
+    def get_stats(self) -> dict:
+        """Get statistics from accumulated state"""
+        return {"total_orders": len(self.orders)}
+
+manager = OrderManager()
+conv = chak.Conversation(
+    "openai/gpt-4o",
+    tools=[manager]  # Type-safe + stateful!
+)
+
+await conv.asend("Create an order: Laptop, $1200, quantity 1")
+await conv.asend("Create another order: Mouse, $25, quantity 2")
+response = await conv.asend("Show me the order statistics")
+
+print(len(manager.orders))  # 2 - state persisted!
+```
+
+See full example: [tool_calling_chat_objects_pydantic.py](examples/tool_calling_chat_objects_pydantic.py)
 
 ### Pass MCP Tools
 
@@ -299,7 +376,9 @@ conv = Conversation(
 See complete examples:
 
 - **Native Functions**: [examples/tool_calling_chat_functions.py](examples/tool_calling_chat_functions.py)
+- **Functions with Pydantic**: [examples/tool_calling_chat_functions_pydantic.py](examples/tool_calling_chat_functions_pydantic.py)
 - **Stateful Objects**: [examples/tool_calling_chat_objects_stateful.py](examples/tool_calling_chat_objects_stateful.py)
+- **Objects with Pydantic**: [examples/tool_calling_chat_objects_pydantic.py](examples/tool_calling_chat_objects_pydantic.py)
 - **MCP (SSE)**: [examples/tool_calling_chat_mcp_sse.py](examples/tool_calling_chat_mcp_sse.py)
 - **MCP (stdio)**: [examples/tool_calling_chat_mcp_stdio.py](examples/tool_calling_chat_mcp_stdio.py)
 - **MCP (HTTP)**: [examples/tool_calling_chat_mcp_http.py](examples/tool_calling_chat_mcp_http.py)
