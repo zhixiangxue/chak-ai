@@ -24,6 +24,12 @@ chak 不是另一个 liteLLM、one-api 或 OpenRouter，而是一个为你主动
 
 ---
 
+## 🌵 最近更新
+
+- **2024-12-02 | v0.2.2** - Conversation 现已支持多模态对话。详见 [多模态支持](#multimodal-support)
+
+---
+
 ## 核心特性
 
 ### 🌱 极简 API 设计
@@ -40,7 +46,38 @@ import chak
 chak.serve('chak-config.yaml')
 ```
 
-无论你是构建应用还是运行网关，chak 都保持简单。
+无论你是构建应用还是运行网关,chak 都保持简单。
+
+### 🌳 多模态对话
+
+对话支持多模态输入——图片、音频、视频和文档。只需传递附件（就像我们使用聊天工具时一样自然）：
+
+```python
+from chak import Image, PDF, Audio
+
+# 发送图片并提问
+response = await conv.asend(
+    "这张图片里有什么？",
+    attachments=[Image("photo.jpg")]  # 本地路径、URL 或 base64
+)
+
+# 分析文档
+response = await conv.asend(
+    "总结这份文档",
+    attachments=[PDF("report.pdf")]
+)
+
+# 一次发送多个附件
+response = await conv.asend(
+    "比较这些图片",
+    attachments=[
+        Image("https://example.com/img1.jpg"),
+        Image("./local/img2.png")
+    ]
+)
+```
+
+支持图片、音频、视频、PDF、Word、Excel、CSV、TXT 和网页链接。详见 [多模态支持](#multimodal-support)。
 
 ### 🪴 可插拔的上下文管理
 
@@ -97,7 +134,7 @@ OpenAI、Google Gemini、Azure OpenAI、Anthropic Claude、阿里巴巴百炼、
 
 ---
 
-## 快速开始
+## 🌖 快速开始
 
 ### 安装
 
@@ -130,7 +167,7 @@ chak 处理：连接初始化、消息对齐、重试逻辑、上下文管理、
 
 ---
 
-## 启用自动上下文管理
+## 🌒 启用自动上下文管理
 
 三种内置策略：
 
@@ -158,7 +195,7 @@ conv = Conversation(
 
 ---
 
-## 工具调用
+## 🌓 工具调用
 
 用你喜欢的方式编写工具——函数、对象或 MCP 服务器。chak 处理其余部分。
 
@@ -302,7 +339,212 @@ conv = Conversation(
 
 ---
 
-## 实用工具
+<a id="multimodal-support"></a>
+
+## 🌔 多模态支持
+
+chak 的 `Conversation` 通过 `attachments` 参数支持多模态输入。你可以在发送文本消息的同时发送图片、音频、视频、文档（PDF、Word、Excel、CSV、TXT）和网页链接。
+
+### 支持的文件类型
+
+| 类型 | 类名 | 支持格式 | 使用场景 |
+|------|-------|-------------------|------------|
+| **图片** | `Image` | JPEG, PNG, GIF, WEBP | 图像分析、视觉问答、OCR |
+| **音频** | `Audio` | WAV, MP3, OGG | 语音识别、音频分析 |
+| **视频** | `Video` | MP4, WEBM | 视频理解、帧提取 |
+| **PDF** | `PDF` | PDF | 文档分析、内容提取 |
+| **Word** | `DOC` | DOC, DOCX | 文档阅读、内容提取 |
+| **Excel** | `Excel` | XLS, XLSX | 数据分析、电子表格处理 |
+| **CSV** | `CSV` | CSV | 结构化数据分析 |
+| **文本** | `TXT` | TXT, MD 等 | 纯文本/Markdown 分析 |
+| **链接** | `Link` | HTTP/HTTPS URLs | 网页内容分析 |
+
+### 输入格式灵活性
+
+所有附件类型支持 **三种输入格式**：
+
+1. **本地文件路径**: `Image("./photo.jpg")`
+2. **远程 URL**: `Image("https://example.com/photo.jpg")`
+3. **Base64 数据 URI**: `Image("data:image/jpeg;base64,/9j/4AAQ...")`
+
+### 基础用法
+
+#### 单张图片
+
+```python
+from chak import Conversation, Image
+
+conv = Conversation("openai/gpt-4o", api_key="YOUR_KEY")
+
+# 使用 URL
+response = await conv.asend(
+    "这张图片里有什么？",
+    attachments=[Image("https://example.com/photo.jpg")]
+)
+
+# 使用本地路径
+response = await conv.asend(
+    "描述这张图片",
+    attachments=[Image("./local/photo.png")]
+)
+
+# 使用 base64
+response = await conv.asend(
+    "分析这个",
+    attachments=[Image("data:image/jpeg;base64,/9j/4AAQSkZJRg...")]
+)
+```
+
+#### 多张图片
+
+```python
+from chak import Image, MimeType
+
+# 比较多张图片
+response = await conv.asend(
+    "这些图片之间有什么区别？",
+    attachments=[
+        Image("https://example.com/image1.jpg"),
+        Image("./local/image2.png", MimeType.PNG),
+        Image("data:image/webp;base64,...", MimeType.WEBP)
+    ]
+)
+```
+
+#### 音频文件
+
+```python
+from chak import Audio, MimeType
+
+response = await conv.asend(
+    "这段音频在说什么？",
+    attachments=[Audio("https://example.com/speech.wav", MimeType.WAV)]
+)
+```
+
+#### 文档
+
+```python
+from chak import PDF, DOC, Excel, CSV, TXT
+
+# PDF 分析
+response = await conv.asend(
+    "总结这份 PDF 文档",
+    attachments=[PDF("./report.pdf")],
+    timeout=120  # 大文件需要更长超时时间
+)
+
+# Word 文档
+response = await conv.asend(
+    "从这份文档中提取要点",
+    attachments=[DOC("https://example.com/document.docx")]
+)
+
+# Excel 电子表格
+response = await conv.asend(
+    "这份电子表格中的总收入是多少？",
+    attachments=[Excel("./sales_data.xlsx")]
+)
+
+# CSV 数据
+response = await conv.asend(
+    "找出所有来自加州的客户",
+    attachments=[CSV("./customers.csv")]
+)
+
+# 纯文本或 Markdown
+response = await conv.asend(
+    "总结这篇文章",
+    attachments=[TXT("https://example.com/article.md")]
+)
+```
+
+#### 网页链接
+
+```python
+from chak import Link
+
+# 分析网页内容
+response = await conv.asend(
+    "这篇文章的主要观点是什么？",
+    attachments=[Link("https://example.com/article")]
+)
+```
+
+### 流式响应与附件
+
+多模态输入与流式响应无缝配合：
+
+```python
+from chak import Image
+
+print("响应: ", end="")
+async for chunk in await conv.asend(
+    "详细描述这张图片",
+    attachments=[Image("photo.jpg")],
+    stream=True
+):
+    print(chunk.content, end="", flush=True)
+```
+
+### 高级用法：直接构造多模态消息
+
+如需精细控制，可以直接构造多模态消息：
+
+```python
+from chak import HumanMessage
+
+response = await conv.asend(
+    HumanMessage(content=[
+        {"type": "text", "text": "这张图片中有什么颜色？"},
+        {"type": "image_url", "image_url": {"url": "https://example.com/photo.jpg"}}
+    ])
+)
+```
+
+### 完整示例
+
+查看完整可运行示例：
+
+- **图片**: [examples/multimodal_chat_image.py](examples/multimodal_chat_image.py)
+  - 单张图片分析
+  - 多张图片比较
+  - 流式响应与图片
+  - 音频输入（如果支持）
+  - 高级多模态消息
+
+- **文档**: [examples/multimodal_chat_documents.py](examples/multimodal_chat_documents.py)
+  - PDF 文档分析
+  - Word 文档处理
+  - 纯文本和 Markdown 文件
+  - CSV 数据分析
+  - Excel 电子表格处理
+  - 网页链接内容分析
+  - 流式响应与文档
+
+### 注意事项
+
+- **模型支持**：并非所有 LLM 提供商都支持所有模态。请查看提供商文档：
+  - 视觉模型：OpenAI GPT-4o、Anthropic Claude 3、Google Gemini、百炼 Qwen-VL
+  - 音频模型：部分 Qwen 变体、基于 Whisper 的模型
+  - 文档支持因提供商而异
+
+- **文件大小**：大文件可能需要更长的超时时间。使用 `timeout` 参数：
+  ```python
+  response = await conv.asend(
+      "分析这份大型 PDF",
+      attachments=[PDF("large.pdf")],
+      timeout=180  # 3 分钟
+  )
+  ```
+
+- **自定义读取器**：内置读取器可满足大多数需求。对于特殊需求，你可以为文档附件类型（PDF、DOC、Excel 等）提供自定义读取器函数。
+
+- **建议使用异步**：多模态支持在 `send()` 和 `asend()` 中都可用，但建议使用异步以获得更好的大文件处理性能。
+
+---
+
+## 🌗 实用工具
 
 ### 查看对话统计信息
 
@@ -459,7 +701,7 @@ ws.send(JSON.stringify({
 | **PulseMCP** | 3,290+ 服务器，每周更新和教程 | https://www.pulsemcp.com |
 | **mcp.run** | 200+ 模板，支持一键网页部署 | https://www.mcp.run |
 
-## chak 适合你吗？
+## 🌕 chak 适合你吗？
 
 如果你：
 - 需要连接到多个模型平台

@@ -24,12 +24,11 @@ chak is not another liteLLM, one-api, or OpenRouter, but a client library that a
 
 ---
 
-# 🌵 What's New
+## 🌵 What's New
 
-- **2024-12-02 | v0.2.2** - Conversation now supports multimodal inputs via `attachments` parameter. See [Multimodal Support](#multimodal-support)
+- **2024-12-02 | v0.2.2** - Conversation now supports multimodal inputs. See [Multimodal Support](#multimodal-support)
 
 ---
-
 
 
 ## Core Features
@@ -171,7 +170,7 @@ chak handles: connection initialization, message alignment, retry logic, context
 
 ---
 
-## 🌒Enable Automatic Context Management
+## 🌒 Enable Automatic Context Management
 
 Three built-in strategies:
 
@@ -199,7 +198,7 @@ See full examples (parameters, how it works, tips):
 
 ---
 
-## 🌓Tool Calling
+## 🌓 Tool Calling
 
 Write tools the way you like - functions, objects, or MCP servers. chak handles the rest.
 
@@ -424,6 +423,8 @@ See complete examples:
 
 
 ---
+
+<a id="multimodal-support"></a>
 
 ## 🌔 Multimodal Support
 
