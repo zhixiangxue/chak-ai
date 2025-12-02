@@ -24,6 +24,14 @@ chak is not another liteLLM, one-api, or OpenRouter, but a client library that a
 
 ---
 
+# 🌵 What's New
+
+- **2024-12-02 | v0.2.2** - Conversation now supports multimodal inputs via `attachments` parameter. See [Multimodal Support](#multimodal-support)
+
+---
+
+
+
 ## Core Features
 
 ### 🌱 Minimalist API Design
@@ -41,6 +49,37 @@ chak.serve('chak-config.yaml')
 ```
 
 Whether you're building an application or running a gateway, chak keeps things simple.
+
+### 🌳 Multimodal Conversations
+
+Conversations support multimodal inputs - images, audio, video, and documents. Just pass attachments:
+
+```python
+from chak import Image, PDF, Audio
+
+# Send image with question
+response = await conv.asend(
+    "What's in this image?",
+    attachments=[Image("photo.jpg")]  # local path, URL, or base64
+)
+
+# Analyze documents
+response = await conv.asend(
+    "Summarize this document",
+    attachments=[PDF("report.pdf")]
+)
+
+# Multiple attachments at once
+response = await conv.asend(
+    "Compare these images",
+    attachments=[
+        Image("https://example.com/img1.jpg"),
+        Image("./local/img2.png")
+    ]
+)
+```
+
+Supports images, audio, video, PDF, Word, Excel, CSV, TXT, and web links. See [Multimodal Support](#multimodal-support) for details.
 
 ### 🪴 Pluggable Context Management
 
@@ -99,9 +138,9 @@ OpenAI, Google Gemini, Azure OpenAI, Anthropic Claude, Alibaba Bailian, Baidu We
 
 ---
 
-## Quick Start
+## 🌖 Quick Start
 
-### Installation
+###  Installation
 
 ```bash
 # Basic installation (SDK only)
@@ -132,7 +171,7 @@ chak handles: connection initialization, message alignment, retry logic, context
 
 ---
 
-## Enable Automatic Context Management
+## 🌒Enable Automatic Context Management
 
 Three built-in strategies:
 
@@ -160,7 +199,7 @@ See full examples (parameters, how it works, tips):
 
 ---
 
-## Tool Calling
+## 🌓Tool Calling
 
 Write tools the way you like - functions, objects, or MCP servers. chak handles the rest.
 
@@ -386,7 +425,210 @@ See complete examples:
 
 ---
 
-## Practical Utilities
+## 🌔 Multimodal Support
+
+chak's `Conversation` supports multimodal inputs through the `attachments` parameter. You can send images, audio, video, documents (PDF, Word, Excel, CSV, TXT), and web links alongside your text messages.
+
+### Supported File Types
+
+| Type | Class | Supported Formats | Use Cases |
+|------|-------|-------------------|------------|
+| **Image** | `Image` | JPEG, PNG, GIF, WEBP | Image analysis, visual Q&A, OCR |
+| **Audio** | `Audio` | WAV, MP3, OGG | Speech recognition, audio analysis |
+| **Video** | `Video` | MP4, WEBM | Video understanding, frame extraction |
+| **PDF** | `PDF` | PDF | Document analysis, extraction |
+| **Word** | `DOC` | DOC, DOCX | Document reading, content extraction |
+| **Excel** | `Excel` | XLS, XLSX | Data analysis, spreadsheet processing |
+| **CSV** | `CSV` | CSV | Structured data analysis |
+| **Text** | `TXT` | TXT, MD, etc. | Plain text/markdown analysis |
+| **Link** | `Link` | HTTP/HTTPS URLs | Web content analysis |
+
+### Input Format Flexibility
+
+All attachment types support **three input formats**:
+
+1. **Local file path**: `Image("./photo.jpg")`
+2. **Remote URL**: `Image("https://example.com/photo.jpg")`
+3. **Base64 data URI**: `Image("data:image/jpeg;base64,/9j/4AAQ...")`
+
+### Basic Usage
+
+#### Single Image
+
+```python
+from chak import Conversation, Image
+
+conv = Conversation("openai/gpt-4o", api_key="YOUR_KEY")
+
+# Using URL
+response = await conv.asend(
+    "What's in this image?",
+    attachments=[Image("https://example.com/photo.jpg")]
+)
+
+# Using local path
+response = await conv.asend(
+    "Describe this image",
+    attachments=[Image("./local/photo.png")]
+)
+
+# Using base64
+response = await conv.asend(
+    "Analyze this",
+    attachments=[Image("data:image/jpeg;base64,/9j/4AAQSkZJRg...")]
+)
+```
+
+#### Multiple Images
+
+```python
+from chak import Image, MimeType
+
+# Compare multiple images
+response = await conv.asend(
+    "What are the differences between these images?",
+    attachments=[
+        Image("https://example.com/image1.jpg"),
+        Image("./local/image2.png", MimeType.PNG),
+        Image("data:image/webp;base64,...", MimeType.WEBP)
+    ]
+)
+```
+
+#### Audio Files
+
+```python
+from chak import Audio, MimeType
+
+response = await conv.asend(
+    "What is being said in this audio?",
+    attachments=[Audio("https://example.com/speech.wav", MimeType.WAV)]
+)
+```
+
+#### Documents
+
+```python
+from chak import PDF, DOC, Excel, CSV, TXT
+
+# PDF analysis
+response = await conv.asend(
+    "Summarize this PDF document",
+    attachments=[PDF("./report.pdf")],
+    timeout=120  # Longer timeout for large files
+)
+
+# Word document
+response = await conv.asend(
+    "Extract key points from this document",
+    attachments=[DOC("https://example.com/document.docx")]
+)
+
+# Excel spreadsheet
+response = await conv.asend(
+    "What's the total revenue in this spreadsheet?",
+    attachments=[Excel("./sales_data.xlsx")]
+)
+
+# CSV data
+response = await conv.asend(
+    "Find all customers from California",
+    attachments=[CSV("./customers.csv")]
+)
+
+# Plain text or markdown
+response = await conv.asend(
+    "Summarize this article",
+    attachments=[TXT("https://example.com/article.md")]
+)
+```
+
+#### Web Links
+
+```python
+from chak import Link
+
+# Analyze web content
+response = await conv.asend(
+    "What are the main points in this article?",
+    attachments=[Link("https://example.com/article")]
+)
+```
+
+### Streaming with Attachments
+
+Multimodal inputs work seamlessly with streaming:
+
+```python
+from chak import Image
+
+print("Response: ", end="")
+async for chunk in await conv.asend(
+    "Describe this image in detail",
+    attachments=[Image("photo.jpg")],
+    stream=True
+):
+    print(chunk.content, end="", flush=True)
+```
+
+### Advanced: Direct Multimodal Message
+
+For fine-grained control, construct multimodal messages directly:
+
+```python
+from chak import HumanMessage
+
+response = await conv.asend(
+    HumanMessage(content=[
+        {"type": "text", "text": "What colors are in this image?"},
+        {"type": "image_url", "image_url": {"url": "https://example.com/photo.jpg"}}
+    ])
+)
+```
+
+### Complete Examples
+
+See full working examples:
+
+- **Images**: [examples/multimodal_chat_image.py](examples/multimodal_chat_image.py)
+  - Single image analysis
+  - Multiple image comparison
+  - Streaming with images
+  - Audio input (when supported)
+  - Advanced multimodal messages
+
+- **Documents**: [examples/multimodal_chat_documents.py](examples/multimodal_chat_documents.py)
+  - PDF document analysis
+  - Word document processing
+  - Plain text and markdown files
+  - CSV data analysis
+  - Excel spreadsheet processing
+  - Web link content analysis
+  - Streaming with documents
+
+### Notes
+
+- **Model Support**: Not all LLM providers support all modalities. Check your provider's documentation:
+  - Vision models: OpenAI GPT-4o, Anthropic Claude 3, Google Gemini, Bailian Qwen-VL
+  - Audio models: Some Qwen variants, Whisper-based models
+  - Document support varies by provider
+
+- **File Size**: Large files may require longer timeouts. Use `timeout` parameter:
+  ```python
+  response = await conv.asend(
+      "Analyze this large PDF",
+      attachments=[PDF("large.pdf")],
+      timeout=180  # 3 minutes
+  )
+  ```
+
+- **Custom Readers**: Built-in readers cover most use cases. For specialized needs, you can provide custom reader functions to document attachment types (PDF, DOC, Excel, etc.).
+
+- **Async Required**: Multimodal support works with both `send()` and `asend()`, but async is recommended for better performance with large files.
+
+---
+
+## 🌗 Practical Utilities
 
 ### View Conversation Statistics
 
@@ -526,7 +768,7 @@ This way chak becomes your local LLM gateway, centrally managing all provider AP
 
 ---
 
-## MCP Server Resources
+##  MCP Server Resources
 
 Explore thousands of ready-to-use MCP servers:
 
@@ -545,7 +787,7 @@ Explore thousands of ready-to-use MCP servers:
 
 
 
-## Is chak for You?
+## 🌕 Is chak for You?
 
 If you:
 - Need to connect to multiple model platforms

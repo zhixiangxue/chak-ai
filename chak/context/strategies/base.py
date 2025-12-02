@@ -95,9 +95,87 @@ class BaseContextStrategy(ABC):
         total = 0
         for msg in messages:
             total += 4  # Format overhead per message
-            total += self.count_tokens(msg.content or "")
+            text_content = self.extract_text_content(msg)
+            total += self.count_tokens(text_content)
         total += 2  # Conversation end marker
         return total
+    
+    def extract_text_content(self, message: Message) -> str:
+        """
+        Extract pure text from message content (for token counting).
+        
+        Handles both simple text and multimodal content:
+        - str: return as-is
+        - list: extract only text parts, ignore images/audio
+        
+        Args:
+            message: Message to extract text from
+            
+        Returns:
+            Pure text string (empty if no text content)
+        """
+        if message.content is None:
+            return ""
+        
+        # Simple text content
+        if isinstance(message.content, str):
+            return message.content
+        
+        # Multimodal content: extract only text parts
+        if isinstance(message.content, list):
+            texts = []
+            for item in message.content:
+                if isinstance(item, dict) and item.get("type") == "text":
+                    texts.append(item.get("text", ""))
+            return " ".join(texts)
+        
+        return ""
+    
+    def format_content_for_summary(self, message: Message) -> str:
+        """
+        Format message content for summary prompt (preserve multimodal context).
+        
+        Converts multimodal content to human-readable text with placeholders:
+        - text: keep as-is
+        - image: replace with [Image]
+        - audio: replace with [Audio]
+        
+        This preserves context for summarization while avoiding passing
+        raw multimodal data to text-only summarization models.
+        
+        Args:
+            message: Message to format
+            
+        Returns:
+            Formatted text string with placeholders for non-text content
+        """
+        if message.content is None:
+            return ""
+        
+        # Simple text content
+        if isinstance(message.content, str):
+            return message.content
+        
+        # Multimodal content: convert to human-readable format
+        if isinstance(message.content, list):
+            parts = []
+            for item in message.content:
+                if not isinstance(item, dict):
+                    continue
+                    
+                item_type = item.get("type", "")
+                
+                if item_type == "text":
+                    parts.append(item.get("text", ""))
+                elif item_type == "image_url":
+                    parts.append("[Image]")
+                elif item_type == "input_audio":
+                    parts.append("[Audio]")
+                # Add more types as needed
+            
+            return " ".join(parts)
+        
+        return ""
     
     @staticmethod
     def _default_token_counter(text: str) -> int:

@@ -1,6 +1,7 @@
 import asyncio
 from typing import TYPE_CHECKING, List, Dict, Any, Iterator, Union, Optional, AsyncIterator
 
+from .attachment import Attachment
 from .context.strategies import BaseContextStrategy, NoopStrategy
 from .context.strategies.base import StrategyRequest
 from .message import Message, MessageChunk, HumanMessage, AIMessage, SystemMessage, ToolMessage, MarkerMessage
@@ -75,6 +76,7 @@ class Conversation:
         self.model_uri = model_uri
         self.api_key = api_key
         self.messages = []
+        self.attachments: List[Attachment] = []  # Session-level attachment tracking
         self.tools = tools
         
         # Initialize tool manager if tools provided
@@ -196,7 +198,9 @@ class Conversation:
     def send(
             self,
             message: Union[str, Message],
+            attachments: Optional[List[Attachment]] = None,
             stream: bool = False,
+            timeout: Optional[int] = None,
             **kwargs
     ) -> Union[Message, Iterator[MessageChunk]]:
         """
@@ -205,13 +209,16 @@ class Conversation:
         Supports:
         - ✅ Streaming
         - ✅ Non-streaming
+        - ✅ Multimodal (images, audio)
         - ❌ MCP tools (not supported)
         
         For MCP tool usage, please use: await conv.asend(message)
         
         Args:
             message: Message content (str will be converted to HumanMessage)
+            attachments: Optional list of Attachment objects (images, audio, etc.)
             stream: Enable streaming
+            timeout: Request timeout in seconds. If None, uses provider's default timeout (30s)
             **kwargs: Additional LLM parameters
         
         Returns:
@@ -229,6 +236,20 @@ class Conversation:
             for chunk in conv.send("Hello", stream=True):
                 print(chunk.content, end="")
             
+            # With image
+            from chak.attachment import Image
+            response = conv.send(
+                "What's in this image?",
+                attachments=[Image("https://example.com/photo.jpg")]
+            )
+            
+            # With custom timeout
+            response = conv.send(
+                "Analyze this document",
+                attachments=[PDF("large.pdf")],
+                timeout=120
+            )
+            
             # Advanced: Send specific message type
             conv.send(SystemMessage(content="You are helpful"))
             conv.send(HumanMessage(content="Hello"))
@@ -239,6 +260,10 @@ class Conversation:
                 "MCP tools require async execution. "
                 "Please use: await conv.asend(message)"
             )
+        
+        # Merge timeout into kwargs if specified
+        if timeout is not None:
+            kwargs['timeout'] = timeout
         
         # Check if in async context
         try:
@@ -251,13 +276,59 @@ class Conversation:
         except RuntimeError:
             pass
         
-        # Convert str to HumanMessage
+        # Convert str to HumanMessage and merge attachments if present
         if isinstance(message, str):
-            user_message = HumanMessage(content=message)
+            if attachments:
+                # Create multimodal message
+                content_parts = [{"type": "text", "text": message}]
+                for att in attachments:
+                    if att.mime_type.is_image():
+                        content_parts.append({
+                            "type": "image_url",
+                            "image_url": {"url": att.source}
+                        })
+                    elif att.mime_type.is_audio():
+                        content_parts.append({
+                            "type": "input_audio",
+                            "input_audio": {
+                                "data": att.source,
+                                "format": att.mime_type.subtype
+                            }
+                        })
+                    elif att.mime_type.is_video():
+                        content_parts.append({
+                            "type": "video",
+                            "video": {"url": att.source}
+                        })
+                    elif att.mime_type.is_document() or att.reader:
+                        # Document types (PDF, DOC, Excel, TXT, Link, etc.)
+                        # Need to read and extract text content first
+                        doc_result = att.read()  # Sync read for sync method
+                        if doc_result and doc_result.content:
+                            # Add extracted text as text part
+                            doc_text = doc_result.content
+                            # Include metadata info if available
+                            if doc_result.meta:
+                                meta_str = ", ".join([f"{k}: {v}" for k, v in doc_result.meta.items() if k != "error"])
+                                if meta_str:
+                                    doc_text = f"[Document metadata: {meta_str}]\n\n{doc_text}"
+                            content_parts.append({
+                                "type": "text",
+                                "text": doc_text
+                            })
+                user_message = HumanMessage(content=content_parts, attachments=list(attachments) if attachments else [])
+            else:
+                # Simple text message
+                user_message = HumanMessage(content=message)
         else:
+            # User provided a Message object directly
             user_message = message
         
         self.messages.append(user_message)
+        
+        # Track attachments at conversation level
+        if attachments:
+            self.attachments.extend(attachments)
 
         # Apply context strategy
         messages_to_send = self._apply_context_strategy()
@@ -266,30 +337,14 @@ class Conversation:
         if stream:
             return self._send_stream(messages_to_send, **kwargs)
         else:
-            response = self.provider.send(
-                messages=messages_to_send,
-                stream=False,
-                **kwargs
-            )
-            # Response is Message (not Iterator)
-            if not isinstance(response, (HumanMessage, AIMessage, SystemMessage, ToolMessage, MarkerMessage)):
-                # Old Message type, convert to AIMessage
-                ai_response = AIMessage(
-                    content=response.content,  # type: ignore
-                    reasoning_content=response.reasoning_content,  # type: ignore
-                    tool_calls=response.tool_calls,  # type: ignore
-                    refusal=response.refusal,  # type: ignore
-                    metadata=response.metadata  # type: ignore
-                )
-            else:
-                ai_response = response  # type: ignore
-            self.messages.append(ai_response)
-            return ai_response
+            return self._send_nonstream(messages_to_send, **kwargs)
     
     async def asend(
             self,
             message: Union[str, Message],
+            attachments: Optional[List[Attachment]] = None,
             stream: bool = False,
+            timeout: Optional[int] = None,
             **kwargs
     ) -> Union[Message, AsyncIterator[MessageChunk]]:
         """
@@ -298,11 +353,14 @@ class Conversation:
         Supports:
         - ✅ Streaming
         - ✅ Non-streaming
+        - ✅ Multimodal (images, audio)
         - ✅ MCP tools (both modes)
         
         Args:
             message: Message content (str will be converted to HumanMessage)
+            attachments: Optional list of Attachment objects (images, audio, etc.)
             stream: Enable streaming
+            timeout: Request timeout in seconds. If None, uses provider's default timeout (30s)
             **kwargs: Additional LLM parameters
         
         Returns:
@@ -317,6 +375,20 @@ class Conversation:
             async for chunk in await conv.asend("Hello", stream=True):
                 print(chunk.content, end="")
             
+            # With image
+            from chak.attachment import Image
+            response = await conv.asend(
+                "What's in this image?",
+                attachments=[Image("https://example.com/photo.jpg")]
+            )
+            
+            # With custom timeout
+            response = await conv.asend(
+                "Analyze this document",
+                attachments=[TXT("large.txt")],
+                timeout=120
+            )
+            
             # With MCP tools (non-streaming)
             conv = Conversation("gpt-4", tools=mcp_tools)
             response = await conv.asend("What's the weather?")
@@ -330,13 +402,63 @@ class Conversation:
             await conv.asend(SystemMessage(content="You are helpful"))
             await conv.asend(HumanMessage(content="Hello"))
         """
-        # Convert str to HumanMessage
+        # Merge timeout into kwargs if specified
+        if timeout is not None:
+            kwargs['timeout'] = timeout
+        
+        # Convert str to HumanMessage and merge attachments if present
         if isinstance(message, str):
-            user_message = HumanMessage(content=message)
+            if attachments:
+                # Create multimodal message
+                content_parts = [{"type": "text", "text": message}]
+                for att in attachments:
+                    if att.mime_type.is_image():
+                        content_parts.append({
+                            "type": "image_url",
+                            "image_url": {"url": att.source}
+                        })
+                    elif att.mime_type.is_audio():
+                        content_parts.append({
+                            "type": "input_audio",
+                            "input_audio": {
+                                "data": att.source,
+                                "format": att.mime_type.subtype
+                            }
+                        })
+                    elif att.mime_type.is_video():
+                        content_parts.append({
+                            "type": "video",
+                            "video": {"url": att.source}
+                        })
+                    elif att.mime_type.is_document() or att.reader:
+                        # Document types (PDF, DOC, Excel, TXT, Link, etc.)
+                        # Need to read and extract text content first
+                        doc_result = await att.aread()  # Async read for async method
+                        if doc_result and doc_result.content:
+                            # Add extracted text as text part
+                            doc_text = doc_result.content
+                            # Include metadata info if available
+                            if doc_result.meta:
+                                meta_str = ", ".join([f"{k}: {v}" for k, v in doc_result.meta.items() if k != "error"])
+                                if meta_str:
+                                    doc_text = f"[Document metadata: {meta_str}]\n\n{doc_text}"
+                            content_parts.append({
+                                "type": "text",
+                                "text": doc_text
+                            })
+                user_message = HumanMessage(content=content_parts, attachments=list(attachments) if attachments else [])
+            else:
+                # Simple text message
+                user_message = HumanMessage(content=message)
         else:
+            # User provided a Message object directly
             user_message = message
         
         self.messages.append(user_message)
+        
+        # Track attachments at conversation level
+        if attachments:
+            self.attachments.extend(attachments)
 
         # Apply context strategy
         messages_to_send = self._apply_context_strategy()
@@ -466,6 +588,27 @@ class Conversation:
         self.messages.append(ai_response)
         return ai_response
 
+    def _send_nonstream(self, messages: List[Message], **kwargs) -> Message:
+        """Handle non-streaming response."""
+        response = self.provider.send(
+            messages=messages,
+            stream=False,
+            **kwargs
+        )
+        # Convert to AIMessage
+        if not isinstance(response, (HumanMessage, AIMessage, SystemMessage, ToolMessage, MarkerMessage)):
+            ai_response = AIMessage(
+                content=response.content,  # type: ignore
+                reasoning_content=response.reasoning_content,  # type: ignore
+                tool_calls=response.tool_calls,  # type: ignore
+                refusal=response.refusal,  # type: ignore
+                metadata=response.metadata  # type: ignore
+            )
+        else:
+            ai_response = response  # type: ignore
+        self.messages.append(ai_response)
+        return ai_response
+    
     def _send_stream(self, messages: List[Message], **kwargs) -> Iterator[MessageChunk]:
         """Handle streaming response."""
         # Get provider chunks (model is already in provider config)

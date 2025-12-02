@@ -235,7 +235,8 @@ class FIFOStrategy(BaseContextStrategy):
         # Add messages from end to start
         current_tokens = 0
         for i in range(len(conversation_messages) - 1, -1, -1):
-            msg_tokens = 4 + self.count_tokens(conversation_messages[i].content or "")
+            content_text = self.extract_text_content(conversation_messages[i])
+            msg_tokens = 4 + self.count_tokens(content_text)
             if current_tokens + msg_tokens <= remaining_budget:
                 current_tokens += msg_tokens
             else:

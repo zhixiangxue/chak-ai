@@ -16,7 +16,7 @@ Example:
 >>> conv = chak.Conversation('deepseek@https://custom.api.com:deepseek-chat', api_key='xxx')
 """
 
-__version__ = "0.2.1"
+__version__ = "0.2.2"
 
 # Strategy classes
 from .context.strategies import FIFOStrategy, NoopStrategy, SummarizationStrategy, BaseContextStrategy
@@ -31,6 +31,8 @@ from .message import (
     Message, MessageChunk,
     BaseMessage, HumanMessage, AIMessage, SystemMessage, ToolMessage, MarkerMessage
 )
+# Attachment classes for multimodal support
+from .attachment import Image, Audio, Video, MimeType, PDF, DOC, Excel, TXT, Link
 # Utility functions
 from .utils.uri import build, build_simple, parse
 
@@ -80,6 +82,17 @@ __all__ = [
     'SystemMessage',
     'ToolMessage',
     'MarkerMessage',
+    
+    # Multimodal attachments
+    'Image',
+    'Audio',
+    'Video',
+    'MimeType',
+    'PDF',
+    'DOC',
+    'Excel',
+    'TXT',
+    'Link',
     
     # Exceptions
     'ChakError',

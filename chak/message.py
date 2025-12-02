@@ -1,7 +1,10 @@
 from datetime import datetime
-from typing import Literal, Optional, List, Union, Dict, Any
+from typing import Literal, Optional, List, Union, Dict, Any, TYPE_CHECKING
 
 from pydantic import BaseModel, Field
+
+# Always import Attachment for runtime (Pydantic needs it)
+from .attachment import Attachment
 
 
 class Function(BaseModel):
@@ -22,12 +25,24 @@ class ChatCompletionMessageToolCall(BaseModel):
 # ===== Base Message =====
 class BaseMessage(BaseModel):
     """所有消息的基类"""
-    content: Optional[str] = None
+    content: Optional[Union[str, List[Dict[str, Any]]]] = None  # Text or multimodal content array
     reasoning_content: Optional[str] = None
     tool_calls: Optional[List[ChatCompletionMessageToolCall]] = None
     refusal: Optional[str] = None
+    attachments: List[Attachment] = Field(default_factory=list)  # Original attachments associated with this message
     metadata: Dict[str, Any] = Field(default_factory=dict)  # 元数据（provider、model、usage等）
     timestamp: datetime = Field(default_factory=datetime.now)  # 消息创建时间
+    
+    class Config:
+        arbitrary_types_allowed = True  # Allow non-Pydantic types like Attachment
+    
+    def is_multimodal(self) -> bool:
+        """Check if this message contains multimodal content
+        
+        Returns:
+            True if content is a list (multimodal), False if string (text only)
+        """
+        return isinstance(self.content, list)
 
 
 # ===== Real Conversation Messages =====

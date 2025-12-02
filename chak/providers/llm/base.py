@@ -124,10 +124,11 @@ class OpenAICompatibleMessageConverter(BaseMessageConverter):
     """OpenAI SDK compatible message converter base class."""
     
     def to_provider_format(self, messages: List[Message]) -> List[Dict[str, Any]]:
-        """Convert to OpenAI-compatible message format with tool support."""
+        """Convert to OpenAI-compatible message format with multimodal support."""
         result = []
+        
         for msg in messages:
-            # Basic message structure
+            # Build basic message structure
             formatted_msg: Dict[str, Any] = {
                 "role": msg.role or "user",
                 "content": msg.content or ""
@@ -135,7 +136,6 @@ class OpenAICompatibleMessageConverter(BaseMessageConverter):
             
             # Add tool_calls if present (for assistant messages)
             if hasattr(msg, 'tool_calls') and msg.tool_calls:
-                # Convert tool_calls to dict format
                 formatted_msg["tool_calls"] = [
                     {
                         "id": tc.id,

@@ -355,17 +355,17 @@ class SummarizationStrategy(BaseContextStrategy):
         for m in messages:
             if isinstance(m, HumanMessage):
                 role = "User"
-                text = (m.content or "").strip()
+                text = self.format_content_for_summary(m).strip()
             elif isinstance(m, AIMessage):
                 role = "Assistant"
-                text = (m.content or "").strip()
+                text = self.format_content_for_summary(m).strip()
             elif isinstance(m, MarkerMessage):
                 # For marker, extract pure summary content from metadata, not content (content has "[Conversation Summary]" prefix)
                 role = "Previous Summary"
                 text = m.metadata.get('summary', '').strip()
             else:
                 role = "Message"
-                text = (m.content or "").strip()
+                text = self.format_content_for_summary(m).strip()
             
             if text:
                 segments.append(f"{role}: {text}")
