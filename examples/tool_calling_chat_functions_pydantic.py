@@ -16,6 +16,7 @@ from typing import Optional
 
 from pydantic import BaseModel, Field
 import dotenv
+from rich import print
 
 dotenv.load_dotenv()
 

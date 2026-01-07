@@ -201,8 +201,9 @@ class Conversation:
             attachments: Optional[List[Attachment]] = None,
             stream: bool = False,
             timeout: Optional[int] = None,
+            returns: Optional[type] = None,
             **kwargs
-    ) -> Union[Message, Iterator[MessageChunk]]:
+    ) -> Union[Message, Iterator[MessageChunk], Any]:
         """
         Send message (sync, no MCP tools support).
         
@@ -219,6 +220,8 @@ class Conversation:
             attachments: Optional list of Attachment objects (images, audio, etc.)
             stream: Enable streaming
             timeout: Request timeout in seconds. If None, uses provider's default timeout (30s)
+            returns: Optional Pydantic model class for structured output. When provided,
+                    forces LLM to return data matching this schema via function calling
             **kwargs: Additional LLM parameters
         
         Returns:
@@ -259,6 +262,13 @@ class Conversation:
             raise RuntimeError(
                 "MCP tools require async execution. "
                 "Please use: await conv.asend(message)"
+            )
+        
+        # Check if structured output is requested
+        if returns is not None:
+            raise RuntimeError(
+                "Structured output (returns parameter) requires async execution. "
+                "Please use: await conv.asend(message, returns=YourModel)"
             )
         
         # Merge timeout into kwargs if specified
@@ -345,8 +355,9 @@ class Conversation:
             attachments: Optional[List[Attachment]] = None,
             stream: bool = False,
             timeout: Optional[int] = None,
+            returns: Optional[type] = None,
             **kwargs
-    ) -> Union[Message, AsyncIterator[MessageChunk]]:
+    ) -> Union[Message, AsyncIterator[MessageChunk], Any]:
         """
         Send message (async, full featured).
         
@@ -361,6 +372,8 @@ class Conversation:
             attachments: Optional list of Attachment objects (images, audio, etc.)
             stream: Enable streaming
             timeout: Request timeout in seconds. If None, uses provider's default timeout (30s)
+            returns: Optional Pydantic model class for structured output. When provided,
+                    forces LLM to return data matching this schema via function calling
             **kwargs: Additional LLM parameters
         
         Returns:
@@ -405,6 +418,15 @@ class Conversation:
         # Merge timeout into kwargs if specified
         if timeout is not None:
             kwargs['timeout'] = timeout
+        
+        # Handle structured output (returns parameter)
+        if returns is not None:
+            return await self._asend_with_structured_output(
+                message=message,
+                attachments=attachments,
+                returns=returns,
+                **kwargs
+            )
         
         # Convert str to HumanMessage and merge attachments if present
         if isinstance(message, str):
@@ -564,6 +586,185 @@ class Conversation:
         )
         self.messages.append(response)
         return response
+    
+    async def _asend_with_structured_output(
+        self, 
+        message: Union[str, Message],
+        attachments: Optional[List[Attachment]],
+        returns: type,
+        **kwargs
+    ) -> Any:
+        """
+        Handle structured output by converting Pydantic model to tool calling.
+        
+        This method:
+        1. Creates a virtual tool from the Pydantic model schema
+        2. Forces LLM to call this tool
+        3. Parses and validates the result
+        4. Returns the Pydantic model instance
+        
+        Args:
+            message: User message
+            attachments: Optional attachments
+            returns: Pydantic BaseModel class
+            **kwargs: Additional LLM parameters
+            
+        Returns:
+            Instance of the Pydantic model
+        """
+        from pydantic import BaseModel
+        import json
+        
+        # Validate returns is a Pydantic model
+        if not (isinstance(returns, type) and issubclass(returns, BaseModel)):
+            raise TypeError(
+                f"returns must be a Pydantic BaseModel subclass, got {type(returns)}"
+            )
+        
+        # Convert str to HumanMessage (same logic as regular asend)
+        if isinstance(message, str):
+            if attachments:
+                # Create multimodal message
+                content_parts = [{"type": "text", "text": message}]
+                for att in attachments:
+                    if att.mime_type.is_image():
+                        content_parts.append({
+                            "type": "image_url",
+                            "image_url": {"url": att.source}
+                        })
+                    elif att.mime_type.is_audio():
+                        content_parts.append({
+                            "type": "input_audio",
+                            "input_audio": {
+                                "data": att.source,
+                                "format": att.mime_type.subtype
+                            }
+                        })
+                    elif att.mime_type.is_video():
+                        content_parts.append({
+                            "type": "video",
+                            "video": {"url": att.source}
+                        })
+                    elif att.mime_type.is_document() or att.reader:
+                        doc_result = await att.aread()
+                        if doc_result and doc_result.content:
+                            doc_text = doc_result.content
+                            if doc_result.meta:
+                                meta_str = ", ".join([f"{k}: {v}" for k, v in doc_result.meta.items() if k != "error"])
+                                if meta_str:
+                                    doc_text = f"[Document metadata: {meta_str}]\n\n{doc_text}"
+                            content_parts.append({
+                                "type": "text",
+                                "text": doc_text
+                            })
+                user_message = HumanMessage(content=content_parts, attachments=list(attachments) if attachments else [])
+            else:
+                user_message = HumanMessage(content=message)
+        else:
+            user_message = message
+        
+        self.messages.append(user_message)
+        
+        if attachments:
+            self.attachments.extend(attachments)
+        
+        # Apply context strategy
+        messages_to_send = self._apply_context_strategy()
+        
+        # Generate tool schema from Pydantic model
+        tool_schema = self._generate_tool_schema_from_model(returns)
+        
+        # Add tool to kwargs and force its usage
+        kwargs['tools'] = [tool_schema]
+        kwargs['tool_choice'] = {
+            "type": "function",
+            "function": {"name": tool_schema["function"]["name"]}
+        }
+        
+        # Call LLM with forced tool calling
+        response = await asyncio.to_thread(
+            self.provider.send,
+            messages=messages_to_send,
+            **kwargs
+        )
+        
+        # Extract tool call result
+        # Note: provider.send returns AIMessage, not raw ChatCompletion
+        if isinstance(response, AIMessage):
+            # Direct AIMessage from provider
+            if not response.tool_calls:
+                raise RuntimeError(
+                    "LLM did not return a tool call. "
+                    "This may happen if the model doesn't support function calling."
+                )
+            tool_call = response.tool_calls[0]
+        elif hasattr(response, 'choices') and response.choices:
+            # Raw ChatCompletion format (fallback)
+            message_obj = response.choices[0].message
+            if not hasattr(message_obj, 'tool_calls') or not message_obj.tool_calls:
+                raise RuntimeError(
+                    "LLM did not return a tool call. "
+                    "This may happen if the model doesn't support function calling."
+                )
+            tool_call = message_obj.tool_calls[0]
+        else:
+            raise RuntimeError("Unexpected response format from LLM")
+        
+        # Parse arguments and validate with Pydantic
+        try:
+            arguments = json.loads(tool_call.function.arguments)
+            result = returns.model_validate(arguments)
+            
+            # Save the AI message to conversation history
+            if isinstance(response, AIMessage):
+                # Response is already AIMessage, save it directly
+                self.messages.append(response)
+            else:
+                # Fallback: create AIMessage from ChatCompletion
+                ai_message = AIMessage(
+                    content=response.choices[0].message.content or "",
+                    tool_calls=response.choices[0].message.tool_calls
+                )
+                self.messages.append(ai_message)
+            
+            # Add a virtual tool response to complete the tool calling flow
+            # This prevents LLM from expecting a tool response in the next turn
+            tool_response = ToolMessage(
+                content="Structured data extracted successfully",
+                tool_call_id=tool_call.id
+            )
+            self.messages.append(tool_response)
+            
+            return result
+        except json.JSONDecodeError as e:
+            raise RuntimeError(f"Failed to parse tool call arguments: {e}")
+        except Exception as e:
+            raise RuntimeError(f"Failed to validate response with Pydantic model: {e}")
+    
+    def _generate_tool_schema_from_model(self, model: type) -> Dict[str, Any]:
+        """
+        Generate OpenAI tool schema from Pydantic model.
+        
+        Args:
+            model: Pydantic BaseModel class
+            
+        Returns:
+            OpenAI tool definition dict
+        """
+        schema = model.model_json_schema()
+        
+        # Extract description from model docstring or use default
+        description = model.__doc__ or f"Correctly extracted `{model.__name__}` with all required parameters"
+        description = description.strip()
+        
+        return {
+            "type": "function",
+            "function": {
+                "name": model.__name__,
+                "description": description,
+                "parameters": schema
+            }
+        }
     
     async def _asend_nonstream(self, messages: List[Message], **kwargs) -> Message:
         """Handle async non-streaming response without tools."""

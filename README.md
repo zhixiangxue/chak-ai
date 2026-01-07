@@ -26,6 +26,7 @@ chak is not another liteLLM, one-api, or OpenRouter, but a client library that a
 
 ## 🌵 What's New
 
+- **2025-01-07 | v0.2.3** - Conversation now supports structured outputs via `returns` parameter. See [Structured Output](#structured-output)
 - **2024-12-02 | v0.2.2** - Conversation now supports multimodal inputs. See [Multimodal Support](#multimodal-support)
 
 ---
@@ -124,10 +125,33 @@ conv = Conversation(
 )
 ```
 
-
-
 - **Now**: Functions, objects, and MCP tools all work the same way
 - **Planning**: Smart tool selection based on context
+
+### 🌺 Structured Output
+
+Get structured data directly from LLM responses using Pydantic models:
+
+```python
+from pydantic import BaseModel, Field
+
+class User(BaseModel):
+    name: str = Field(description="User's full name")
+    email: str = Field(description="User's email address")
+    age: int = Field(description="User's age")
+
+# Get structured output automatically
+user = await conv.asend(
+    "Create a user: John Doe, john@example.com, 30 years old",
+    returns=User
+)
+
+print(user.name)   # "John Doe"
+print(user.email)  # "john@example.com"
+print(user.age)    # 30
+```
+
+Works with multimodal inputs too - extract structured data from images, documents, and more.
 
 ---
 
@@ -421,6 +445,139 @@ See complete examples:
 - **MCP (stdio)**: [examples/tool_calling_chat_mcp_stdio.py](examples/tool_calling_chat_mcp_stdio.py)
 - **MCP (HTTP)**: [examples/tool_calling_chat_mcp_http.py](examples/tool_calling_chat_mcp_http.py)
 
+
+---
+
+<a id="structured-output"></a>
+
+## 🌙 Structured Output
+
+chak's `Conversation` supports structured outputs through the `returns` parameter. Instead of parsing LLM text responses manually, you can specify a Pydantic model and get validated, type-safe data directly.
+
+### Basic Usage
+
+#### Simple Data Extraction
+
+```python
+from pydantic import BaseModel, Field
+from chak import Conversation
+
+class User(BaseModel):
+    """User information"""
+    name: str = Field(description="User's full name")
+    email: str = Field(description="User's email address")
+    age: int = Field(description="User's age")
+
+conv = Conversation("openai/gpt-4o", api_key="YOUR_KEY")
+
+# Extract structured data from natural language
+user = await conv.asend(
+    "Create a user profile for John Doe, email john@example.com, 30 years old",
+    returns=User
+)
+
+print(user.name)   # "John Doe"
+print(user.email)  # "john@example.com"
+print(user.age)    # 30
+```
+
+#### Complex Nested Models
+
+```python
+from typing import List
+from pydantic import BaseModel, Field
+
+class Address(BaseModel):
+    street: str
+    city: str
+    country: str
+
+class Company(BaseModel):
+    name: str
+    industry: str
+    address: Address
+    employee_count: int
+
+# Works with nested structures
+company = await conv.asend(
+    "Apple Inc is a technology company with 150,000 employees, located at One Apple Park Way, Cupertino, USA",
+    returns=Company
+)
+
+print(company.name)              # "Apple Inc"
+print(company.address.city)      # "Cupertino"
+print(company.employee_count)    # 150000
+```
+
+### Multimodal Structured Output
+
+Combine structured outputs with images, documents, and other attachments:
+
+#### Extract Data from Images
+
+```python
+from chak import Image
+
+class SceneDescription(BaseModel):
+    """Scene description extracted from image"""
+    main_subject: str = Field(description="The main subject or focal point")
+    setting: str = Field(description="The location or setting")
+    colors: List[str] = Field(description="Dominant colors in the image")
+    mood: str = Field(description="Overall mood or atmosphere")
+
+# Analyze image and get structured output
+scene = await conv.asend(
+    "Analyze this image and describe the scene",
+    attachments=[Image("photo.jpg")],
+    returns=SceneDescription
+)
+
+print(scene.main_subject)  # "Mount Fuji"
+print(scene.colors)        # ["blue", "white", "pink"]
+print(scene.mood)          # "peaceful and serene"
+```
+
+#### Extract Data from Documents
+
+```python
+from chak import PDF
+
+class Invoice(BaseModel):
+    """Invoice information extracted from document"""
+    invoice_number: str
+    date: str
+    total_amount: float
+    vendor_name: str
+    items: List[str]
+
+# Extract structured data from PDF
+invoice = await conv.asend(
+    "Extract invoice information from this document",
+    attachments=[PDF("invoice.pdf")],
+    returns=Invoice
+)
+
+print(invoice.invoice_number)  # "INV-2024-001"
+print(invoice.total_amount)    # 1250.00
+print(invoice.vendor_name)     # "Acme Corp"
+```
+
+### Complete Example
+
+See full working examples:
+- **Basic Structured Output**: [examples/structured_output_simple.py](examples/structured_output_simple.py)
+- **Multimodal Structured Output**: [examples/structured_output_multimodal.py](examples/structured_output_multimodal.py)
+
+### Notes
+
+- **Pydantic Required**: The `returns` parameter must be a Pydantic `BaseModel` subclass
+- **Function Calling Support**: Your LLM must support function calling (most modern models do)
+- **Async Only**: Structured output currently works with `asend()` only, not `send()`
+- **Validation**: All data is automatically validated against your Pydantic model schema
+- **Provider Compatibility**: 
+  - ✅ Supported: OpenAI, Anthropic, Google Gemini, most text models
+  - ⚠️ Limited: Some vision models may not support function calling
+  - Use text models with multimodal support (e.g., OpenAI gpt-4o, gpt-4-vision) for best results
 
 ---
 

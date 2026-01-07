@@ -26,6 +26,7 @@ chak 不是另一个 liteLLM、one-api 或 OpenRouter，而是一个为你主动
 
 ## 🌵 最近更新
 
+- **2025-01-07 | v0.2.3** - Conversation 现已支持通过 `returns` 参数输出结构化数据。详见 [结构化输出](#structured-output)
 - **2024-12-02 | v0.2.2** - Conversation 现已支持多模态对话。详见 [多模态支持](#multimodal-support)
 
 ---
@@ -123,8 +124,33 @@ conv = Conversation(
 )
 ```
 
-- **当前**: 函数、对象和 MCP 工具都以相同方式工作
-- **规划中**: 基于上下文的智能工具选择
+- **当前**：函数、对象和 MCP 工具都以相同方式工作
+- **规划中**：基于上下文的智能工具选择
+
+### 🌺 结构化输出
+
+使用 Pydantic 模型直接从 LLM 响应中获取结构化数据：
+
+```python
+from pydantic import BaseModel, Field
+
+class User(BaseModel):
+    name: str = Field(description="用户全名")
+    email: str = Field(description="用户邮箱")
+    age: int = Field(description="用户年龄")
+
+# 自动获取结构化输出
+user = await conv.asend(
+    "创建用户：张三，zhangsan@example.com，30岁",
+    returns=User
+)
+
+print(user.name)   # "张三"
+print(user.email)  # "zhangsan@example.com"
+print(user.age)    # 30
+```
+
+也支持多模态输入——从图片、文档等提取结构化数据。
 
 ---
 
@@ -336,6 +362,139 @@ conv = Conversation(
 - **MCP (SSE)**: examples/tool_calling_chat_mcp_sse.py
 - **MCP (stdio)**: examples/tool_calling_chat_mcp_stdio.py
 - **MCP (HTTP)**: examples/tool_calling_chat_mcp_http.py
+
+---
+
+<a id="structured-output"></a>
+
+## 🌙 结构化输出
+
+chak 的 `Conversation` 通过 `returns` 参数支持结构化输出。无需手动解析 LLM 文本响应，你可以指定一个 Pydantic 模型，直接获取验证过的、类型安全的数据。
+
+### 基本用法
+
+#### 简单数据提取
+
+```python
+from pydantic import BaseModel, Field
+from chak import Conversation
+
+class User(BaseModel):
+    """用户信息"""
+    name: str = Field(description="用户全名")
+    email: str = Field(description="用户邮箱地址")
+    age: int = Field(description="用户年龄")
+
+conv = Conversation("openai/gpt-4o", api_key="YOUR_KEY")
+
+# 从自然语言提取结构化数据
+user = await conv.asend(
+    "为张三创建用户资料，邮箱 zhangsan@example.com，30 岁",
+    returns=User
+)
+
+print(user.name)   # "张三"
+print(user.email)  # "zhangsan@example.com"
+print(user.age)    # 30
+```
+
+#### 复杂嵌套模型
+
+```python
+from typing import List
+from pydantic import BaseModel, Field
+
+class Address(BaseModel):
+    street: str
+    city: str
+    country: str
+
+class Company(BaseModel):
+    name: str
+    industry: str
+    address: Address
+    employee_count: int
+
+# 支持嵌套结构
+company = await conv.asend(
+    "苹果公司是一家科技公司，有 15 万名员工，位于美国库比蒂诺苹果园区",
+    returns=Company
+)
+
+print(company.name)              # "苹果公司" 或 "Apple Inc"
+print(company.address.city)      # "库比蒂诺" 或 "Cupertino"
+print(company.employee_count)    # 150000
+```
+
+### 多模态结构化输出
+
+结合结构化输出与图片、文档和其他附件：
+
+#### 从图片提取数据
+
+```python
+from chak import Image
+
+class SceneDescription(BaseModel):
+    """从图片提取的场景描述"""
+    main_subject: str = Field(description="主要主体或焦点")
+    setting: str = Field(description="位置或场景")
+    colors: List[str] = Field(description="图片中的主要颜色")
+    mood: str = Field(description="整体气氛或心情")
+
+# 分析图片并获取结构化输出
+scene = await conv.asend(
+    "分析这张图片并描述场景",
+    attachments=[Image("photo.jpg")],
+    returns=SceneDescription
+)
+
+print(scene.main_subject)  # "富士山"
+print(scene.colors)        # ["蓝色", "白色", "粉色"]
+print(scene.mood)          # "宁静和平">
+```
+
+#### 从文档提取数据
+
+```python
+from chak import PDF
+
+class Invoice(BaseModel):
+    """从文档提取的发票信息"""
+    invoice_number: str
+    date: str
+    total_amount: float
+    vendor_name: str
+    items: List[str]
+
+# 从 PDF 提取结构化数据
+invoice = await conv.asend(
+    "从这份文档提取发票信息",
+    attachments=[PDF("invoice.pdf")],
+    returns=Invoice
+)
+
+print(invoice.invoice_number)  # "INV-2024-001"
+print(invoice.total_amount)    # 1250.00
+print(invoice.vendor_name)     # "Acme 公司"
+```
+
+### 完整示例
+
+查看完整可运行示例：
+- **基础结构化输出**: [examples/structured_output_simple.py](examples/structured_output_simple.py)
+- **多模态结构化输出**: [examples/structured_output_multimodal.py](examples/structured_output_multimodal.py)
+
+### 注意事项
+
+- **需要 Pydantic**：`returns` 参数必须是 Pydantic `BaseModel` 子类
+- **Function Calling 支持**：你的 LLM 必须支持 function calling（大多数现代模型都支持）
+- **仅异步**：结构化输出目前仅适用于 `asend()`，不适用于 `send()`
+- **自动验证**：所有数据都会根据你的 Pydantic 模型 schema 自动验证
+- **提供商兼容性**：
+  - ✅ 支持：OpenAI、Anthropic、Google Gemini、大多数文本模型
+  - ⚠️ 限制：某些视觉模型可能不支持 function calling
+  - 建议使用支持多模态的文本模型（如 OpenAI gpt-4o、gpt-4-vision）以获得最佳效果
 
 ---
 
