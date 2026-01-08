@@ -357,7 +357,7 @@ class Conversation:
             timeout: Optional[int] = None,
             returns: Optional[type] = None,
             **kwargs
-    ) -> Union[Message, AsyncIterator[MessageChunk], Any]:
+    ) -> Union[Message, AsyncIterator[MessageChunk], Any, None]:
         """
         Send message (async, full featured).
         
@@ -366,6 +366,7 @@ class Conversation:
         - ✅ Non-streaming
         - ✅ Multimodal (images, audio)
         - ✅ MCP tools (both modes)
+        - ✅ Structured output (returns parameter)
         
         Args:
             message: Message content (str will be converted to HumanMessage)
@@ -373,12 +374,14 @@ class Conversation:
             stream: Enable streaming
             timeout: Request timeout in seconds. If None, uses provider's default timeout (30s)
             returns: Optional Pydantic model class for structured output. When provided,
-                    forces LLM to return data matching this schema via function calling
+                    forces LLM to return data matching this schema via function calling.
+                    Returns None if extraction fails.
             **kwargs: Additional LLM parameters
         
         Returns:
-            - If stream=False: Complete Message
+            - If stream=False and returns=None: Complete Message
             - If stream=True: AsyncIterator[MessageChunk]
+            - If returns is provided: Validated Pydantic model instance or None if failed
         
         Examples:
             # Non-streaming
@@ -421,12 +424,16 @@ class Conversation:
         
         # Handle structured output (returns parameter)
         if returns is not None:
-            return await self._asend_with_structured_output(
-                message=message,
-                attachments=attachments,
-                returns=returns,
-                **kwargs
-            )
+            try:
+                return await self._asend_with_structured_output(
+                    message=message,
+                    attachments=attachments,
+                    returns=returns,
+                    **kwargs
+                )
+            except Exception:
+                # Structured output failed, return None
+                return None
         
         # Convert str to HumanMessage and merge attachments if present
         if isinstance(message, str):
@@ -596,7 +603,6 @@ class Conversation:
     ) -> Any:
         """
         Handle structured output by converting Pydantic model to tool calling.
-        
         This method:
         1. Creates a virtual tool from the Pydantic model schema
         2. Forces LLM to call this tool

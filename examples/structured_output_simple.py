@@ -71,10 +71,13 @@ async def main():
         "Create a user profile for John Doe, email john@example.com, 30 years old",
         returns=User
     )
-    print(f"✅ Result type: {type(user).__name__}")
-    print(f"   Name: {user.name}")
-    print(f"   Email: {user.email}")
-    print(f"   Age: {user.age}")
+    if user:
+        print(f"✅ Result type: {type(user).__name__}")
+        print(f"   Name: {user.name}")
+        print(f"   Email: {user.email}")
+        print(f"   Age: {user.age}")
+    else:
+        print("❌ Failed to extract user information")
     print()
     
     # Example 2: Extract product information
@@ -84,11 +87,14 @@ async def main():
         "I'm looking at a MacBook Pro 16-inch, it costs $2499 and belongs to the laptops category",
         returns=Product
     )
-    print(f"✅ Result type: {type(product).__name__}")
-    print(f"   Name: {product.name}")
-    print(f"   Price: ${product.price}")
-    print(f"   Category: {product.category}")
-    print(f"   In Stock: {product.in_stock}")
+    if product:
+        print(f"✅ Result type: {type(product).__name__}")
+        print(f"   Name: {product.name}")
+        print(f"   Price: ${product.price}")
+        print(f"   Category: {product.category}")
+        print(f"   In Stock: {product.in_stock}")
+    else:
+        print("❌ Failed to extract product information")
     print()
     
     # Example 3: Sentiment analysis
@@ -98,10 +104,13 @@ async def main():
         "This movie was absolutely amazing! The acting was superb and the plot kept me engaged throughout.",
         returns=Sentiment
     )
-    print(f"✅ Result type: {type(sentiment).__name__}")
-    print(f"   Label: {sentiment.label}")
-    print(f"   Confidence: {sentiment.confidence:.2f}")
-    print(f"   Reasoning: {sentiment.reasoning}")
+    if sentiment:
+        print(f"✅ Result type: {type(sentiment).__name__}")
+        print(f"   Label: {sentiment.label}")
+        print(f"   Confidence: {sentiment.confidence:.2f}")
+        print(f"   Reasoning: {sentiment.reasoning}")
+    else:
+        print("❌ Failed to extract sentiment")
     print()
     
     # Show conversation stats
