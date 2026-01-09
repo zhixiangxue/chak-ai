@@ -26,6 +26,7 @@ chak is not another liteLLM, one-api, or OpenRouter, but a client library that a
 
 ## 🌵 What's New
 
+- **2025-01-09 | v0.2.5** - Added configurable tool executor for CPU-intensive tasks. Use `tool_executor` parameter to control execution mode
 - **2025-01-07 | v0.2.3** - Conversation now supports structured outputs via `returns` parameter. See [Structured Output](#structured-output)
 - **2024-12-02 | v0.2.2** - Conversation now supports multimodal inputs. See [Multimodal Support](#multimodal-support)
 
@@ -125,7 +126,42 @@ conv = Conversation(
 )
 ```
 
+**Configurable Execution**: For CPU-intensive tools, use `tool_executor` to control how tools run:
+
+```python
+import chak
+
+# Default: best for IO-bound tasks (API calls, DB queries)
+conv = chak.Conversation(
+    "openai/gpt-4o",
+    tools=[...],
+    tool_executor=chak.ToolExecutor.ASYNCIO  # default
+)
+
+# For CPU-intensive tasks: use process pool for true parallelism
+conv = chak.Conversation(
+    "openai/gpt-4o",
+    tools=[heavy_compute, ...],
+    tool_executor=chak.ToolExecutor.PROCESS  # bypasses GIL
+)
+
+# Can switch anytime
+conv.set_tool_executor(chak.ToolExecutor.PROCESS)
+
+# Or override for a single call
+await conv.asend("Run heavy task", tool_executor=chak.ToolExecutor.PROCESS)
+```
+
+**Choose the right executor**:
+
+| Scenario | ASYNCIO | THREAD | PROCESS | Recommended |
+|----------|---------|--------|---------|-------------|
+| **CPU-intensive (sync)** | ❌ GIL limited | ❌ GIL limited | ✅ True parallel | PROCESS |
+| **IO-intensive (async)** | ✅ Native concurrency | - | - | Default |
+| **IO-intensive (sync)** | ✅ Works well | ✅ Works well | ⚠️ Overkill | ASYNCIO |
+
 - **Now**: Functions, objects, and MCP tools all work the same way
+- **Now**: Configurable executor for optimal performance
 - **Planning**: Smart tool selection based on context
 
 ### 🌺 Structured Output

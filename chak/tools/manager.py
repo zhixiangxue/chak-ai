@@ -70,15 +70,17 @@ class ToolManager:
         )
     """
     
-    def __init__(self, tools: List[Union[MCPTool, NativeFunctionTool, NativeObjectTool]], max_iterations: int = 10):
+    def __init__(self, tools: List[Union[MCPTool, NativeFunctionTool, NativeObjectTool]], max_iterations: int = 10, executor=None):
         """
         Args:
             tools: 工具列表（MCPTool、NativeFunctionTool 或 NativeObjectTool）
             max_iterations: 最大迭代次数（防止无限循环）
+            executor: 执行器实例（ThreadPoolExecutor/ProcessPoolExecutor）或 None（使用 asyncio）
         """
         self.tools = tools
         self._tool_map = self._build_tool_map()
         self.max_iterations = max_iterations
+        self.executor = executor
     
     def _build_tool_map(self) -> dict:
         """
@@ -450,7 +452,7 @@ class ToolManager:
         try:
             # 调用工具（支持 MCPTool 和 NativeFunctionTool）
             logger.debug(f"⚙️  [Tool] Executing tool: {tool_name}...")
-            result = await tool.call(arguments)
+            result = await tool.call(arguments, executor=self.executor)
             
             # 提取结果内容
             if hasattr(result, 'content'):

@@ -175,13 +175,14 @@ class NativeFunctionTool:
             }
         }
     
-    async def call(self, arguments: Dict[str, Any], retry: bool = True) -> Any:
+    async def call(self, arguments: Dict[str, Any], retry: bool = True, executor=None) -> Any:
         """
         Call function
         
         Args:
             arguments: Function arguments (dict)
             retry: Enable retry (meaningless for native functions, kept for interface consistency)
+            executor: Executor instance (ThreadPoolExecutor/ProcessPoolExecutor) or None (use asyncio.to_thread)
         
         Returns:
             Function execution result
@@ -204,11 +205,19 @@ class NativeFunctionTool:
         
         # Detect if sync or async function
         if asyncio.iscoroutinefunction(self.func):
-            # Async function: call directly
+            # Async function: call directly (no executor needed)
             result = await self.func(**converted_args)
         else:
-            # Sync function: execute in thread pool to avoid blocking event loop
-            result = await asyncio.to_thread(self.func, **converted_args)
+            # Sync function: needs to run in executor to avoid blocking event loop
+            if executor is None:
+                # Default: use asyncio's default thread pool
+                result = await asyncio.to_thread(self.func, **converted_args)
+            else:
+                # Use custom executor (ThreadPoolExecutor or ProcessPoolExecutor)
+                import functools
+                loop = asyncio.get_event_loop()
+                func_with_args = functools.partial(self.func, **converted_args)
+                result = await loop.run_in_executor(executor, func_with_args)
         
         # Serialize result if it's a Pydantic model
         try:

@@ -16,13 +16,13 @@ Example:
 >>> conv = chak.Conversation('deepseek@https://custom.api.com:deepseek-chat', api_key='xxx')
 """
 
-__version__ = "0.2.4"
+__version__ = "0.2.5"
 
 # Strategy classes
 from .context.strategies import FIFOStrategy, NoopStrategy, SummarizationStrategy, BaseContextStrategy
 from .context.strategies.base import StrategyRequest, StrategyResponse
 # Core API - import the main classes
-from .conversation import Conversation
+from .conversation import Conversation, ToolExecutor
 from .exceptions import (
     ChakError, ProviderError, ConfigError,
     ConversationNotFoundError, ContextError
@@ -74,6 +74,7 @@ except ImportError:
 __all__ = [
     # Core classes
     'Conversation',
+    'ToolExecutor',
     'Message',
     'MessageChunk',
     'BaseMessage',

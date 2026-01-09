@@ -26,6 +26,7 @@ chak 不是另一个 liteLLM、one-api 或 OpenRouter，而是一个为你主动
 
 ## 🌵 最近更新
 
+- **2025-01-09 | v0.2.5** - 新增可配置工具执行器，支持 CPU 密集型任务。使用 `tool_executor` 参数控制执行模式
 - **2025-01-07 | v0.2.3** - Conversation 现已支持通过 `returns` 参数输出结构化数据。详见 [结构化输出](#structured-output)
 - **2024-12-02 | v0.2.2** - Conversation 现已支持多模态对话。详见 [多模态支持](#multimodal-support)
 
@@ -124,7 +125,42 @@ conv = Conversation(
 )
 ```
 
+**可配置执行**：对于 CPU 密集型工具，使用 `tool_executor` 控制工具执行方式：
+
+```python
+import chak
+
+# 默认：适合 IO 密集型任务（API 调用、数据库查询）
+conv = chak.Conversation(
+    "openai/gpt-4o",
+    tools=[...],
+    tool_executor=chak.ToolExecutor.ASYNCIO  # 默认值
+)
+
+# CPU 密集型任务：使用进程池实现真正的并行
+conv = chak.Conversation(
+    "openai/gpt-4o",
+    tools=[heavy_compute, ...],
+    tool_executor=chak.ToolExecutor.PROCESS  # 绕过 GIL
+)
+
+# 随时切换
+conv.set_tool_executor(chak.ToolExecutor.PROCESS)
+
+# 或在单次调用时覆盖
+await conv.asend("运行重型任务", tool_executor=chak.ToolExecutor.PROCESS)
+```
+
+**选择合适的执行器**：
+
+| 场景 | ASYNCIO | THREAD | PROCESS | 推荐 |
+|------|---------|--------|---------|------|
+| **CPU 密集型（同步）** | ❌ GIL 限制 | ❌ GIL 限制 | ✅ 真正并行 | PROCESS |
+| **IO 密集型（异步）** | ✅ 天然并发 | - | - | 默认值 |
+| **IO 密集型（同步）** | ✅ 运行良好 | ✅ 运行良好 | ⚠️ 过度使用 | ASYNCIO |
+
 - **当前**：函数、对象和 MCP 工具都以相同方式工作
+- **当前**：可配置执行器以获得最佳性能
 - **规划中**：基于上下文的智能工具选择
 
 ### 🌺 结构化输出

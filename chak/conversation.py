@@ -1,4 +1,6 @@
 import asyncio
+from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
+from enum import Enum
 from typing import TYPE_CHECKING, List, Dict, Any, Iterator, Union, Optional, AsyncIterator
 
 from .attachment import Attachment
@@ -12,6 +14,13 @@ from .utils.uri import parse as parse_uri
 if TYPE_CHECKING:
     from .tools.mcp.tool import MCPTool
     from .tools.manager import ToolManager
+
+
+class ToolExecutor(str, Enum):
+    """Tool execution mode."""
+    ASYNCIO = "asyncio"  # Use asyncio.to_thread (default, best for IO-bound)
+    THREAD = "thread"    # Use ThreadPoolExecutor
+    PROCESS = "process"  # Use ProcessPoolExecutor (for CPU-bound tasks)
 
 
 class Conversation:
@@ -32,6 +41,7 @@ class Conversation:
         system_message: Optional[str] = None,
         context_strategy: Optional[BaseContextStrategy] = None,
         tools: Optional[List["MCPTool"]] = None,
+        tool_executor: ToolExecutor = ToolExecutor.ASYNCIO,
         **kwargs
     ):
         """
@@ -50,6 +60,10 @@ class Conversation:
                           If you need structured content, use \n\n to separate sections.
             context_strategy: Context management strategy (default: NoopStrategy)
             tools: Optional list of MCP tools or native functions (requires async asend() method)
+            tool_executor: Tool execution mode (default: ToolExecutor.ASYNCIO)
+                          - ASYNCIO: Best for IO-bound tasks (API calls, DB queries)
+                          - THREAD: ThreadPoolExecutor for sync blocking operations
+                          - PROCESS: ProcessPoolExecutor for CPU-bound tasks
             **kwargs: Additional configuration parameters
         
         Example:
@@ -79,13 +93,20 @@ class Conversation:
         self.attachments: List[Attachment] = []  # Session-level attachment tracking
         self.tools = tools
         
+        # Tool executor configuration
+        self._tool_executor = tool_executor
+        self._thread_pool: Optional[ThreadPoolExecutor] = None
+        self._process_pool: Optional[ProcessPoolExecutor] = None
+        
         # Initialize tool manager if tools provided
         self._tool_manager: Optional["ToolManager"] = None
         if tools:
             from .tools import wrap_tools
             from .tools.manager import ToolManager
             wrapped_tools = wrap_tools(tools)
-            self._tool_manager = ToolManager(wrapped_tools)
+            # Pass executor to ToolManager
+            executor = self._get_executor()
+            self._tool_manager = ToolManager(wrapped_tools, executor=executor)
         
         # Initialize system message
         self._initial_system_message = self._normalize_system_message(system_message)
@@ -129,6 +150,46 @@ class Conversation:
             raise TypeError(f"system_message must be str, got {type(system_message)}")
         
         return SystemMessage(content=system_message)
+    
+    def set_tool_executor(self, executor: ToolExecutor) -> None:
+        """
+        Change tool execution mode.
+        
+        Args:
+            executor: New execution mode (ToolExecutor.ASYNCIO/THREAD/PROCESS)
+        
+        Example:
+            >>> conv = Conversation(..., tool_executor=ToolExecutor.ASYNCIO)
+            >>> # Switch to process pool for CPU-bound tasks
+            >>> conv.set_tool_executor(ToolExecutor.PROCESS)
+        """
+        self._tool_executor = executor
+        # Update tool manager's executor if it exists
+        if self._tool_manager:
+            self._tool_manager.executor = self._get_executor()
+    
+    def _get_executor(self, override: Optional[ToolExecutor] = None):
+        """
+        Get executor for current mode (with optional override).
+        
+        Args:
+            override: Optional executor to use instead of default
+        
+        Returns:
+            Executor instance or None for asyncio mode
+        """
+        mode = override or self._tool_executor
+        
+        if mode == ToolExecutor.PROCESS:
+            if not self._process_pool:
+                self._process_pool = ProcessPoolExecutor()
+            return self._process_pool
+        elif mode == ToolExecutor.THREAD:
+            if not self._thread_pool:
+                self._thread_pool = ThreadPoolExecutor()
+            return self._thread_pool
+        else:  # ASYNCIO or invalid (default to asyncio)
+            return None
     
     def _build_config_dict(self, parsed_uri: Dict, kwargs: Dict) -> Dict[str, Any]:
         """Build configuration dictionary from URI and kwargs."""
@@ -356,6 +417,7 @@ class Conversation:
             stream: bool = False,
             timeout: Optional[int] = None,
             returns: Optional[type] = None,
+            tool_executor: Optional[ToolExecutor] = None,
             **kwargs
     ) -> Union[Message, AsyncIterator[MessageChunk], Any, None]:
         """
@@ -376,6 +438,7 @@ class Conversation:
             returns: Optional Pydantic model class for structured output. When provided,
                     forces LLM to return data matching this schema via function calling.
                     Returns None if extraction fails.
+            tool_executor: Optional override for tool execution mode (for this call only)
             **kwargs: Additional LLM parameters
         
         Returns:
@@ -494,11 +557,22 @@ class Conversation:
 
         # Check if tools are configured
         if self._tool_manager:
-            # MCP tools mode
-            if stream:
-                return self._asend_stream_with_tools(messages_to_send, **kwargs)
-            else:
-                return await self._asend_nonstream_with_tools(messages_to_send, **kwargs)
+            # Temporarily override executor if specified for this call
+            original_executor = None
+            if tool_executor is not None:
+                original_executor = self._tool_manager.executor
+                self._tool_manager.executor = self._get_executor(tool_executor)
+            
+            try:
+                # MCP tools mode
+                if stream:
+                    return self._asend_stream_with_tools(messages_to_send, **kwargs)
+                else:
+                    return await self._asend_nonstream_with_tools(messages_to_send, **kwargs)
+            finally:
+                # Restore original executor
+                if original_executor is not None:
+                    self._tool_manager.executor = original_executor
         else:
             # Normal LLM mode
             if stream:
@@ -1089,9 +1163,17 @@ class Conversation:
         return self._model_name
 
     def close(self):
-        """Close the provider."""
+        """Close the provider and cleanup executors."""
         if hasattr(self, 'provider'):
             self.provider.close()
+        
+        # Shutdown executor pools
+        if self._thread_pool:
+            self._thread_pool.shutdown(wait=True)
+            self._thread_pool = None
+        if self._process_pool:
+            self._process_pool.shutdown(wait=True)
+            self._process_pool = None
 
     def __enter__(self):
         return self
