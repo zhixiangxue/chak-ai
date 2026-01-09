@@ -160,6 +160,8 @@ await conv.asend("Run heavy task", tool_executor=chak.ToolExecutor.PROCESS)
 | **IO-intensive (async)** | ✅ Native concurrency | - | - | Default |
 | **IO-intensive (sync)** | ✅ Works well | ✅ Works well | ⚠️ Overkill | ASYNCIO |
 
+See full example: [examples/tool_calling_parallel_demo.py](examples/tool_calling_parallel_demo.py)
+
 - **Now**: Functions, objects, and MCP tools all work the same way
 - **Now**: Configurable executor for optimal performance
 - **Planning**: Smart tool selection based on context

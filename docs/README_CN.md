@@ -159,6 +159,8 @@ await conv.asend("运行重型任务", tool_executor=chak.ToolExecutor.PROCESS)
 | **IO 密集型（异步）** | ✅ 天然并发 | - | - | 默认值 |
 | **IO 密集型（同步）** | ✅ 运行良好 | ✅ 运行良好 | ⚠️ 过度使用 | ASYNCIO |
 
+完整示例：[examples/tool_calling_parallel_demo.py](../examples/tool_calling_parallel_demo.py)
+
 - **当前**：函数、对象和 MCP 工具都以相同方式工作
 - **当前**：可配置执行器以获得最佳性能
 - **规划中**：基于上下文的智能工具选择
