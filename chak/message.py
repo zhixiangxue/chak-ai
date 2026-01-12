@@ -135,10 +135,11 @@ class ToolCallStartEvent(StreamEvent):
         tool_name: 工具名称
         call_id: 工具调用唯一标识
         arguments: 工具调用参数（已解析为 dict）
+        timestamp: 事件时间戳（秒）
     
     Example:
         match event:
-            case ToolCallStartEvent(tool_name=name, arguments=args):
+            case ToolCallStartEvent(tool_name=name, arguments=args, timestamp=ts):
                 print(f"🔧 调用 {name}")
                 print(f"📨 参数: {args}")
     """
@@ -156,10 +157,11 @@ class ToolCallSuccessEvent(StreamEvent):
         tool_name: 工具名称
         call_id: 工具调用唯一标识（与 ToolCallStartEvent 的 call_id 对应）
         result: 工具执行结果（字符串格式）
+        timestamp: 事件时间戳（秒）
     
     Example:
         match event:
-            case ToolCallSuccessEvent(tool_name=name, call_id=cid, result=res):
+            case ToolCallSuccessEvent(tool_name=name, call_id=cid, result=res, timestamp=ts):
                 print(f"✅ {name} 成功: {res}")
     """
     tool_name: str = ""
@@ -176,10 +178,11 @@ class ToolCallErrorEvent(StreamEvent):
         tool_name: 工具名称
         call_id: 工具调用唯一标识（与 ToolCallStartEvent 的 call_id 对应）
         error: 错误信息
+        timestamp: 事件时间戳（秒）
     
     Example:
         match event:
-            case ToolCallErrorEvent(tool_name=name, call_id=cid, error=err):
+            case ToolCallErrorEvent(tool_name=name, call_id=cid, error=err, timestamp=ts):
                 print(f"❌ {name} 失败: {err}")
     """
     tool_name: str = ""

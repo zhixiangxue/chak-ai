@@ -74,6 +74,7 @@ async def main():
     print()
     
     # Use event=True to get real-time tool call information
+    tool_start_times = {}  # Track tool call start times
     async for event in await conv.asend(question, event=True):
         match event:
             case MessageChunk(content=text, is_final=final, metadata=meta, final_message=msg):
@@ -89,29 +90,37 @@ async def main():
                     print(f"📊 Metadata: {meta}")
                     print(f"📝 Final message type: {type(msg).__name__}")
             
-            case ToolCallStartEvent(tool_name=name, call_id=call_id, arguments=args):
+            case ToolCallStartEvent(tool_name=name, call_id=call_id, arguments=args, timestamp=ts):
                 # Tool call started
                 # name = event.tool_name (e.g., "add", "multiply")
                 # call_id = event.call_id (unique identifier for this tool call)
                 # args = event.arguments (e.g., {"a": 15, "b": 27})
+                # ts = event.timestamp (start time in seconds)
+                tool_start_times[call_id] = ts
                 print(f"\n🔧 Calling tool: {name} (call_id: {call_id})")
                 print(f"   Arguments: {args}")
             
-            case ToolCallSuccessEvent(tool_name=name, call_id=call_id, result=res):
+            case ToolCallSuccessEvent(tool_name=name, call_id=call_id, result=res, timestamp=ts):
                 # Tool call succeeded
                 # name = event.tool_name
                 # call_id = event.call_id (matches the call_id from ToolCallStartEvent)
                 # res = event.result (the tool's return value as string)
+                # ts = event.timestamp (end time in seconds)
+                duration = ts - tool_start_times.get(call_id, ts)
                 print(f"✅ Tool result: {name} (call_id: {call_id}) -> {res}")
+                print(f"   ⏱️  Duration: {duration:.3f}s")
                 print()
             
-            case ToolCallErrorEvent(tool_name=name, call_id=call_id, error=err):
+            case ToolCallErrorEvent(tool_name=name, call_id=call_id, error=err, timestamp=ts):
                 # Tool call failed
                 # name = event.tool_name
                 # call_id = event.call_id
                 # err = event.error (error message)
+                # ts = event.timestamp (error time in seconds)
+                duration = ts - tool_start_times.get(call_id, ts)
                 print(f"❌ Tool failed: {name} (call_id: {call_id})")
                 print(f"   Error: {err}")
+                print(f"   ⏱️  Duration: {duration:.3f}s")
                 print()
     
     print("=" * 70)
