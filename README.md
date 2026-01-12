@@ -135,16 +135,22 @@ conv = Conversation(
 from chak.message import MessageChunk, ToolCallStartEvent, ToolCallSuccessEvent, ToolCallErrorEvent
 
 # Use event=True to observe tool calls in real-time
+tool_start_times = {}
 async for event in await conv.asend("Calculate 15 + 27", event=True):
     match event:
-        case ToolCallStartEvent(tool_name=name, arguments=args):
+        case ToolCallStartEvent(tool_name=name, arguments=args, call_id=cid, timestamp=ts):
+            tool_start_times[cid] = ts
             print(f"🔧 Calling: {name} with {args}")
         
-        case ToolCallSuccessEvent(tool_name=name, result=res):
+        case ToolCallSuccessEvent(tool_name=name, call_id=cid, result=res, timestamp=ts):
+            duration = ts - tool_start_times.get(cid, ts)
             print(f"✅ Result: {name} -> {res}")
+            print(f"   ⏱️  Duration: {duration:.3f}s")
         
-        case ToolCallErrorEvent(tool_name=name, error=err):
+        case ToolCallErrorEvent(tool_name=name, call_id=cid, error=err, timestamp=ts):
+            duration = ts - tool_start_times.get(cid, ts)
             print(f"❌ Failed: {name} - {err}")
+            print(f"   ⏱️  Duration: {duration:.3f}s")
         
         case MessageChunk(content=text, is_final=final):
             print(text, end="", flush=True)
