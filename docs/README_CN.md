@@ -26,7 +26,8 @@ chak 不是另一个 liteLLM、one-api 或 OpenRouter，而是一个为你主动
 
 ## 🌵 最近更新
 
-- **2025-01-09 | v0.2.5** - 新增可配置工具执行器，支持 CPU 密集型任务。使用 `tool_executor` 参数控制执行模式
+- **2025-01-12 | v0.2.6** - 新增事件流支持，实现工具调用的实时可观测性。使用 `event=True` 在 UI 中观察工具执行。详见 [工具调用可观测性](#tool-call-observability)
+- **2025-01-09 | v0.2.5** - 新增可配置工具执行器，支持 CPU 密集型任务。使用 `tool_executor` 参数控制执行模式。详见 [工具调用](#tool-calling)
 - **2025-01-07 | v0.2.3** - Conversation 现已支持通过 `returns` 参数输出结构化数据。详见 [结构化输出](#structured-output)
 - **2024-12-02 | v0.2.2** - Conversation 现已支持多模态对话。详见 [多模态支持](#multimodal-support)
 
@@ -124,6 +125,31 @@ conv = Conversation(
     tools=[get_weather, cart, *mcp_tools]
 )
 ```
+
+<a id="tool-call-observability"></a>
+
+**实时可观测性**：通过事件流实时获取工具执行情况：
+
+```python
+from chak.message import MessageChunk, ToolCallStartEvent, ToolCallSuccessEvent, ToolCallErrorEvent
+
+# 使用 event=True 实时观察工具调用
+async for event in await conv.asend("计算 15 + 27", event=True):
+    match event:
+        case ToolCallStartEvent(tool_name=name, arguments=args):
+            print(f"🔧 正在调用: {name}，参数 {args}")
+        
+        case ToolCallSuccessEvent(tool_name=name, result=res):
+            print(f"✅ 结果: {name} -> {res}")
+        
+        case ToolCallErrorEvent(tool_name=name, error=err):
+            print(f"❌ 失败: {name} - {err}")
+        
+        case MessageChunk(content=text, is_final=final):
+            print(text, end="", flush=True)
+```
+
+非常适合构建展示工具实时执行进度的 UI。详见 [examples/event_stream_chat_demo.py](../examples/event_stream_chat_demo.py)
 
 **可配置执行**：对于 CPU 密集型工具，使用 `tool_executor` 控制工具执行方式：
 
@@ -258,6 +284,8 @@ conv = Conversation(
 - LRU: [examples/strategy_chat_lru.py](examples/strategy_chat_lru.py)
 
 ---
+
+<a id="tool-calling"></a>
 
 ## 🌓 工具调用
 
@@ -397,6 +425,7 @@ conv = Conversation(
 
 - **原生函数**: examples/tool_calling_chat_functions.py
 - **有状态对象**: examples/tool_calling_chat_objects_stateful.py
+- **事件流（可观测性）**: examples/event_stream_chat_demo.py
 - **MCP (SSE)**: examples/tool_calling_chat_mcp_sse.py
 - **MCP (stdio)**: examples/tool_calling_chat_mcp_stdio.py
 - **MCP (HTTP)**: examples/tool_calling_chat_mcp_http.py

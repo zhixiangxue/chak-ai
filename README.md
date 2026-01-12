@@ -26,7 +26,8 @@ chak is not another liteLLM, one-api, or OpenRouter, but a client library that a
 
 ## 🌵 What's New
 
-- **2025-01-09 | v0.2.5** - Added configurable tool executor for CPU-intensive tasks. Use `tool_executor` parameter to control execution mode
+- **2025-01-12 | v0.2.6** - Added event stream support for real-time tool call observability. Use `event=True` to observe tool execution in your UI. See [Tool Call Observability](#tool-call-observability)
+- **2025-01-09 | v0.2.5** - Added configurable tool executor for CPU-intensive tasks. Use `tool_executor` parameter to control execution mode. See [Tool Calling](#tool-calling)
 - **2025-01-07 | v0.2.3** - Conversation now supports structured outputs via `returns` parameter. See [Structured Output](#structured-output)
 - **2024-12-02 | v0.2.2** - Conversation now supports multimodal inputs. See [Multimodal Support](#multimodal-support)
 
@@ -125,6 +126,31 @@ conv = Conversation(
     tools=[get_weather, cart, *mcp_tools]
 )
 ```
+
+<a id="tool-call-observability"></a>
+
+**Real-time Observability**: Get instant visibility into tool execution with event streams:
+
+```python
+from chak.message import MessageChunk, ToolCallStartEvent, ToolCallSuccessEvent, ToolCallErrorEvent
+
+# Use event=True to observe tool calls in real-time
+async for event in await conv.asend("Calculate 15 + 27", event=True):
+    match event:
+        case ToolCallStartEvent(tool_name=name, arguments=args):
+            print(f"🔧 Calling: {name} with {args}")
+        
+        case ToolCallSuccessEvent(tool_name=name, result=res):
+            print(f"✅ Result: {name} -> {res}")
+        
+        case ToolCallErrorEvent(tool_name=name, error=err):
+            print(f"❌ Failed: {name} - {err}")
+        
+        case MessageChunk(content=text, is_final=final):
+            print(text, end="", flush=True)
+```
+
+Perfect for building UIs that show live tool execution progress. See [examples/event_stream_chat_demo.py](examples/event_stream_chat_demo.py)
 
 **Configurable Execution**: For CPU-intensive tools, use `tool_executor` to control how tools run:
 
@@ -259,6 +285,8 @@ See full examples (parameters, how it works, tips):
 - LRU: [examples/strategy_chat_lru.py](examples/strategy_chat_lru.py)
 
 ---
+
+<a id="tool-calling"></a>
 
 ## 🌓 Tool Calling
 
@@ -479,6 +507,7 @@ See complete examples:
 - **Functions with Pydantic**: [examples/tool_calling_chat_functions_pydantic.py](examples/tool_calling_chat_functions_pydantic.py)
 - **Stateful Objects**: [examples/tool_calling_chat_objects_stateful.py](examples/tool_calling_chat_objects_stateful.py)
 - **Objects with Pydantic**: [examples/tool_calling_chat_objects_pydantic.py](examples/tool_calling_chat_objects_pydantic.py)
+- **Event Stream (Observability)**: [examples/event_stream_chat_demo.py](examples/event_stream_chat_demo.py)
 - **MCP (SSE)**: [examples/tool_calling_chat_mcp_sse.py](examples/tool_calling_chat_mcp_sse.py)
 - **MCP (stdio)**: [examples/tool_calling_chat_mcp_stdio.py](examples/tool_calling_chat_mcp_stdio.py)
 - **MCP (HTTP)**: [examples/tool_calling_chat_mcp_http.py](examples/tool_calling_chat_mcp_http.py)

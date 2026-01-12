@@ -415,11 +415,12 @@ class Conversation:
             message: Union[str, Message],
             attachments: Optional[List[Attachment]] = None,
             stream: bool = False,
+            event: bool = False,
             timeout: Optional[int] = None,
             returns: Optional[type] = None,
             tool_executor: Optional[ToolExecutor] = None,
             **kwargs
-    ) -> Union[Message, AsyncIterator[MessageChunk], Any, None]:
+    ) -> Union[Message, AsyncIterator[MessageChunk], AsyncIterator['StreamEvent'], Any, None]:
         """
         Send message (async, full featured).
         
@@ -429,11 +430,15 @@ class Conversation:
         - ✅ Multimodal (images, audio)
         - ✅ MCP tools (both modes)
         - ✅ Structured output (returns parameter)
+        - ✅ Event stream (for tool observability)
         
         Args:
             message: Message content (str will be converted to HumanMessage)
             attachments: Optional list of Attachment objects (images, audio, etc.)
-            stream: Enable streaming
+            stream: Enable streaming (ignored if event=True)
+            event: Enable event stream mode (returns MessageChunk + ToolCall events)
+                  When True, you can observe tool calls in real-time using isinstance() or match-case.
+                  Note: event=True will override stream parameter.
             timeout: Request timeout in seconds. If None, uses provider's default timeout (30s)
             returns: Optional Pydantic model class for structured output. When provided,
                     forces LLM to return data matching this schema via function calling.
@@ -442,8 +447,9 @@ class Conversation:
             **kwargs: Additional LLM parameters
         
         Returns:
-            - If stream=False and returns=None: Complete Message
-            - If stream=True: AsyncIterator[MessageChunk]
+            - If event=False and stream=False and returns=None: Complete Message
+            - If event=False and stream=True: AsyncIterator[MessageChunk]
+            - If event=True: AsyncIterator[StreamEvent] (MessageChunk/ToolCallStartEvent/ToolCallSuccessEvent/ToolCallErrorEvent)
             - If returns is provided: Validated Pydantic model instance or None if failed
         
         Examples:
@@ -453,6 +459,16 @@ class Conversation:
             # Streaming
             async for chunk in await conv.asend("Hello", stream=True):
                 print(chunk.content, end="")
+            
+            # Event stream (with tool observability)
+            async for event in await conv.asend("What's the weather?", event=True):
+                match event:
+                    case MessageChunk(content=text):
+                        print(text, end="")
+                    case ToolCallStartEvent(tool_name=name, arguments=args):
+                        print(f"\n🔧 Calling {name}")
+                    case ToolCallEndEvent(tool_name=name, result=res):
+                        print(f"✅ Result: {res[:100]}")
             
             # With image
             from chak.attachment import Image
@@ -554,6 +570,12 @@ class Conversation:
 
         # Apply context strategy
         messages_to_send = self._apply_context_strategy()
+
+        # Check if event stream mode is requested
+        if event:
+            # Event stream mode: returns MessageChunk + ToolCall events
+            # This overrides stream parameter and provides full observability
+            return self._asend_with_events(messages_to_send, tool_executor, **kwargs)
 
         # Check if tools are configured
         if self._tool_manager:
@@ -868,6 +890,52 @@ class Conversation:
             ai_response = response  # type: ignore
         self.messages.append(ai_response)
         return ai_response
+    
+    async def _asend_with_events(
+        self,
+        messages: List[Message],
+        tool_executor: Optional[ToolExecutor],
+        **kwargs
+    ) -> AsyncIterator['StreamEvent']:
+        """
+        Return unified event stream (content + tool calls).
+        
+        This method provides complete observability of the conversation flow,
+        including LLM content generation and tool execution details.
+        
+        Yields:
+            StreamEvent: MessageChunk, ToolCallStartEvent, ToolCallSuccessEvent, or ToolCallErrorEvent
+        """
+        from .message import MessageChunk
+        
+        if self._tool_manager:
+            # Temporarily override executor if specified
+            original_executor = None
+            if tool_executor is not None:
+                original_executor = self._tool_manager.executor
+                self._tool_manager.executor = self._get_executor(tool_executor)
+            
+            try:
+                # Has tools: return full event stream from tool manager
+                async for event in self._tool_manager.execute_loop_with_events(
+                    provider=self.provider,
+                    messages=messages,
+                    model_uri=self.model_uri
+                ):
+                    yield event
+            finally:
+                # Restore original executor
+                if original_executor is not None:
+                    self._tool_manager.executor = original_executor
+        else:
+            # No tools: only return content events
+            async for chunk in self._asend_stream(messages, **kwargs):
+                yield MessageChunk(
+                    content=chunk.content,
+                    is_final=chunk.is_final,
+                    metadata=chunk.metadata,
+                    final_message=chunk.final_message
+                )
 
     def _send_nonstream(self, messages: List[Message], **kwargs) -> Message:
         """Handle non-streaming response."""

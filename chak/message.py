@@ -108,3 +108,80 @@ class MessageChunk(BaseModel):
     is_final: bool = False
     metadata: Optional[Dict[str, Any]] = None
     final_message: Optional['Message'] = None  # 当 is_final=True 时，包含完整的最终消息
+
+
+# ===== Stream Events (for event=True mode) =====
+class StreamEvent(BaseModel):
+    """流式事件基类
+    
+    用于 event=True 模式，提供工具调用的完整可观测性。
+    开发者可以使用 isinstance() 或 match-case (Python 3.10+) 来处理不同类型的事件。
+    
+    事件类型：
+    - MessageChunk: LLM 内容输出（包含文本、元数据、最终消息等）
+    - ToolCallStartEvent: 工具调用开始
+    - ToolCallSuccessEvent: 工具调用成功
+    - ToolCallErrorEvent: 工具调用失败
+    """
+    timestamp: float = Field(default_factory=lambda: datetime.now().timestamp())
+
+
+class ToolCallStartEvent(StreamEvent):
+    """工具调用开始事件
+    
+    当 LLM 决定调用工具时触发，包含工具名称和参数。
+    
+    Attributes:
+        tool_name: 工具名称
+        call_id: 工具调用唯一标识
+        arguments: 工具调用参数（已解析为 dict）
+    
+    Example:
+        match event:
+            case ToolCallStartEvent(tool_name=name, arguments=args):
+                print(f"🔧 调用 {name}")
+                print(f"📨 参数: {args}")
+    """
+    tool_name: str = ""
+    call_id: str = ""
+    arguments: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ToolCallSuccessEvent(StreamEvent):
+    """工具调用成功事件
+    
+    工具执行成功后触发，包含执行结果。
+    
+    Attributes:
+        tool_name: 工具名称
+        call_id: 工具调用唯一标识（与 ToolCallStartEvent 的 call_id 对应）
+        result: 工具执行结果（字符串格式）
+    
+    Example:
+        match event:
+            case ToolCallSuccessEvent(tool_name=name, call_id=cid, result=res):
+                print(f"✅ {name} 成功: {res}")
+    """
+    tool_name: str = ""
+    call_id: str = ""
+    result: str = ""
+
+
+class ToolCallErrorEvent(StreamEvent):
+    """工具调用失败事件
+    
+    工具执行失败后触发，包含错误信息。
+    
+    Attributes:
+        tool_name: 工具名称
+        call_id: 工具调用唯一标识（与 ToolCallStartEvent 的 call_id 对应）
+        error: 错误信息
+    
+    Example:
+        match event:
+            case ToolCallErrorEvent(tool_name=name, call_id=cid, error=err):
+                print(f"❌ {name} 失败: {err}")
+    """
+    tool_name: str = ""
+    call_id: str = ""
+    error: str = ""
