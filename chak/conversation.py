@@ -91,22 +91,19 @@ class Conversation:
         self.api_key = api_key
         self.messages = []
         self.attachments: List[Attachment] = []  # Session-level attachment tracking
-        self.tools = tools
+        
+        # Tool management
+        self._raw_tools: List = []  # Store original tools
+        self._tool_manager: Optional["ToolManager"] = None
         
         # Tool executor configuration
         self._tool_executor = tool_executor
         self._thread_pool: Optional[ThreadPoolExecutor] = None
         self._process_pool: Optional[ProcessPoolExecutor] = None
         
-        # Initialize tool manager if tools provided
-        self._tool_manager: Optional["ToolManager"] = None
+        # Initialize tools if provided
         if tools:
-            from .tools import wrap_tools
-            from .tools.manager import ToolManager
-            wrapped_tools = wrap_tools(tools)
-            # Pass executor to ToolManager
-            executor = self._get_executor()
-            self._tool_manager = ToolManager(wrapped_tools, executor=executor)
+            self.add_tools(tools)
         
         # Initialize system message
         self._initial_system_message = self._normalize_system_message(system_message)
@@ -190,6 +187,94 @@ class Conversation:
             return self._thread_pool
         else:  # ASYNCIO or invalid (default to asyncio)
             return None
+    
+    def get_tools(self) -> List:
+        """
+        Get current tools list (original format).
+        
+        Returns:
+            List of tools in the format they were added (functions, objects, MCPTool instances)
+        
+        Example:
+            >>> conv = Conversation(..., tools=[my_func, my_obj])
+            >>> tools = conv.get_tools()
+            >>> print(tools)  # [<function my_func>, <MyClass object>]
+        """
+        return self._raw_tools.copy()
+    
+    def add_tools(self, tools: List) -> None:
+        """
+        Add tools to the conversation.
+        
+        Supports:
+        - Functions (callable)
+        - Objects (with public methods)
+        - MCPTool instances
+        
+        Note: If a tool with the same name already exists, it will be replaced.
+        
+        Args:
+            tools: List of tools to add
+        
+        Example:
+            >>> def my_func(x: int) -> int:
+            ...     return x * 2
+            >>> 
+            >>> conv = Conversation(...)
+            >>> conv.add_tools([my_func])
+        """
+        self._raw_tools.extend(tools)
+        self._rebuild_tool_manager()
+    
+    def remove_tools(self, tools: List) -> None:
+        """
+        Remove tools from the conversation by reference.
+        
+        Args:
+            tools: List of tool objects to remove (same objects that were added)
+        
+        Example:
+            >>> my_func = lambda x: x + 1
+            >>> conv.add_tools([my_func])
+            >>> conv.remove_tools([my_func])  # Remove by reference
+            >>> 
+            >>> # Or get tools first
+            >>> tools = conv.get_tools()
+            >>> conv.remove_tools([tools[0]])  # Remove first tool
+        """
+        for tool in tools:
+            if tool in self._raw_tools:
+                self._raw_tools.remove(tool)
+        self._rebuild_tool_manager()
+    
+    def clear_tools(self) -> None:
+        """
+        Clear all tools from the conversation.
+        
+        Example:
+            >>> conv = Conversation(..., tools=[func1, func2])
+            >>> conv.clear_tools()
+            >>> len(conv.get_tools())  # 0
+        """
+        self._raw_tools.clear()
+        self._tool_manager = None
+    
+    def _rebuild_tool_manager(self) -> None:
+        """
+        Rebuild ToolManager with current tools.
+        
+        Called automatically when tools are added/removed.
+        """
+        if not self._raw_tools:
+            self._tool_manager = None
+            return
+        
+        from .tools import wrap_tools
+        from .tools.manager import ToolManager
+        
+        wrapped_tools = wrap_tools(self._raw_tools)
+        executor = self._get_executor()
+        self._tool_manager = ToolManager(wrapped_tools, executor=executor)
     
     def _build_config_dict(self, parsed_uri: Dict, kwargs: Dict) -> Dict[str, Any]:
         """Build configuration dictionary from URI and kwargs."""
@@ -319,7 +404,7 @@ class Conversation:
             conv.send(HumanMessage(content="Hello"))
         """
         # Check if tools are configured
-        if self.tools:
+        if self._raw_tools:
             raise RuntimeError(
                 "MCP tools require async execution. "
                 "Please use: await conv.asend(message)"
