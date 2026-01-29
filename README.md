@@ -929,6 +929,42 @@ chak will output detailed logs for:
 
 ---
 
+## 🌑 Custom Data
+
+All messages in chak have a `custom` field - a dictionary for storing any application-specific data alongside the message content.
+
+### Basic Usage
+
+```python
+from chak import Conversation
+
+conv = Conversation("openai/gpt-4o-mini", api_key="YOUR_KEY")
+
+# Get response from LLM
+response = await conv.asend("Hello!")
+
+# Store custom data in the message
+response.custom = {
+    "user_id": "12345",
+    "session_id": "abc-def",
+    "tags": ["greeting", "new_user"]
+}
+```
+
+### Use Cases
+
+The `custom` field is completely flexible - use it however your application needs:
+
+- **Frontend rendering**: Pass UI instructions (forms, charts, widgets)
+- **Tracking**: Store session IDs, user IDs, request metadata
+- **Routing**: Add routing hints or processing flags
+- **Analytics**: Attach tracking data for logging
+- **Anything else**: It's your data, structure it your way
+
+**Example**: [examples/custom_payload_demo.py](examples/custom_payload_demo.py) - Demo showing custom data used for dynamic form rendering
+
+---
+
 ## Local Server Mode (Optional)
 
 Start a local gateway service with 2 lines of code:

@@ -752,34 +752,34 @@ class Conversation:
         if not self._tool_manager:
             raise RuntimeError("Tool manager not initialized")
         
-        complete_content = ""
+        all_new_messages = []
         
         # Use tool manager's streaming loop
-        async for chunk in self._tool_manager.execute_loop_stream(
+        async for chunk, new_messages in self._tool_manager.execute_loop_stream(
             provider=self.provider,
             messages=messages,
             model_uri=self.model_uri
         ):
-            complete_content += chunk.content
+            # Sync new_messages to all_new_messages
+            all_new_messages = new_messages
             yield chunk
         
-        # Save final message
-        if complete_content:
-            final_message = AIMessage(content=complete_content)
-            self.messages.append(final_message)
+        # Save all new messages (including intermediate AIMessage + ToolMessage)
+        self.messages.extend(all_new_messages)
     
     async def _asend_nonstream_with_tools(self, messages: List[Message], **kwargs) -> Message:
         """Handle async non-streaming response with MCP tools."""
         if not self._tool_manager:
             raise RuntimeError("Tool manager not initialized")
         
-        response = await self._tool_manager.execute_loop(
+        final_message, new_messages = await self._tool_manager.execute_loop(
             provider=self.provider,
             messages=messages,
             model_uri=self.model_uri
         )
-        self.messages.append(response)
-        return response
+        # Add all new messages (including intermediate AIMessage + ToolMessage) to conversation history
+        self.messages.extend(new_messages)
+        return final_message
     
     async def _asend_with_structured_output(
         self, 

@@ -118,7 +118,7 @@ class ToolManager:
         provider: Any,  # LLM Provider
         messages: List["Message"],
         model_uri: str
-    ) -> "Message":
+    ) -> tuple["Message", List["Message"]]:
         """
         Execute LLM + MCP tool calling loop (non-streaming).
         
@@ -135,7 +135,9 @@ class ToolManager:
             model_uri: Model URI (not used, provider already has model)
         
         Returns:
-            Message: Final assistant response (after all tool calls completed)
+            tuple: (final_message, all_new_messages)
+                - final_message: Final assistant response (after all tool calls completed)
+                - all_new_messages: All messages added during this loop (including intermediate AIMessage+ToolMessage)
         
         Raises:
             Exception: Max iteration reached or other errors
@@ -143,6 +145,7 @@ class ToolManager:
         from ..message import AIMessage, ToolMessage
         
         current_messages = messages.copy()
+        new_messages = []  # Track all new messages added during this loop
         
         # Convert tools to OpenAI format
         openai_tools = []
@@ -176,9 +179,11 @@ class ToolManager:
                         messages=current_messages,
                         stream=False
                     )
-                    return AIMessage(
+                    final_msg = AIMessage(
                         content=response.content if hasattr(response, 'content') else str(response)
                     )
+                    new_messages.append(final_msg)
+                    return final_msg, new_messages
                 else:
                     # Other errors, re-raise
                     logger.error(f"❌ [Tool] LLM call failed: {str(e)}")
@@ -193,9 +198,11 @@ class ToolManager:
                 # No tool calls -> LLM finished, return final answer
                 logger.info(f"ℹ️ [Tool] No tool calls in this iteration, LLM returned final answer")
                 logger.debug(f"✅ [Tool Loop] No tool calls, finishing...")
-                return AIMessage(
+                final_msg = AIMessage(
                     content=response.content if hasattr(response, 'content') else str(response)
                 )
+                new_messages.append(final_msg)
+                return final_msg, new_messages
             
             logger.info(f"🔧 [Tool] LLM wants to call {len(tool_calls)} tool(s): {[tc.function.name for tc in tool_calls]}")
             logger.debug(f"📤 [Tool Loop] Calling tools: {[tc.function.name for tc in tool_calls]}")
@@ -206,17 +213,21 @@ class ToolManager:
             logger.debug(f"📥 [Tool Loop] Tool results: {[r.content[:50] + '...' if len(r.content) > 50 else r.content for r in tool_results]}")
             
             # Step 4: Add assistant message (with tool_calls) to conversation
-            current_messages.append(AIMessage(
+            assistant_msg = AIMessage(
                 content=response.content if hasattr(response, 'content') else "",
                 tool_calls=tool_calls
-            ))
+            )
+            current_messages.append(assistant_msg)
+            new_messages.append(assistant_msg)
             
             # Step 5: Add tool results to conversation
             for result in tool_results:
-                current_messages.append(ToolMessage(
+                tool_msg = ToolMessage(
                     content=result.content,
                     tool_call_id=result.call_id
-                ))
+                )
+                current_messages.append(tool_msg)
+                new_messages.append(tool_msg)
             
             logger.debug(f"🔁 [Tool Loop] Loop continues to iteration {iteration + 1}...")
             # Step 6: Loop back to step 1 (LLM will see tool results and decide next action)
@@ -244,7 +255,9 @@ class ToolManager:
             model_uri: Model URI
         
         Yields:
-            MessageChunk: Streaming chunks
+            tuple: (MessageChunk, all_new_messages_so_far)
+                - MessageChunk: Streaming chunks
+                - all_new_messages_so_far: All messages added during this loop (for conv.messages sync)
         
         Raises:
             Exception: Max iteration reached or other errors
@@ -252,6 +265,7 @@ class ToolManager:
         from ..message import AIMessage, ToolMessage, MessageChunk
         
         current_messages = messages.copy()
+        new_messages = []  # Track all new messages added during this loop
         openai_tools = []
         for tool in self.tools:
             if isinstance(tool, NativeObjectTool):
@@ -299,9 +313,9 @@ class ToolManager:
                             yield MessageChunk(
                                 content=delta.content,
                                 is_final=False
-                            )
+                            ), new_messages
                     
-                    yield MessageChunk(content="", is_final=True)
+                    yield MessageChunk(content="", is_final=True), new_messages
                     return
                 else:
                     logger.error(f"❌ [Tool] LLM call failed: {str(e)}")
@@ -323,7 +337,7 @@ class ToolManager:
                         content=delta.content,
                         is_final=False,
                         metadata={"iteration": iteration}
-                    )
+                    ), new_messages
                 
                 # 2.2 Has tool_calls? -> accumulate
                 if delta and hasattr(delta, 'tool_calls') and delta.tool_calls:
@@ -376,17 +390,21 @@ class ToolManager:
                 logger.debug(f"📥 [Tool Loop] Tool results: {[r.content[:50] + '...' if len(r.content) > 50 else r.content for r in tool_results]}")
                 
                 # Add assistant message (with tool_calls)
-                current_messages.append(AIMessage(
+                assistant_msg = AIMessage(
                     content=accumulated_content,
                     tool_calls=tool_calls_objects
-                ))
+                )
+                current_messages.append(assistant_msg)
+                new_messages.append(assistant_msg)
                 
                 # Add tool results
                 for result in tool_results:
-                    current_messages.append(ToolMessage(
+                    tool_msg = ToolMessage(
                         content=result.content,
                         tool_call_id=result.call_id
-                    ))
+                    )
+                    current_messages.append(tool_msg)
+                    new_messages.append(tool_msg)
                 
                 logger.debug(f"🔁 [Tool Loop] Loop continues to iteration {iteration + 1}...")
                 # Loop continues (next iteration will call LLM with tool results)
@@ -394,7 +412,13 @@ class ToolManager:
                 # No tool calls or finish_reason != 'tool_calls' -> done
                 logger.info(f"ℹ️ [Tool] No tool calls in this iteration, LLM returned final answer")
                 logger.debug(f"✅ [Tool Loop] No tool calls, finishing...")
-                yield MessageChunk(content="", is_final=True)
+                
+                # Add final AIMessage to new_messages
+                if accumulated_content:
+                    final_msg = AIMessage(content=accumulated_content)
+                    new_messages.append(final_msg)
+                
+                yield MessageChunk(content="", is_final=True), new_messages
                 return
         
         # Max iteration reached

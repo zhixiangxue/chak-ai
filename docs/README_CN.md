@@ -846,6 +846,42 @@ chak 将输出详细日志：
 
 ---
 
+## 🌑 自定义数据
+
+chak 中的所有消息都有一个 `custom` 字段 - 用于存储应用相关的任意数据的字典。
+
+### 基本用法
+
+```python
+from chak import Conversation
+
+conv = Conversation("openai/gpt-4o-mini", api_key="YOUR_KEY")
+
+# 获取 LLM 响应
+response = await conv.asend("你好！")
+
+# 在消息中存储自定义数据
+response.custom = {
+    "user_id": "12345",
+    "session_id": "abc-def",
+    "tags": ["问候", "新用户"]
+}
+```
+
+### 使用场景
+
+`custom` 字段完全灵活 - 根据你的应用需求随意使用：
+
+- **前端渲染**：传递 UI 指令（表单、图表、组件）
+- **追踪**：存储会话 ID、用户 ID、请求元数据
+- **路由**：添加路由提示或处理标志
+- **分析**：附加用于日志记录的追踪数据
+- **其他任何用途**：这是你的数据，按你的方式组织
+
+**示例**：[examples/custom_payload_demo.py](../examples/custom_payload_demo.py) - 演示使用自定义数据进行动态表单渲染
+
+---
+
 ## 本地服务器模式（可选）
 
 用 2 行代码启动本地网关服务：

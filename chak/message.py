@@ -30,7 +30,8 @@ class BaseMessage(BaseModel):
     tool_calls: Optional[List[ChatCompletionMessageToolCall]] = None
     refusal: Optional[str] = None
     attachments: List[Attachment] = Field(default_factory=list)  # Original attachments associated with this message
-    metadata: Dict[str, Any] = Field(default_factory=dict)  # 元数据（provider、model、usage等）
+    metadata: Dict[str, Any] = Field(default_factory=dict)  # Metadata (provider, model, usage, etc.)
+    custom: Dict[str, Any] = Field(default_factory=dict)  # Custom data for application-specific use
     timestamp: datetime = Field(default_factory=datetime.now)  # 消息创建时间
     
     class Config:

@@ -188,7 +188,8 @@ class ConversationWebSocketHandler:
                     chunk_data["final_message"] = {
                         "role": chunk.final_message.role,
                         "content": chunk.final_message.content,
-                        "metadata": self._serialize_metadata(chunk.final_message.metadata)
+                        "metadata": self._serialize_metadata(chunk.final_message.metadata),
+                        "custom": self._serialize_metadata(chunk.final_message.custom),
                     }
                 
                 # Send it immediately
@@ -207,7 +208,8 @@ class ConversationWebSocketHandler:
                 "message": {
                     "role": response_msg.role,  # type: ignore
                     "content": response_msg.content,  # type: ignore
-                    "metadata": self._serialize_metadata(response_msg.metadata)  # type: ignore
+                    "metadata": self._serialize_metadata(response_msg.metadata),  # type: ignore
+                    "custom": self._serialize_metadata(response_msg.custom),  # type: ignore
                 }
             }
             await websocket.send_text(json.dumps(response))
