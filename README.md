@@ -26,6 +26,7 @@ chak is not another liteLLM, one-api, or OpenRouter, but a client library that a
 
 ## 🌵 What's New
 
+- **2025-01-29 | v0.2.7** - Added human-in-the-loop tool approval via `tool_approval_handler`, with CLI and browser/WebSocket support. See [Human-in-the-loop Approval](#tool-calling-human-approval) in [Tool Calling](#tool-calling).
 - **2025-01-12 | v0.2.6** - Added event stream support for real-time tool call observability. Use `event=True` to observe tool execution in your UI. See [Tool Call Observability](#tool-call-observability)
 - **2025-01-09 | v0.2.5** - Added configurable tool executor for CPU-intensive tasks. Use `tool_executor` parameter to control execution mode. See [Tool Calling](#tool-calling)
 - **2025-01-07 | v0.2.3** - Conversation now supports structured outputs via `returns` parameter. See [Structured Output](#structured-output)
@@ -505,6 +506,42 @@ conv = Conversation(
 )
 ```
 
+### Human-in-the-loop Approval
+<a id="tool-calling-human-approval"></a>
+
+Require manual approval before executing tools via `tool_approval_handler`:
+
+```python
+from chak.tools.manager import ToolCallApproval
+
+
+def get_current_time() -> str:
+    """Get current date and time"""
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+async def my_approval_handler(approval: ToolCallApproval) -> bool:
+    """Return True to allow this tool call, False to reject it.
+
+    The approval object contains the tool name, arguments and a
+    unique call_id for this invocation.
+    """
+    print("tool =", approval.tool_name)
+    print("args =", approval.arguments)
+    answer = input("Allow this tool call? (y/n): ").strip().lower()
+    return answer == "y"
+
+
+conv = chak.Conversation(
+    "openai/gpt-4o-mini",
+    api_key="YOUR_KEY",
+    tools=[get_current_time],
+    tool_approval_handler=my_approval_handler,
+)
+
+response = await conv.asend("What time is it now?")
+```
+
 ### Examples
 
 See complete examples:
@@ -517,6 +554,8 @@ See complete examples:
 - **MCP (SSE)**: [examples/tool_calling_chat_mcp_sse.py](examples/tool_calling_chat_mcp_sse.py)
 - **MCP (stdio)**: [examples/tool_calling_chat_mcp_stdio.py](examples/tool_calling_chat_mcp_stdio.py)
 - **MCP (HTTP)**: [examples/tool_calling_chat_mcp_http.py](examples/tool_calling_chat_mcp_http.py)
+- **Human-in-the-loop Approval (CLI)**: [examples/tool_calling_approval_demo.py](examples/tool_calling_approval_demo.py)
+- **Human-in-the-loop Approval (WebSocket/Web)**: [examples/tool_approval_web_demo.py](examples/tool_approval_web_demo.py)
 
 
 ---

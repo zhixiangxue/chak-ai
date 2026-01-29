@@ -13,7 +13,7 @@ from .utils.uri import parse as parse_uri
 
 if TYPE_CHECKING:
     from .tools.mcp.tool import MCPTool
-    from .tools.manager import ToolManager
+    from .tools.manager import ToolManager, ToolApprovalHandler
 
 
 class ToolExecutor(str, Enum):
@@ -42,6 +42,7 @@ class Conversation:
         context_strategy: Optional[BaseContextStrategy] = None,
         tools: Optional[List["MCPTool"]] = None,
         tool_executor: ToolExecutor = ToolExecutor.ASYNCIO,
+        tool_approval_handler: Optional["ToolApprovalHandler"] = None,
         **kwargs
     ):
         """
@@ -100,6 +101,7 @@ class Conversation:
         self._tool_executor = tool_executor
         self._thread_pool: Optional[ThreadPoolExecutor] = None
         self._process_pool: Optional[ProcessPoolExecutor] = None
+        self._tool_approval_handler: Optional["ToolApprovalHandler"] = tool_approval_handler
         
         # Initialize tools if provided
         if tools:
@@ -274,7 +276,11 @@ class Conversation:
         
         wrapped_tools = wrap_tools(self._raw_tools)
         executor = self._get_executor()
-        self._tool_manager = ToolManager(wrapped_tools, executor=executor)
+        self._tool_manager = ToolManager(
+            wrapped_tools,
+            executor=executor,
+            approval_handler=self._tool_approval_handler,
+        )
     
     def _build_config_dict(self, parsed_uri: Dict, kwargs: Dict) -> Dict[str, Any]:
         """Build configuration dictionary from URI and kwargs."""

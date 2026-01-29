@@ -11,7 +11,7 @@ ToolManager 类：管理 LLM + 工具调用循环
 
 import asyncio
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, List, Union
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional, Union
 
 from loguru import logger
 
@@ -31,6 +31,16 @@ class ToolCallResult:
     content: str
     is_error: bool
 
+
+@dataclass
+class ToolCallApproval:
+    """Tool call approval request info."""
+    tool_name: str
+    arguments: Dict[str, Any]
+    call_id: str
+
+
+ToolApprovalHandler = Callable[[ToolCallApproval], Awaitable[bool]]
 
 class ToolManager:
     """
@@ -70,17 +80,19 @@ class ToolManager:
         )
     """
     
-    def __init__(self, tools: List[Union[MCPTool, NativeFunctionTool, NativeObjectTool]], max_iterations: int = 10, executor=None):
+    def __init__(self, tools: List[Union[MCPTool, NativeFunctionTool, NativeObjectTool]], max_iterations: int = 10, executor=None, approval_handler: Optional[ToolApprovalHandler] = None):
         """
         Args:
             tools: 工具列表（MCPTool、NativeFunctionTool 或 NativeObjectTool）
             max_iterations: 最大迭代次数（防止无限循环）
             executor: 执行器实例（ThreadPoolExecutor/ProcessPoolExecutor）或 None（使用 asyncio）
+            approval_handler: Optional approval handler for human-in-the-loop tool calls
         """
         self.tools = tools
         self._tool_map = self._build_tool_map()
         self.max_iterations = max_iterations
         self.executor = executor
+        self.approval_handler = approval_handler
     
     def _build_tool_map(self) -> dict:
         """
@@ -664,6 +676,36 @@ class ToolManager:
                     is_error=True
                 )
         
+        # 审批钩子：支持 human-in-the-loop 工具调用
+        if self.approval_handler is not None:
+            approval = ToolCallApproval(
+                tool_name=tool_name,
+                arguments=arguments if isinstance(arguments, dict) else {},
+                call_id=call_id,
+            )
+            try:
+                allowed = await self.approval_handler(approval)
+            except Exception as e:
+                logger.error(f"❌ [Tool] Approval handler failed for tool '{tool_name}': {e}")
+                return ToolCallResult(
+                    call_id=call_id,
+                    content=f"Error: approval handler failed: {e}",
+                    is_error=True,
+                )
+
+            if not allowed:
+                logger.info(f"ℹ️ [Tool] Tool call '{tool_name}' was rejected by approval handler")
+                return ToolCallResult(
+                    call_id=call_id,
+                    content=(
+                        "Tool call was rejected by user. "
+                        "Do NOT call this tool or any other tools again. "
+                        "Answer the user's request directly based on the existing "
+                        "conversation without using tools."
+                    ),
+                    is_error=True,
+                )
+        
         tool = self._tool_map.get(tool_name)
         if not tool:
             logger.error(f"❌ [Tool] Tool not found: {tool_name}")
@@ -677,7 +719,7 @@ class ToolManager:
             # 调用工具（支持 MCPTool 和 NativeFunctionTool）
             logger.debug(f"⚙️  [Tool] Executing tool: {tool_name}...")
             result = await tool.call(arguments, executor=self.executor)
-            
+        
             # 提取结果内容
             if hasattr(result, 'content'):
                 content = str(result.content)
@@ -686,10 +728,10 @@ class ToolManager:
                 content = json.dumps(result, ensure_ascii=False)
             else:
                 content = str(result)
-            
+        
             logger.info(f"✅ [Tool] Tool '{tool_name}' succeeded")
             logger.debug(f"📦 [Tool] Result: {content[:200]}..." if len(content) > 200 else f"📦 [Tool] Result: {content}")
-            
+        
             return ToolCallResult(
                 call_id=call_id,
                 content=content,

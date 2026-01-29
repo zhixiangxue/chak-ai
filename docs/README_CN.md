@@ -26,6 +26,7 @@ chak 不是另一个 liteLLM、one-api 或 OpenRouter，而是一个为你主动
 
 ## 🌵 最近更新
 
+- **2025-01-29 | v0.2.7** - 新增 `tool_approval_handler` 钩子支持工具调用人工审批，覆盖命令行和浏览器/WebSocket 场景。详见 [人工审批工具调用](#tool-calling-human-approval)（位于 [工具调用](#tool-calling) 小节）。
 - **2025-01-12 | v0.2.6** - 新增事件流支持，实现工具调用的实时可观测性。使用 `event=True` 在 UI 中观察工具执行。详见 [工具调用可观测性](#tool-call-observability)
 - **2025-01-09 | v0.2.5** - 新增可配置工具执行器，支持 CPU 密集型任务。使用 `tool_executor` 参数控制执行模式。详见 [工具调用](#tool-calling)
 - **2025-01-07 | v0.2.3** - Conversation 现已支持通过 `returns` 参数输出结构化数据。详见 [结构化输出](#structured-output)
@@ -425,6 +426,42 @@ conv = Conversation(
 )
 ```
 
+### 人工审批工具调用（human-in-the-loop）
+<a id="tool-calling-human-approval"></a>
+
+通过在 `Conversation` 上传入 `tool_approval_handler`，你可以在工具真正执行前插入人工确认：
+
+```python
+from chak.tools.manager import ToolCallApproval
+
+
+def get_current_time() -> str:
+    """获取当前日期和时间"""
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+async def my_approval_handler(approval: ToolCallApproval) -> bool:
+    print("[approval] tool =", approval.tool_name)
+    print("[approval] args  =", approval.arguments)
+    answer = input("Allow this tool call? (y/n): ").strip().lower()
+    return answer == "y"
+
+
+conv = chak.Conversation(
+    "openai/gpt-4o-mini",
+    api_key="YOUR_KEY",
+    tools=[get_current_time],
+    tool_approval_handler=my_approval_handler,
+)
+
+response = await conv.asend("请用 get_current_time 工具告诉我当前时间")
+print(response.content)
+```
+
+更多完整示例见：
+- 命令行审批：`examples/tool_calling_approval_demo.py`
+- 浏览器/WebSocket 审批：`examples/tool_approval_web_demo.py`
+
 ### 示例
 
 查看完整示例：
@@ -435,6 +472,8 @@ conv = Conversation(
 - **MCP (SSE)**: examples/tool_calling_chat_mcp_sse.py
 - **MCP (stdio)**: examples/tool_calling_chat_mcp_stdio.py
 - **MCP (HTTP)**: examples/tool_calling_chat_mcp_http.py
+- **人工审批（命令行）**: examples/tool_calling_approval_demo.py
+- **人工审批（浏览器/WebSocket）**: examples/tool_approval_web_demo.py
 
 ---
 
