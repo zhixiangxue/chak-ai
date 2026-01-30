@@ -103,15 +103,26 @@ Message = Union[
 
 
 class MessageChunk(BaseModel):
-    """Represents a streaming chunk of a message."""
+    """Represents a streaming chunk of answer content.
+
+    This chunk represents user-visible assistant output.
+    """
 
     content: str = ""
-    reasoning_content: str = ""
     is_final: bool = False
     metadata: Optional[Dict[str, Any]] = None
-    final_message: Optional['Message'] = None  # 当 is_final=True 时，包含完整的最终消息
+    final_message: Optional['Message'] = None  # When is_final=True, contains the complete final message
 
 
+class ReasoningChunk(BaseModel):
+    """Represents a streaming chunk of reasoning content.
+
+    This chunk represents model reasoning or thinking output.
+    """
+
+    content: str = ""
+    is_final: bool = False
+    metadata: Optional[Dict[str, Any]] = None
 # ===== Stream Events (for event=True mode) =====
 class StreamEvent(BaseModel):
     """流式事件基类
@@ -120,7 +131,8 @@ class StreamEvent(BaseModel):
     开发者可以使用 isinstance() 或 match-case (Python 3.10+) 来处理不同类型的事件。
     
     事件类型：
-    - MessageChunk: LLM 内容输出（包含文本、元数据、最终消息等）
+    - MessageChunk: LLM 最终答案内容输出（包含文本、元数据、最终消息等）
+    - ReasoningChunk: LLM 推理内容输出（思考过程、summary 等）
     - ToolCallStartEvent: 工具调用开始
     - ToolCallSuccessEvent: 工具调用成功
     - ToolCallErrorEvent: 工具调用失败

@@ -28,7 +28,7 @@ from .exceptions import (
     ConversationNotFoundError, ContextError
 )
 from .message import (
-    Message, MessageChunk,
+    Message, MessageChunk, ReasoningChunk,
     BaseMessage, HumanMessage, AIMessage, SystemMessage, ToolMessage, MarkerMessage
 )
 # Attachment classes for multimodal support
@@ -77,6 +77,7 @@ __all__ = [
     'ToolExecutor',
     'Message',
     'MessageChunk',
+    'ReasoningChunk',
     'BaseMessage',
     'HumanMessage',
     'AIMessage',

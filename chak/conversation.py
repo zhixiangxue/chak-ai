@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, List, Dict, Any, Iterator, Union, Optional, As
 from .attachment import Attachment
 from .context.strategies import BaseContextStrategy, NoopStrategy
 from .context.strategies.base import StrategyRequest
-from .message import Message, MessageChunk, HumanMessage, AIMessage, SystemMessage, ToolMessage, MarkerMessage
+from .message import Message, MessageChunk, ReasoningChunk, HumanMessage, AIMessage, SystemMessage, ToolMessage, MarkerMessage
 from .providers import create_provider
 from .providers.types import ProviderCategory
 from .utils.uri import parse as parse_uri
@@ -355,7 +355,7 @@ class Conversation:
             timeout: Optional[int] = None,
             returns: Optional[type] = None,
             **kwargs
-    ) -> Union[Message, Iterator[MessageChunk], Any]:
+    ) -> Union[Message, Iterator[Union[MessageChunk, ReasoningChunk]], Any]:
         """
         Send message (sync, no MCP tools support).
         
@@ -378,7 +378,8 @@ class Conversation:
         
         Returns:
             - If stream=False: Complete Message
-            - If stream=True: Iterator[MessageChunk]
+            - If stream=True: Iterator[Union[MessageChunk, ReasoningChunk]]
+              You can distinguish chunk types using isinstance() or match-case
         
         Raises:
             RuntimeError: If tools are configured
@@ -387,9 +388,12 @@ class Conversation:
             # Simple usage
             response = conv.send("Hello")
             
-            # With streaming
+            # With streaming - distinguish answer vs reasoning chunks
             for chunk in conv.send("Hello", stream=True):
-                print(chunk.content, end="")
+                if isinstance(chunk, MessageChunk):
+                    print(chunk.content, end="")  # Answer content
+                elif isinstance(chunk, ReasoningChunk):
+                    print(f"[Thinking: {chunk.content}]")  # Reasoning content
             
             # With image
             from chak.attachment import Image
@@ -511,7 +515,7 @@ class Conversation:
             returns: Optional[type] = None,
             tool_executor: Optional[ToolExecutor] = None,
             **kwargs
-    ) -> Union[Message, AsyncIterator[MessageChunk], AsyncIterator['StreamEvent'], Any, None]:
+    ) -> Union[Message, AsyncIterator[Union[MessageChunk, ReasoningChunk]], AsyncIterator['StreamEvent'], Any, None]:
         """
         Send message (async, full featured).
         
@@ -527,7 +531,7 @@ class Conversation:
             message: Message content (str will be converted to HumanMessage)
             attachments: Optional list of Attachment objects (images, audio, etc.)
             stream: Enable streaming (ignored if event=True)
-            event: Enable event stream mode (returns MessageChunk + ToolCall events)
+            event: Enable event stream mode (returns MessageChunk + ReasoningChunk + ToolCall events)
                   When True, you can observe tool calls in real-time using isinstance() or match-case.
                   Note: event=True will override stream parameter.
             timeout: Request timeout in seconds. If None, uses provider's default timeout (30s)
@@ -539,23 +543,28 @@ class Conversation:
         
         Returns:
             - If event=False and stream=False and returns=None: Complete Message
-            - If event=False and stream=True: AsyncIterator[MessageChunk]
-            - If event=True: AsyncIterator[StreamEvent] (MessageChunk/ToolCallStartEvent/ToolCallSuccessEvent/ToolCallErrorEvent)
+            - If event=False and stream=True: AsyncIterator[Union[MessageChunk, ReasoningChunk]]
+            - If event=True: AsyncIterator[StreamEvent] (MessageChunk/ReasoningChunk/ToolCallStartEvent/ToolCallSuccessEvent/ToolCallErrorEvent)
             - If returns is provided: Validated Pydantic model instance or None if failed
         
         Examples:
             # Non-streaming
             response = await conv.asend("Hello")
             
-            # Streaming
+            # Streaming - handle both answer and reasoning chunks
             async for chunk in await conv.asend("Hello", stream=True):
-                print(chunk.content, end="")
+                if isinstance(chunk, MessageChunk):
+                    print(chunk.content, end="")  # Answer content
+                elif isinstance(chunk, ReasoningChunk):
+                    print(f"[Thinking: {chunk.content}]")  # Reasoning content
             
             # Event stream (with tool observability)
             async for event in await conv.asend("What's the weather?", event=True):
                 match event:
                     case MessageChunk(content=text):
                         print(text, end="")
+                    case ReasoningChunk(content=reasoning):
+                        print(f"[Reasoning: {reasoning}]")
                     case ToolCallStartEvent(tool_name=name, arguments=args):
                         print(f"\n🔧 Calling {name}")
                     case ToolCallEndEvent(tool_name=name, result=res):
@@ -693,8 +702,8 @@ class Conversation:
             else:
                 return await self._asend_nonstream(messages_to_send, **kwargs)
     
-    async def _asend_stream(self, messages: List[Message], **kwargs) -> AsyncIterator[MessageChunk]:
-        """Handle async streaming response."""
+    async def _asend_stream(self, messages: List[Message], **kwargs) -> AsyncIterator[Union[MessageChunk, ReasoningChunk]]:
+        """Handle async streaming response with support for both answer and reasoning chunks."""
         # Get provider chunks (sync iterator)
         def _get_sync_chunks():
             return self.provider.send(
@@ -708,20 +717,32 @@ class Conversation:
 
         # Convert to standard chunks and collect content
         complete_content = ""
+        complete_reasoning_content = ""
         last_chunk_was_final = False
         last_chunk_metadata = {}
         
         for provider_chunk in provider_chunks:
             chunk = self.provider.converter.from_provider_chunk(provider_chunk)
-            complete_content += chunk.content
             
-            # Check if this chunk is already marked as final
-            if chunk.is_final:
-                last_chunk_was_final = True
+            # Handle different chunk types
+            if isinstance(chunk, MessageChunk):
+                complete_content += chunk.content
+                
+                # Check if this chunk is already marked as final
+                if chunk.is_final:
+                    last_chunk_was_final = True
+                
+                # Save metadata from last chunk (may contain usage info)
+                if chunk.metadata:
+                    last_chunk_metadata = chunk.metadata
             
-            # Save metadata from last chunk (may contain usage info)
-            if chunk.metadata:
-                last_chunk_metadata = chunk.metadata
+            elif isinstance(chunk, ReasoningChunk):
+                complete_reasoning_content += chunk.content
+                
+                # Reasoning chunks don't affect final message flag
+                # but we still save metadata if present
+                if chunk.metadata:
+                    last_chunk_metadata.update(chunk.metadata)
             
             yield chunk
 
@@ -729,6 +750,7 @@ class Conversation:
         if complete_content and not last_chunk_was_final:
             final_message = AIMessage(
                 content=complete_content,
+                reasoning_content=complete_reasoning_content if complete_reasoning_content else None,
                 metadata=last_chunk_metadata
             )
             self.messages.append(final_message)
@@ -743,12 +765,13 @@ class Conversation:
             # Provider sent final chunk, just save the message
             final_message = AIMessage(
                 content=complete_content,
+                reasoning_content=complete_reasoning_content if complete_reasoning_content else None,
                 metadata=last_chunk_metadata
             )
             self.messages.append(final_message)
     
-    async def _asend_stream_with_tools(self, messages: List[Message], **kwargs) -> AsyncIterator[MessageChunk]:
-        """Handle async streaming response with MCP tools."""
+    async def _asend_stream_with_tools(self, messages: List[Message], **kwargs) -> AsyncIterator[Union[MessageChunk, ReasoningChunk]]:
+        """Handle async streaming response with MCP tools, supporting both answer and reasoning chunks."""
         if not self._tool_manager:
             raise RuntimeError("Tool manager not initialized")
         
@@ -995,9 +1018,9 @@ class Conversation:
         including LLM content generation and tool execution details.
         
         Yields:
-            StreamEvent: MessageChunk, ToolCallStartEvent, ToolCallSuccessEvent, or ToolCallErrorEvent
+            StreamEvent: MessageChunk, ReasoningChunk, ToolCallStartEvent, ToolCallSuccessEvent, or ToolCallErrorEvent
         """
-        from .message import MessageChunk
+        from .message import MessageChunk, ReasoningChunk
         
         if self._tool_manager:
             # Temporarily override executor if specified
@@ -1019,14 +1042,10 @@ class Conversation:
                 if original_executor is not None:
                     self._tool_manager.executor = original_executor
         else:
-            # No tools: only return content events
+            # No tools: only return content events (both MessageChunk and ReasoningChunk)
             async for chunk in self._asend_stream(messages, **kwargs):
-                yield MessageChunk(
-                    content=chunk.content,
-                    is_final=chunk.is_final,
-                    metadata=chunk.metadata,
-                    final_message=chunk.final_message
-                )
+                # Directly yield the chunk (whether MessageChunk or ReasoningChunk)
+                yield chunk
 
     def _send_nonstream(self, messages: List[Message], **kwargs) -> Message:
         """Handle non-streaming response."""
@@ -1049,8 +1068,8 @@ class Conversation:
         self.messages.append(ai_response)
         return ai_response
     
-    def _send_stream(self, messages: List[Message], **kwargs) -> Iterator[MessageChunk]:
-        """Handle streaming response."""
+    def _send_stream(self, messages: List[Message], **kwargs) -> Iterator[Union[MessageChunk, ReasoningChunk]]:
+        """Handle streaming response with support for both answer and reasoning chunks."""
         # Get provider chunks (model is already in provider config)
         provider_chunks = self.provider.send(
             messages=messages,
@@ -1060,20 +1079,32 @@ class Conversation:
 
         # Convert to standard chunks and collect content
         complete_content = ""
+        complete_reasoning_content = ""
         last_chunk_was_final = False
         last_chunk_metadata = {}
         
         for provider_chunk in provider_chunks:
             chunk = self.provider.converter.from_provider_chunk(provider_chunk)
-            complete_content += chunk.content
             
-            # Check if this chunk is already marked as final
-            if chunk.is_final:
-                last_chunk_was_final = True
+            # Handle different chunk types
+            if isinstance(chunk, MessageChunk):
+                complete_content += chunk.content
+                
+                # Check if this chunk is already marked as final
+                if chunk.is_final:
+                    last_chunk_was_final = True
+                
+                # Save metadata from last chunk (may contain usage info)
+                if chunk.metadata:
+                    last_chunk_metadata = chunk.metadata
             
-            # Save metadata from last chunk (may contain usage info)
-            if chunk.metadata:
-                last_chunk_metadata = chunk.metadata
+            elif isinstance(chunk, ReasoningChunk):
+                complete_reasoning_content += chunk.content
+                
+                # Reasoning chunks don't affect final message flag
+                # but we still save metadata if present
+                if chunk.metadata:
+                    last_chunk_metadata.update(chunk.metadata)
             
             yield chunk
 
@@ -1081,6 +1112,7 @@ class Conversation:
         if complete_content and not last_chunk_was_final:
             final_message = AIMessage(
                 content=complete_content,
+                reasoning_content=complete_reasoning_content if complete_reasoning_content else None,
                 metadata=last_chunk_metadata
             )
             self.messages.append(final_message)
@@ -1095,6 +1127,7 @@ class Conversation:
             # Provider sent final chunk, just save the message
             final_message = AIMessage(
                 content=complete_content,
+                reasoning_content=complete_reasoning_content if complete_reasoning_content else None,
                 metadata=last_chunk_metadata
             )
             self.messages.append(final_message)
