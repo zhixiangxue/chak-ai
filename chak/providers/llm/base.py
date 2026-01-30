@@ -157,14 +157,13 @@ class OpenAICompatibleMessageConverter(BaseMessageConverter):
         return result
     
     def from_provider_response(self, response: Any) -> AIMessage:
-        """Convert OpenAI-compatible response to standard AIMessage."""
+        """Convert OpenAI-compatible chat completion response to standard AIMessage."""
         choice = response.choices[0]
         message = choice.message
-        
+
         # Extract and convert tool_calls if present
         tool_calls = None
         if hasattr(message, 'tool_calls') and message.tool_calls:
-            # Convert OpenAI tool_calls to our format
             tool_calls = [
                 ChatCompletionMessageToolCall(
                     id=tc.id,
@@ -176,20 +175,45 @@ class OpenAICompatibleMessageConverter(BaseMessageConverter):
                 )
                 for tc in message.tool_calls
             ]
-        
+
+        # Split user-visible content and reasoning content
+        content, reasoning_content = self._split_reasoning_and_content(message)
+
         return AIMessage(
-            content=message.content or "",
+            content=content,
+            reasoning_content=reasoning_content,
             tool_calls=tool_calls,
-            metadata=self._build_metadata(response, choice)
+            metadata=self._build_metadata(response, choice),
         )
+
     
+    def _split_reasoning_and_content(self, message: Any):
+        """Split message into content and reasoning in a provider-agnostic way.
+
+        Base implementation only:
+        - Reads `message.content` as-is
+        - Reads optional `message.reasoning_content` if present
+        Provider-specific converters (e.g. OpenAI, Bailian) should override
+        this method if their SDK embeds reasoning in provider-specific
+        structures.
+        """
+        content = getattr(message, "content", None)
+        reasoning = getattr(message, "reasoning_content", None)
+
+        if content is None:
+            normalized_content: Any = ""
+        else:
+            normalized_content = content
+
+        return normalized_content, reasoning
+
     def _build_metadata(self, response: Any, choice: Any) -> Dict[str, Any]:
         """Build metadata - subclasses can override to change provider name."""
         return {
             "provider": "openai",  # Subclass should override this
             "model": response.model,
             "usage": getattr(response, 'usage', {}),
-            "finish_reason": choice.finish_reason,
+            "finish_reason": choice.finish_reason if choice is not None else None,
         }
     
     def from_provider_chunk(self, chunk: Any) -> MessageChunk:
@@ -241,13 +265,37 @@ class OpenAICompatibleProvider(Provider):
         """Hook method: subclasses can override to add extra client parameters."""
         pass
     
+    def _apply_reasoning_params(self, kwargs: dict) -> None:
+        """Apply reasoning parameters to kwargs based on provider-specific format.
+        
+        Subclasses should override this to transform the unified 'reasoning' dict
+        into provider-specific parameters.
+        
+        Args:
+            kwargs: Request parameters dict that will be passed to SDK.
+                   May contain 'reasoning' key with provider-agnostic settings.
+        """
+        # Base implementation: do nothing (for providers that don't support reasoning)
+        pass
+    
     def _send_complete(self, messages: List, **kwargs) -> Any:
         """Send non-streaming request to OpenAI-compatible API."""
-        return self._client.chat.completions.create(
+        # Apply provider-specific reasoning parameter transformations
+        self._apply_reasoning_params(kwargs)
+        
+        raw_response = self._client.chat.completions.create(
             model=self.config.model,
             messages=messages,
             **kwargs
         )
+        
+        # DEBUG: Print entire response with rich
+        from rich import print as rprint
+        rprint("\n=== DEBUG: Raw SDK Response ===")
+        rprint(raw_response)
+        rprint("=== END DEBUG ===\n")
+        
+        return raw_response
     
     def _send_stream(self, messages: List, **kwargs) -> Iterator[Any]:
         """Send streaming request to OpenAI-compatible API."""

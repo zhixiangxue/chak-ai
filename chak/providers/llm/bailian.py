@@ -41,3 +41,25 @@ class BailianProvider(OpenAICompatibleProvider):
         """Add Bailian-specific organization parameter if exists."""
         if isinstance(self.config, BailianConfig) and self.config.organization:
             kwargs["organization"] = self.config.organization
+    
+    def _apply_reasoning_params(self, kwargs: dict) -> None:
+        """Transform chak's unified reasoning params to Bailian's format.
+        
+        Bailian uses extra_body with:
+        - enable_thinking: True (to enable reasoning mode)
+        - thinking_budget: int (optional, maps to chak's 'budget')
+        """
+        reasoning = kwargs.pop('reasoning', None)
+        if not reasoning:
+            return
+        
+        # Initialize extra_body if not exists
+        if 'extra_body' not in kwargs:
+            kwargs['extra_body'] = {}
+        
+        # Enable thinking mode (presence of reasoning dict means enable)
+        kwargs['extra_body']['enable_thinking'] = True
+        
+        # Map chak's 'budget' to Bailian's 'thinking_budget'
+        if 'budget' in reasoning:
+            kwargs['extra_body']['thinking_budget'] = reasoning['budget']

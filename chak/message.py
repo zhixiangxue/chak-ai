@@ -106,6 +106,7 @@ class MessageChunk(BaseModel):
     """Represents a streaming chunk of a message."""
 
     content: str = ""
+    reasoning_content: str = ""
     is_final: bool = False
     metadata: Optional[Dict[str, Any]] = None
     final_message: Optional['Message'] = None  # 当 is_final=True 时，包含完整的最终消息
