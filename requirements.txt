@@ -1,5 +1,6 @@
 pydantic>=2.0.0
 openai>=1.0.0
+dashscope>=1.20.0
 tiktoken>=0.5.0
 docstring-parser>=0.15
 

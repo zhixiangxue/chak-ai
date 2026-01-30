@@ -18,9 +18,14 @@ Example:
 
 __version__ = "0.2.7"
 
-# Strategy classes
-from .context.strategies import FIFOStrategy, NoopStrategy, SummarizationStrategy, BaseContextStrategy
-from .context.strategies.base import StrategyRequest, StrategyResponse
+# Context handlers
+from .context.handlers import (
+    BaseContextHandler,
+    NoopContextHandler,
+    FIFOContextHandler,
+    LRUContextHandler,
+    SummarizationContextHandler
+)
 # Core API - import the main classes
 from .conversation import Conversation, ToolExecutor
 from .exceptions import (
@@ -28,8 +33,8 @@ from .exceptions import (
     ConversationNotFoundError, ContextError
 )
 from .message import (
-    Message, MessageChunk,
-    BaseMessage, HumanMessage, AIMessage, SystemMessage, ToolMessage, MarkerMessage
+    Message, MessageChunk, ReasoningChunk,
+    BaseMessage, HumanMessage, AIMessage, SystemMessage, ToolMessage
 )
 # Attachment classes for multimodal support
 from .attachment import Image, Audio, Video, MimeType, PDF, DOC, Excel, TXT, Link
@@ -77,12 +82,12 @@ __all__ = [
     'ToolExecutor',
     'Message',
     'MessageChunk',
+    'ReasoningChunk',
     'BaseMessage',
     'HumanMessage',
     'AIMessage',
     'SystemMessage',
     'ToolMessage',
-    'MarkerMessage',
     
     # Multimodal attachments
     'Image',
@@ -102,14 +107,12 @@ __all__ = [
     'ConversationNotFoundError',
     'ContextError',
     
-    # Strategies
-    'FIFOStrategy',
-    'NoopStrategy',
-    'SummarizationStrategy',
-    'NoopStrategy',
-    'BaseContextStrategy',
-    'StrategyRequest',
-    'StrategyResponse',
+    # Context handlers
+    'BaseContextHandler',
+    'NoopContextHandler',
+    'FIFOContextHandler',
+    'LRUContextHandler',
+    'SummarizationContextHandler',
     
     # Utilities
     'build',

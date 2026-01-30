@@ -1,12 +1,12 @@
 import asyncio
+import uuid
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
 from enum import Enum
 from typing import TYPE_CHECKING, List, Dict, Any, Iterator, Union, Optional, AsyncIterator
 
 from .attachment import Attachment
-from .context.strategies import BaseContextStrategy, NoopStrategy
-from .context.strategies.base import StrategyRequest
-from .message import Message, MessageChunk, HumanMessage, AIMessage, SystemMessage, ToolMessage, MarkerMessage
+from .context.handlers import BaseContextHandler, NoopContextHandler
+from .message import Message, MessageChunk, ReasoningChunk, HumanMessage, AIMessage, SystemMessage, ToolMessage
 from .providers import create_provider
 from .providers.types import ProviderCategory
 from .utils.uri import parse as parse_uri
@@ -38,8 +38,9 @@ class Conversation:
         self, 
         model_uri: str, 
         api_key: str,
-        system_message: Optional[str] = None,
-        context_strategy: Optional[BaseContextStrategy] = None,
+        id: Optional[str] = None,
+        system_prompt: Optional[str] = None,
+        context_handler: Optional[BaseContextHandler] = None,
         tools: Optional[List["MCPTool"]] = None,
         tool_executor: ToolExecutor = ToolExecutor.ASYNCIO,
         tool_approval_handler: Optional["ToolApprovalHandler"] = None,
@@ -57,9 +58,10 @@ class Conversation:
         Args:
             model_uri: Model URI string (e.g., "bailian@https://...:qwen-plus")
             api_key: API key for authentication
-            system_message: Optional system message to initialize the conversation.
+            id: Unique conversation ID (auto-generated if not provided)
+            system_prompt: Optional system prompt to initialize the conversation.
                           If you need structured content, use \n\n to separate sections.
-            context_strategy: Context management strategy (default: NoopStrategy)
+            context_handler: Context management handler (default: NoopContextHandler)
             tools: Optional list of MCP tools or native functions (requires async asend() method)
             tool_executor: Tool execution mode (default: ToolExecutor.ASYNCIO)
                           - ASYNCIO: Best for IO-bound tasks (API calls, DB queries)
@@ -68,14 +70,14 @@ class Conversation:
             **kwargs: Additional configuration parameters
         
         Example:
-            >>> # Simple system message
+            >>> # Simple system prompt
             >>> conv = Conversation(
             ...     model_uri="openai:gpt-4",
             ...     api_key="sk-...",
-            ...     system_message="You are a helpful assistant."
+            ...     system_prompt="You are a helpful assistant."
             ... )
             >>> 
-            >>> # Structured system message
+            >>> # Structured system prompt
             >>> system_prompt = (
             ...     "You are a helpful assistant.\n\n"
             ...     "Rules:\n"
@@ -85,11 +87,12 @@ class Conversation:
             >>> conv = Conversation(
             ...     model_uri="openai:gpt-4",
             ...     api_key="sk-...",
-            ...     system_message=system_prompt
+            ...     system_prompt=system_prompt
             ... )
         """
         self.model_uri = model_uri
         self.api_key = api_key
+        self.id = id or str(uuid.uuid4())
         self.messages = []
         self.attachments: List[Attachment] = []  # Session-level attachment tracking
         
@@ -107,13 +110,13 @@ class Conversation:
         if tools:
             self.add_tools(tools)
         
-        # Initialize system message
-        self._initial_system_message = self._normalize_system_message(system_message)
+        # Initialize system prompt
+        self._initial_system_message = self._normalize_system_message(system_prompt)
         if self._initial_system_message:
             self.messages.append(self._initial_system_message)
         
-        # Initialize context strategy
-        self.context_strategy = context_strategy or NoopStrategy()
+        # Initialize context handler
+        self.context_handler = context_handler or NoopContextHandler()
 
         # 1. Parse URI to dict
         parsed = parse_uri(model_uri)
@@ -132,23 +135,23 @@ class Conversation:
         self._provider_name = parsed['provider']
         self._model_name = parsed['model']
 
-    def _normalize_system_message(self, system_message: Optional[str]) -> Optional[SystemMessage]:
+    def _normalize_system_message(self, system_prompt: Optional[str]) -> Optional[SystemMessage]:
         """
-        Convert system message string to SystemMessage object.
+        Convert system prompt string to SystemMessage object.
         
         Args:
-            system_message: System message string
+            system_prompt: System prompt string
             
         Returns:
             SystemMessage object, or None if input is empty
         """
-        if not system_message:
+        if not system_prompt:
             return None
         
-        if not isinstance(system_message, str):
-            raise TypeError(f"system_message must be str, got {type(system_message)}")
+        if not isinstance(system_prompt, str):
+            raise TypeError(f"system_prompt must be str, got {type(system_prompt)}")
         
-        return SystemMessage(content=system_message)
+        return SystemMessage(content=system_prompt)
     
     def set_tool_executor(self, executor: ToolExecutor) -> None:
         """
@@ -333,15 +336,9 @@ class Conversation:
                     self.messages.append(SystemMessage(content=content))
                 elif role == "tool":
                     self.messages.append(ToolMessage(content=content))
-                elif role == "context":
-                    metadata = msg.get('metadata', {})
-                    if isinstance(metadata, dict):
-                        self.messages.append(MarkerMessage(content=content, metadata=metadata))
-                    else:
-                        self.messages.append(MarkerMessage(content=content))
                 else:
                     raise ValueError(f"Invalid role: {role}")
-            elif isinstance(msg, (HumanMessage, AIMessage, SystemMessage, ToolMessage, MarkerMessage)):
+            elif isinstance(msg, (HumanMessage, AIMessage, SystemMessage, ToolMessage)):
                 # Already a Message object, add directly
                 self.messages.append(msg)
             else:
@@ -355,7 +352,7 @@ class Conversation:
             timeout: Optional[int] = None,
             returns: Optional[type] = None,
             **kwargs
-    ) -> Union[Message, Iterator[MessageChunk], Any]:
+    ) -> Union[Message, Iterator[Union[MessageChunk, ReasoningChunk]], Any]:
         """
         Send message (sync, no MCP tools support).
         
@@ -378,7 +375,8 @@ class Conversation:
         
         Returns:
             - If stream=False: Complete Message
-            - If stream=True: Iterator[MessageChunk]
+            - If stream=True: Iterator[Union[MessageChunk, ReasoningChunk]]
+              You can distinguish chunk types using isinstance() or match-case
         
         Raises:
             RuntimeError: If tools are configured
@@ -387,9 +385,12 @@ class Conversation:
             # Simple usage
             response = conv.send("Hello")
             
-            # With streaming
+            # With streaming - distinguish answer vs reasoning chunks
             for chunk in conv.send("Hello", stream=True):
-                print(chunk.content, end="")
+                if isinstance(chunk, MessageChunk):
+                    print(chunk.content, end="")  # Answer content
+                elif isinstance(chunk, ReasoningChunk):
+                    print(f"[Thinking: {chunk.content}]")  # Reasoning content
             
             # With image
             from chak.attachment import Image
@@ -492,8 +493,8 @@ class Conversation:
         if attachments:
             self.attachments.extend(attachments)
 
-        # Apply context strategy
-        messages_to_send = self._apply_context_strategy()
+        # Apply context handler
+        messages_to_send = self._apply_context_handler()
 
         # Normal LLM call (no tools)
         if stream:
@@ -511,7 +512,7 @@ class Conversation:
             returns: Optional[type] = None,
             tool_executor: Optional[ToolExecutor] = None,
             **kwargs
-    ) -> Union[Message, AsyncIterator[MessageChunk], AsyncIterator['StreamEvent'], Any, None]:
+    ) -> Union[Message, AsyncIterator[Union[MessageChunk, ReasoningChunk]], AsyncIterator['StreamEvent'], Any, None]:
         """
         Send message (async, full featured).
         
@@ -527,7 +528,7 @@ class Conversation:
             message: Message content (str will be converted to HumanMessage)
             attachments: Optional list of Attachment objects (images, audio, etc.)
             stream: Enable streaming (ignored if event=True)
-            event: Enable event stream mode (returns MessageChunk + ToolCall events)
+            event: Enable event stream mode (returns MessageChunk + ReasoningChunk + ToolCall events)
                   When True, you can observe tool calls in real-time using isinstance() or match-case.
                   Note: event=True will override stream parameter.
             timeout: Request timeout in seconds. If None, uses provider's default timeout (30s)
@@ -539,23 +540,28 @@ class Conversation:
         
         Returns:
             - If event=False and stream=False and returns=None: Complete Message
-            - If event=False and stream=True: AsyncIterator[MessageChunk]
-            - If event=True: AsyncIterator[StreamEvent] (MessageChunk/ToolCallStartEvent/ToolCallSuccessEvent/ToolCallErrorEvent)
+            - If event=False and stream=True: AsyncIterator[Union[MessageChunk, ReasoningChunk]]
+            - If event=True: AsyncIterator[StreamEvent] (MessageChunk/ReasoningChunk/ToolCallStartEvent/ToolCallSuccessEvent/ToolCallErrorEvent)
             - If returns is provided: Validated Pydantic model instance or None if failed
         
         Examples:
             # Non-streaming
             response = await conv.asend("Hello")
             
-            # Streaming
+            # Streaming - handle both answer and reasoning chunks
             async for chunk in await conv.asend("Hello", stream=True):
-                print(chunk.content, end="")
+                if isinstance(chunk, MessageChunk):
+                    print(chunk.content, end="")  # Answer content
+                elif isinstance(chunk, ReasoningChunk):
+                    print(f"[Thinking: {chunk.content}]")  # Reasoning content
             
             # Event stream (with tool observability)
             async for event in await conv.asend("What's the weather?", event=True):
                 match event:
                     case MessageChunk(content=text):
                         print(text, end="")
+                    case ReasoningChunk(content=reasoning):
+                        print(f"[Reasoning: {reasoning}]")
                     case ToolCallStartEvent(tool_name=name, arguments=args):
                         print(f"\n🔧 Calling {name}")
                     case ToolCallEndEvent(tool_name=name, result=res):
@@ -659,8 +665,8 @@ class Conversation:
         if attachments:
             self.attachments.extend(attachments)
 
-        # Apply context strategy
-        messages_to_send = self._apply_context_strategy()
+        # Apply context handler
+        messages_to_send = self._apply_context_handler()
 
         # Check if event stream mode is requested
         if event:
@@ -693,8 +699,8 @@ class Conversation:
             else:
                 return await self._asend_nonstream(messages_to_send, **kwargs)
     
-    async def _asend_stream(self, messages: List[Message], **kwargs) -> AsyncIterator[MessageChunk]:
-        """Handle async streaming response."""
+    async def _asend_stream(self, messages: List[Message], **kwargs) -> AsyncIterator[Union[MessageChunk, ReasoningChunk]]:
+        """Handle async streaming response with support for both answer and reasoning chunks."""
         # Get provider chunks (sync iterator)
         def _get_sync_chunks():
             return self.provider.send(
@@ -708,20 +714,32 @@ class Conversation:
 
         # Convert to standard chunks and collect content
         complete_content = ""
+        complete_reasoning_content = ""
         last_chunk_was_final = False
         last_chunk_metadata = {}
         
         for provider_chunk in provider_chunks:
             chunk = self.provider.converter.from_provider_chunk(provider_chunk)
-            complete_content += chunk.content
             
-            # Check if this chunk is already marked as final
-            if chunk.is_final:
-                last_chunk_was_final = True
+            # Handle different chunk types
+            if isinstance(chunk, MessageChunk):
+                complete_content += chunk.content
+                
+                # Check if this chunk is already marked as final
+                if chunk.is_final:
+                    last_chunk_was_final = True
+                
+                # Save metadata from last chunk (may contain usage info)
+                if chunk.metadata:
+                    last_chunk_metadata = chunk.metadata
             
-            # Save metadata from last chunk (may contain usage info)
-            if chunk.metadata:
-                last_chunk_metadata = chunk.metadata
+            elif isinstance(chunk, ReasoningChunk):
+                complete_reasoning_content += chunk.content
+                
+                # Reasoning chunks don't affect final message flag
+                # but we still save metadata if present
+                if chunk.metadata:
+                    last_chunk_metadata.update(chunk.metadata)
             
             yield chunk
 
@@ -729,6 +747,7 @@ class Conversation:
         if complete_content and not last_chunk_was_final:
             final_message = AIMessage(
                 content=complete_content,
+                reasoning_content=complete_reasoning_content if complete_reasoning_content else None,
                 metadata=last_chunk_metadata
             )
             self.messages.append(final_message)
@@ -743,12 +762,13 @@ class Conversation:
             # Provider sent final chunk, just save the message
             final_message = AIMessage(
                 content=complete_content,
+                reasoning_content=complete_reasoning_content if complete_reasoning_content else None,
                 metadata=last_chunk_metadata
             )
             self.messages.append(final_message)
     
-    async def _asend_stream_with_tools(self, messages: List[Message], **kwargs) -> AsyncIterator[MessageChunk]:
-        """Handle async streaming response with MCP tools."""
+    async def _asend_stream_with_tools(self, messages: List[Message], **kwargs) -> AsyncIterator[Union[MessageChunk, ReasoningChunk]]:
+        """Handle async streaming response with MCP tools, supporting both answer and reasoning chunks."""
         if not self._tool_manager:
             raise RuntimeError("Tool manager not initialized")
         
@@ -861,8 +881,8 @@ class Conversation:
         if attachments:
             self.attachments.extend(attachments)
         
-        # Apply context strategy
-        messages_to_send = self._apply_context_strategy()
+        # Apply context handler
+        messages_to_send = self._apply_context_handler()
         
         # Generate tool schema from Pydantic model
         tool_schema = self._generate_tool_schema_from_model(returns)
@@ -969,7 +989,7 @@ class Conversation:
             **kwargs
         )
         # Convert to AIMessage
-        if not isinstance(response, (HumanMessage, AIMessage, SystemMessage, ToolMessage, MarkerMessage)):
+        if not isinstance(response, (HumanMessage, AIMessage, SystemMessage, ToolMessage)):
             ai_response = AIMessage(
                 content=response.content,  # type: ignore
                 reasoning_content=response.reasoning_content,  # type: ignore
@@ -995,9 +1015,9 @@ class Conversation:
         including LLM content generation and tool execution details.
         
         Yields:
-            StreamEvent: MessageChunk, ToolCallStartEvent, ToolCallSuccessEvent, or ToolCallErrorEvent
+            StreamEvent: MessageChunk, ReasoningChunk, ToolCallStartEvent, ToolCallSuccessEvent, or ToolCallErrorEvent
         """
-        from .message import MessageChunk
+        from .message import MessageChunk, ReasoningChunk
         
         if self._tool_manager:
             # Temporarily override executor if specified
@@ -1019,14 +1039,10 @@ class Conversation:
                 if original_executor is not None:
                     self._tool_manager.executor = original_executor
         else:
-            # No tools: only return content events
+            # No tools: only return content events (both MessageChunk and ReasoningChunk)
             async for chunk in self._asend_stream(messages, **kwargs):
-                yield MessageChunk(
-                    content=chunk.content,
-                    is_final=chunk.is_final,
-                    metadata=chunk.metadata,
-                    final_message=chunk.final_message
-                )
+                # Directly yield the chunk (whether MessageChunk or ReasoningChunk)
+                yield chunk
 
     def _send_nonstream(self, messages: List[Message], **kwargs) -> Message:
         """Handle non-streaming response."""
@@ -1036,7 +1052,7 @@ class Conversation:
             **kwargs
         )
         # Convert to AIMessage
-        if not isinstance(response, (HumanMessage, AIMessage, SystemMessage, ToolMessage, MarkerMessage)):
+        if not isinstance(response, (HumanMessage, AIMessage, SystemMessage, ToolMessage)):
             ai_response = AIMessage(
                 content=response.content,  # type: ignore
                 reasoning_content=response.reasoning_content,  # type: ignore
@@ -1049,8 +1065,8 @@ class Conversation:
         self.messages.append(ai_response)
         return ai_response
     
-    def _send_stream(self, messages: List[Message], **kwargs) -> Iterator[MessageChunk]:
-        """Handle streaming response."""
+    def _send_stream(self, messages: List[Message], **kwargs) -> Iterator[Union[MessageChunk, ReasoningChunk]]:
+        """Handle streaming response with support for both answer and reasoning chunks."""
         # Get provider chunks (model is already in provider config)
         provider_chunks = self.provider.send(
             messages=messages,
@@ -1060,20 +1076,32 @@ class Conversation:
 
         # Convert to standard chunks and collect content
         complete_content = ""
+        complete_reasoning_content = ""
         last_chunk_was_final = False
         last_chunk_metadata = {}
         
         for provider_chunk in provider_chunks:
             chunk = self.provider.converter.from_provider_chunk(provider_chunk)
-            complete_content += chunk.content
             
-            # Check if this chunk is already marked as final
-            if chunk.is_final:
-                last_chunk_was_final = True
+            # Handle different chunk types
+            if isinstance(chunk, MessageChunk):
+                complete_content += chunk.content
+                
+                # Check if this chunk is already marked as final
+                if chunk.is_final:
+                    last_chunk_was_final = True
+                
+                # Save metadata from last chunk (may contain usage info)
+                if chunk.metadata:
+                    last_chunk_metadata = chunk.metadata
             
-            # Save metadata from last chunk (may contain usage info)
-            if chunk.metadata:
-                last_chunk_metadata = chunk.metadata
+            elif isinstance(chunk, ReasoningChunk):
+                complete_reasoning_content += chunk.content
+                
+                # Reasoning chunks don't affect final message flag
+                # but we still save metadata if present
+                if chunk.metadata:
+                    last_chunk_metadata.update(chunk.metadata)
             
             yield chunk
 
@@ -1081,6 +1109,7 @@ class Conversation:
         if complete_content and not last_chunk_was_final:
             final_message = AIMessage(
                 content=complete_content,
+                reasoning_content=complete_reasoning_content if complete_reasoning_content else None,
                 metadata=last_chunk_metadata
             )
             self.messages.append(final_message)
@@ -1095,98 +1124,29 @@ class Conversation:
             # Provider sent final chunk, just save the message
             final_message = AIMessage(
                 content=complete_content,
+                reasoning_content=complete_reasoning_content if complete_reasoning_content else None,
                 metadata=last_chunk_metadata
             )
             self.messages.append(final_message)
 
-    def _apply_context_strategy(self) -> List[Message]:
+    def _apply_context_handler(self) -> List[Message]:
         """
-        Apply context strategy to process messages.
+        Apply context handler to process messages.
         
         Returns:
-            Complete processed message list (strategy may insert markers)
+            Context messages for this round (handler output)
         """
         if not self.messages:
             return []
         
-        # Build strategy request
-        request = StrategyRequest(messages=self.messages)
+        # Call handler with messages and conversation id
+        context_messages = self.context_handler(
+            messages=self.messages,
+            conversation_id=self.id
+        )
         
-        # Get strategy response
-        response = self.context_strategy.process(request)
-        
-        # Update messages (may include markers)
-        self.messages = response.messages
-        
-        # Extract messages to send: system messages + last marker (inclusive) → end
-        messages_to_send = self._extract_messages_to_send(response.messages)
-        
-        # Convert MarkerMessage to SystemMessage for LLM compatibility
-        messages_for_llm = self._prepare_for_llm(messages_to_send)
-        
-        return messages_for_llm
+        return context_messages
     
-    def _extract_messages_to_send(self, messages: List[Message]) -> List[Message]:
-        """
-        Extract messages to send from complete message list.
-        
-        Extraction rules:
-        - Always include all system messages
-        - If markers exist: last marker (inclusive) → last message
-        - If no markers: all conversation messages
-        
-        Args:
-            messages: Complete message list
-            
-        Returns:
-            Messages to send to LLM
-        """
-        if not messages:
-            return []
-        
-        # 1. Extract system messages
-        system_messages = [m for m in messages if isinstance(m, SystemMessage)]
-        
-        # 2. Find last marker
-        last_marker_idx = None
-        for i in range(len(messages) - 1, -1, -1):
-            if isinstance(messages[i], MarkerMessage):
-                last_marker_idx = i
-                break
-        
-        # 3. Extract messages based on marker presence
-        if last_marker_idx is not None:
-            # Has marker: from last marker to end
-            context_messages = messages[last_marker_idx:]
-        else:
-            # No marker: all non-system messages
-            context_messages = [
-                m for m in messages 
-                if not isinstance(m, SystemMessage)
-            ]
-        
-        # 4. Combine: system messages + context messages
-        return list(system_messages) + list(context_messages)
-    
-    def _prepare_for_llm(self, messages: List[Message]) -> List[Message]:
-        """
-        Prepare messages for LLM by converting MarkerMessage to SystemMessage.
-        
-        Args:
-            messages: Messages to send
-            
-        Returns:
-            Messages with context role converted to system
-        """
-        result: List[Message] = []
-        for msg in messages:
-            if isinstance(msg, MarkerMessage):
-                # Convert to SystemMessage for LLM compatibility
-                result.append(SystemMessage(content=msg.content))
-            else:
-                result.append(msg)
-        return result
-
     def clear(self):
         """Clear conversation history."""
         self.messages.clear()
@@ -1202,7 +1162,7 @@ class Conversation:
             >>> conv = Conversation(
             ...     model_uri="openai:gpt-4",
             ...     api_key="sk-...",
-            ...     system_message="You are a helpful assistant."
+            ...     system_prompt="You are a helpful assistant."
             ... )
             >>> conv.send("Hello")
             >>> conv.send("How are you?")
@@ -1214,10 +1174,9 @@ class Conversation:
         if self._initial_system_message:
             self.messages.append(self._initial_system_message)
         
-        # Reset context strategy cache (if strategy has reset method)
-        # Some strategies (like SummarizationStrategy) may have cache that needs cleanup
-        if hasattr(self.context_strategy, 'reset') and callable(getattr(self.context_strategy, 'reset')):
-            self.context_strategy.reset()  # type: ignore
+        # Reset context handler cache (if handler has reset method)
+        if hasattr(self.context_handler, 'reset') and callable(getattr(self.context_handler, 'reset')):
+            self.context_handler.reset()  # type: ignore
 
     def stats(self) -> Dict[str, Any]:
         """

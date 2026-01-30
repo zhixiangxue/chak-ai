@@ -1,6 +1,6 @@
 # src/chak/providers/llm/base.py
 from abc import ABC, abstractmethod
-from typing import Dict, Any, Optional, List, Iterator
+from typing import Dict, Any, Optional, List, Iterator, Union
 
 import httpx
 import openai
@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from ... import __version__
 from ...exceptions import ProviderError
-from ...message import Message, MessageChunk, AIMessage, ChatCompletionMessageToolCall, Function
+from ...message import Message, MessageChunk, ReasoningChunk, AIMessage, ChatCompletionMessageToolCall, Function
 
 
 class BaseProviderConfig(BaseModel):
@@ -216,8 +216,12 @@ class OpenAICompatibleMessageConverter(BaseMessageConverter):
             "finish_reason": choice.finish_reason if choice is not None else None,
         }
     
-    def from_provider_chunk(self, chunk: Any) -> MessageChunk:
-        """Convert OpenAI-compatible streaming chunk to standard MessageChunk."""
+    def from_provider_chunk(self, chunk: Any) -> Union[MessageChunk, ReasoningChunk]:
+        """Convert OpenAI-compatible streaming chunk to standard MessageChunk or ReasoningChunk.
+        
+        Base implementation only handles answer content chunks (MessageChunk).
+        Subclasses should override this method if their provider supports reasoning streaming.
+        """
         choice = chunk.choices[0] if chunk.choices else None
         delta = choice.delta if choice else None
         
@@ -299,6 +303,9 @@ class OpenAICompatibleProvider(Provider):
     
     def _send_stream(self, messages: List, **kwargs) -> Iterator[Any]:
         """Send streaming request to OpenAI-compatible API."""
+        # Apply provider-specific reasoning parameter transformations
+        self._apply_reasoning_params(kwargs)
+        
         # Add stream_options to include usage in streaming mode (if not already set)
         if 'stream_options' not in kwargs:
             kwargs['stream_options'] = {"include_usage": True}
