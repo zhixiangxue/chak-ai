@@ -26,6 +26,7 @@ chak is not another liteLLM, one-api, or OpenRouter, but a client library that a
 
 ## 🌵 What's New
 
+- **2025-01-31 | v0.3.0** - Major update: Added skill-based progressive disclosure for tool calling, turn ID tracking & message filtering, reasoning support, and refactored context handler architecture. See [Release Notes](tmp/release-notes-0.3.0.md)
 - **2025-01-29 | v0.2.7** - Added human-in-the-loop tool approval via `tool_approval_handler`, with CLI and browser/WebSocket support. See [Human-in-the-loop Approval](#tool-calling-human-approval) in [Tool Calling](#tool-calling).
 - **2025-01-12 | v0.2.6** - Added event stream support for real-time tool call observability. Use `event=True` to observe tool execution in your UI. See [Tool Call Observability](#tool-call-observability)
 - **2025-01-09 | v0.2.5** - Added configurable tool executor for CPU-intensive tasks. Use `tool_executor` parameter to control execution mode. See [Tool Calling](#tool-calling)
@@ -86,20 +87,20 @@ Supports images, audio, video, PDF, Word, Excel, CSV, TXT, and web links. See [M
 
 ### 🪴 Pluggable Context Management
 
-Chak handles context automatically with multiple strategies:
+Chak handles context automatically with multiple handlers:
 
 ```python
 # Context is managed automatically
 conv = chak.Conversation(
     "openai/gpt-4o",
-    context_strategy=chak.FIFOStrategy(keep_recent_turns=5)
+    context_handler=chak.FIFOContextHandler(max_messages=10)
 )
 ```
 
-- **Now**: Short-term memory strategies (FIFO, Summarization, LRU) - production ready
+- **Now**: Short-term memory handlers (FIFO, Summarization, LRU) - production ready
 - **Planning**: Long-term memory (RAG, memory bank) - making conversations truly "memorable"
 
-No one else automates context management at this level. chak's strategy pattern makes it fully pluggable and extensible.
+No one else automates context management at this level. chak's handler pattern makes it fully pluggable and extensible.
 
 ### 🌻 Simple Tool Calling
 
@@ -197,7 +198,7 @@ See full example: [examples/tool_calling_parallel_demo.py](examples/tool_calling
 
 - **Now**: Functions, objects, and MCP tools all work the same way
 - **Now**: Configurable executor for optimal performance
-- **Planning**: Smart tool selection based on context
+- **Now**: Skill-based progressive disclosure prevents overwhelming LLMs
 
 ### 🌺 Structured Output
 
@@ -267,29 +268,29 @@ chak handles: connection initialization, message alignment, retry logic, context
 
 ## 🌒 Enable Automatic Context Management
 
-Three built-in strategies:
+Three built-in handlers:
 
-- FIFO: Keep the last N turns, automatically drops older ones.
-- Summarization: When context reaches a threshold, early history is summarized; recent turns stay in full.
-- LRU: Built on Summarization, keeps hot topics and prunes cold ones.
+- **FIFO**: Keep the last N messages, automatically drops older ones.
+- **Summarization**: When context reaches a threshold, early history is summarized; recent messages stay in full.
+- **LRU**: Built on Summarization, keeps hot topics and prunes cold ones.
 
 Quick start:
 
 ```python
-from chak import Conversation, FIFOStrategy
+from chak import Conversation, FIFOContextHandler
 
 conv = Conversation(
     "bailian/qwen-flash",
     api_key="YOUR_KEY",
-    context_strategy=FIFOStrategy(keep_recent_turns=3)
+    context_handler=FIFOContextHandler(max_messages=10)
 )
 ```
 
 See full examples (parameters, how it works, tips):
 
-- FIFO: [examples/strategy_chat_fifo.py](examples/strategy_chat_fifo.py)
-- Summarization: [examples/strategy_chat_summarization.py](examples/strategy_chat_summarization.py)
-- LRU: [examples/strategy_chat_lru.py](examples/strategy_chat_lru.py)
+- FIFO: [examples/context_handler_fifo.py](examples/context_handler_fifo.py)
+- Summarization: [examples/context_handler_summarization.py](examples/context_handler_summarization.py)
+- LRU: [examples/context_handler_lru.py](examples/context_handler_lru.py)
 
 ---
 
@@ -297,9 +298,50 @@ See full examples (parameters, how it works, tips):
 
 ## 🌓 Tool Calling
 
-Write tools the way you like - functions, objects, or MCP servers. chak handles the rest.
+Write tools the way you like - functions, objects, skills, or MCP servers. chak handles the rest.
 
 Just pass what you have, and it works.
+
+### 🌟 Skill-based Tools (New in 0.3.0)
+
+Group related tools as **skills** to prevent overwhelming LLMs with too many options. LLMs see a skill catalog first, then access internal tools after activation.
+
+**Why skills?**
+- ✅ **Progressive disclosure**: LLM discovers skills first, loads tools on demand
+- ✅ **Better organization**: Group related tools by capability
+- ✅ **No decorators**: Public methods are auto-exposed
+- ✅ **Type-safe**: Full Python type hints support
+
+```python
+from chak import Conversation
+from chak.tools import SkillBase, wrap_tools
+
+class FileSkill(SkillBase):
+    """File operation skill for reading, analyzing, and summarizing files."""
+    
+    name = "file_helper"
+    description = "Handle file reading, analysis and summarization tasks"
+    
+    def read_file(self, path: str) -> str:
+        """Read content from a file."""
+        with open(path, 'r') as f:
+            return f.read()
+    
+    def analyze_size(self, path: str) -> str:
+        """Analyze file size and estimate reading time."""
+        import os
+        size_kb = os.path.getsize(path) / 1024
+        return f"File size: {size_kb:.2f} KB"
+
+tools = wrap_tools([FileSkill()])
+conv = Conversation("openai/gpt-4o", tools=tools)
+
+# LLM sees: file_helper skill
+# After activation: read_file, analyze_size tools
+response = await conv.asend("Analyze README.md file")
+```
+
+See full example: [examples/tool_calling_skills.py](examples/tool_calling_skills.py)
 
 ### Pass Functions
 
