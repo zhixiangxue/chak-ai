@@ -22,6 +22,7 @@ if TYPE_CHECKING:
 from .mcp.tool import MCPTool
 from .native.function import NativeFunctionTool
 from .native.object import NativeObjectTool
+from .skills.object import SkillObjectTool
 
 
 @dataclass
@@ -80,38 +81,93 @@ class ToolManager:
         )
     """
     
-    def __init__(self, tools: List[Union[MCPTool, NativeFunctionTool, NativeObjectTool]], max_iterations: int = 10, executor=None, approval_handler: Optional[ToolApprovalHandler] = None):
+    def __init__(self, tools: List[Union[MCPTool, NativeFunctionTool, NativeObjectTool, SkillObjectTool]], max_iterations: int = 10, executor=None, approval_handler: Optional[ToolApprovalHandler] = None):
         """
         Args:
-            tools: 工具列表（MCPTool、NativeFunctionTool 或 NativeObjectTool）
+            tools: 工具列表（MCPTool、NativeFunctionTool、NativeObjectTool 或 SkillObjectTool）
             max_iterations: 最大迭代次数（防止无限循环）
             executor: 执行器实例（ThreadPoolExecutor/ProcessPoolExecutor）或 None（使用 asyncio）
             approval_handler: Optional approval handler for human-in-the-loop tool calls
         """
         self.tools = tools
         self._tool_map = self._build_tool_map()
+        self._skill_map = self._build_skill_map()
+        self._active_skill: Optional[SkillObjectTool] = None  # Track currently active skill instance
         self.max_iterations = max_iterations
         self.executor = executor
         self.approval_handler = approval_handler
     
-    def _build_tool_map(self) -> dict:
+    def _build_tool_map(self) -> Dict[str, Any]:
         """
-        构建工具名 -> 工具对象映射
+        Build tool name -> tool object mapping for regular tools.
         
-        对于 NativeObjectTool，需要展开其所有方法
+        For NativeObjectTool, expand all methods.
+        Skip SkillObjectTool (handled separately).
+        
+        Returns:
+            tool_map: tool name -> tool object
         """
         tool_map = {}
         
         for tool in self.tools:
-            if isinstance(tool, NativeObjectTool):
-                # 展开对象的所有方法
+            if isinstance(tool, SkillObjectTool):
+                # Skip SkillObjectTool (handled in _build_skill_map)
+                continue
+            elif isinstance(tool, NativeObjectTool):
+                # Expand object methods
                 for method_name, method_tool in tool._method_tools.items():
                     tool_map[method_name] = method_tool
             else:
-                # MCPTool 或 NativeFunctionTool
+                # MCPTool or NativeFunctionTool
                 tool_map[tool.name] = tool
         
         return tool_map
+    
+    def _build_skill_map(self) -> Dict[str, SkillObjectTool]:
+        """
+        Build skill name -> SkillObjectTool mapping.
+        
+        Returns:
+            skill_map: skill name -> SkillObjectTool instance
+        """
+        skill_map = {}
+        
+        for tool in self.tools:
+            if isinstance(tool, SkillObjectTool):
+                skill_map[tool.name] = tool
+        
+        return skill_map
+    
+    def _get_openai_tools(self) -> List[Dict[str, Any]]:
+        """
+        Get current stage OpenAI tool list.
+        
+        If a skill is active, return that skill's internal tools.
+        Otherwise return skill entry tools + regular tools.
+        
+        Returns:
+            OpenAI tool definition list
+        """
+        openai_tools = []
+        
+        if self._active_skill:
+            # Stage 2: Return active skill's internal tools only
+            openai_tools.extend(self._active_skill.to_openai_tools())
+        else:
+            # Stage 1: Skill entry tools + regular tools
+            for skill_tool in self._skill_map.values():
+                openai_tools.append(skill_tool.to_skill_entry_tool())
+            
+            for tool in self.tools:
+                if isinstance(tool, NativeObjectTool):
+                    openai_tools.extend(tool.to_openai_tools())
+                elif isinstance(tool, SkillObjectTool):
+                    # SkillObjectTool already handled above
+                    continue
+                else:
+                    openai_tools.append(tool.to_openai_tool())
+        
+        return openai_tools
     
     async def execute_loop(
         self, 
@@ -144,18 +200,14 @@ class ToolManager:
         """
         from ..message import AIMessage, ToolMessage
         
+        # Reset active skill at the start of each conversation turn
+        self._active_skill = None
+        
         current_messages = messages.copy()
         new_messages = []  # Track all new messages added during this loop
         
         # Convert tools to OpenAI format
-        openai_tools = []
-        for tool in self.tools:
-            if isinstance(tool, NativeObjectTool):
-                # NativeObjectTool produces multiple tool definitions
-                openai_tools.extend(tool.to_openai_tools())
-            else:
-                # MCPTool or NativeFunctionTool produces single tool definition
-                openai_tools.append(tool.to_openai_tool())
+        openai_tools = self._get_openai_tools()
         
         for iteration in range(self.max_iterations):
             # Step 1: Call LLM with tools
@@ -228,6 +280,12 @@ class ToolManager:
                 )
                 current_messages.append(tool_msg)
                 new_messages.append(tool_msg)
+            
+            # Step 6: Update tool list for next iteration if skill was activated
+            if self._active_skill:
+                # Skill has been activated, next iteration will use skill's internal tools
+                openai_tools = self._get_openai_tools()
+                logger.debug(f"🌟 [Skill] Updated tool list for activated skill: {self._active_skill.name}")
             
             logger.debug(f"🔁 [Tool Loop] Loop continues to iteration {iteration + 1}...")
             # Step 6: Loop back to step 1 (LLM will see tool results and decide next action)
@@ -730,7 +788,33 @@ class ToolManager:
                     is_error=True,
                 )
         
-        tool = self._tool_map.get(tool_name)
+        # Check if this is a skill entry call
+        if tool_name in self._skill_map:
+            logger.info(f"🌟 [Skill] Activating skill: {tool_name}")
+            skill_tool = self._skill_map[tool_name]
+            
+            # Activate skill (store instance, not name)
+            self._active_skill = skill_tool
+            
+            # Return activation message
+            method_list = ", ".join(skill_tool.method_names)
+            return ToolCallResult(
+                call_id=call_id,
+                content=f"Skill '{tool_name}' activated. Available operations: {method_list}",
+                is_error=False
+            )
+        
+        # If a skill is active, look up from skill's internal tools first
+        if self._active_skill:
+            try:
+                method_tool = self._active_skill.get_method_tool(tool_name)
+                tool = method_tool
+            except ValueError:
+                # Method not found in active skill, fall back to regular tool_map
+                tool = self._tool_map.get(tool_name)
+        else:
+            tool = self._tool_map.get(tool_name)
+        
         if not tool:
             logger.error(f"❌ [Tool] Tool not found: {tool_name}")
             return ToolCallResult(

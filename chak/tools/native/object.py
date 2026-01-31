@@ -59,7 +59,7 @@ class NativeObjectTool:
     
     def _discover_methods(self) -> Dict[str, NativeFunctionTool]:
         """
-        Discover all public callable methods from the object
+        Discover all public callable methods from the object.
         
         Returns:
             Dict mapping method name to NativeFunctionTool
