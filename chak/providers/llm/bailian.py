@@ -17,6 +17,7 @@ from dashscope.api_entities.dashscope_response import GenerationResponse
 
 from .base import Provider, BaseProviderConfig, BaseMessageConverter
 from ...message import Message, AIMessage, MessageChunk, ReasoningChunk
+from ...metadata import Metadata, Usage
 
 
 class BailianConfig(BaseProviderConfig):
@@ -38,7 +39,12 @@ class BailianMessageConverter(BaseMessageConverter):
         """Convert chak messages to DashScope format.
         
         DashScope uses OpenAI-compatible message format:
-        [{"role": "user", "content": "text"}, ...]
+        [{
+            "role": "user",
+            "content": "text",
+            "tool_calls": [...],  # for assistant messages
+            "tool_call_id": "...",  # for tool messages
+        }, ...]
         """
         provider_messages = []
         for msg in messages:
@@ -46,6 +52,25 @@ class BailianMessageConverter(BaseMessageConverter):
                 "role": msg.role,
                 "content": msg.content
             }
+            
+            # Add tool_calls if present (for assistant messages)
+            if hasattr(msg, 'tool_calls') and msg.tool_calls:
+                provider_msg["tool_calls"] = [
+                    {
+                        "id": tc.id,
+                        "type": tc.type,
+                        "function": {
+                            "name": tc.function.name,
+                            "arguments": tc.function.arguments
+                        }
+                    }
+                    for tc in msg.tool_calls
+                ]
+            
+            # Add tool_call_id if present (for tool messages)
+            if hasattr(msg, 'tool_call_id') and msg.tool_call_id:
+                provider_msg["tool_call_id"] = msg.tool_call_id
+            
             provider_messages.append(provider_msg)
         return provider_messages
     
@@ -55,10 +80,12 @@ class BailianMessageConverter(BaseMessageConverter):
         DashScope response structure:
         - response.output.choices[0].message.content: answer content
         - response.output.choices[0].message.reasoning_content: reasoning content
+        - response.output.choices[0].message.tool_calls: tool calls (if any)
         """
         # Extract content
         content = ""
         reasoning_content = None
+        tool_calls = None
         
         if hasattr(response, 'output') and response.output:
             output = response.output
@@ -66,6 +93,7 @@ class BailianMessageConverter(BaseMessageConverter):
             # Try choices format (message format)
             if hasattr(output, 'choices') and output.choices:
                 message = output.choices[0].message
+                
                 # Answer content
                 content = getattr(message, 'content', '') or ""
                 # Reasoning content (safely check existence)
@@ -73,6 +101,22 @@ class BailianMessageConverter(BaseMessageConverter):
                     reasoning_content = message.reasoning_content
                 except (KeyError, AttributeError):
                     reasoning_content = None
+                
+                # Tool calls (if present) - use dict-style access for DashScope
+                # DashScope message is a dict-like object, not a regular object
+                if 'tool_calls' in message and message['tool_calls']:
+                    from ...message import ChatCompletionMessageToolCall, Function
+                    tool_calls = [
+                        ChatCompletionMessageToolCall(
+                            id=tc['id'],
+                            type=tc['type'],
+                            function=Function(
+                                name=tc['function']['name'],
+                                arguments=tc['function']['arguments']
+                            )
+                        )
+                        for tc in message['tool_calls']
+                    ]
             
             # Fallback to text format
             elif hasattr(output, 'text'):
@@ -84,6 +128,7 @@ class BailianMessageConverter(BaseMessageConverter):
         return AIMessage(
             content=content,
             reasoning_content=reasoning_content,
+            tool_calls=tool_calls,
             metadata=metadata,
         )
     
@@ -147,30 +192,41 @@ class BailianMessageConverter(BaseMessageConverter):
             metadata=self._build_chunk_metadata(chunk)
         )
     
-    def _build_metadata(self, response: GenerationResponse) -> Dict[str, Any]:
+    def _build_metadata(self, response: GenerationResponse) -> Metadata:
         """Build metadata from DashScope response."""
         # Convert to dict to safely access fields (avoid __getattr__ bug)
         response_dict = dict(response)
         
-        metadata = {
-            "provider": "bailian",
-            "model": response_dict.get('model', None),
-        }
+        usage: Optional[Usage] = None
         
         # Add usage info if available
         if 'usage' in response_dict and response_dict['usage']:
-            usage = response_dict['usage']
-            metadata["usage"] = {
-                "prompt_tokens": usage.get('input_tokens', 0) if hasattr(usage, 'get') else getattr(usage, 'input_tokens', 0),
-                "completion_tokens": usage.get('output_tokens', 0) if hasattr(usage, 'get') else getattr(usage, 'output_tokens', 0),
-                "total_tokens": usage.get('total_tokens', 0) if hasattr(usage, 'get') else getattr(usage, 'total_tokens', 0),
-            }
+            raw_usage = response_dict['usage']
+            prompt_tokens = int(
+                raw_usage.get('input_tokens', 0) if hasattr(raw_usage, 'get') 
+                else getattr(raw_usage, 'input_tokens', 0)
+            )
+            completion_tokens = int(
+                raw_usage.get('output_tokens', 0) if hasattr(raw_usage, 'get') 
+                else getattr(raw_usage, 'output_tokens', 0)
+            )
+            total_tokens = int(
+                raw_usage.get('total_tokens', 0) if hasattr(raw_usage, 'get') 
+                else getattr(raw_usage, 'total_tokens', 0)
+            )
+            
+            usage = Usage(
+                prompt_tokens=max(prompt_tokens, 0),
+                completion_tokens=max(completion_tokens, 0),
+                total_tokens=max(total_tokens, 0),
+            )
         
-        # Add request_id if available
-        if 'request_id' in response_dict:
-            metadata["request_id"] = response_dict['request_id']
-        
-        return metadata
+        return Metadata(
+            provider="bailian",
+            model=response_dict.get('model', None),
+            usage=usage,
+            request_id=response_dict.get('request_id', None),
+        )
     
     def _build_chunk_metadata(self, chunk: Any) -> Dict[str, Any]:
         """Build metadata from DashScope streaming chunk."""
@@ -207,6 +263,7 @@ class BailianProvider(Provider):
         Args:
             messages: Already converted provider-format messages
             **kwargs: Additional parameters including:
+                - tools: list of tool definitions (optional)
                 - reasoning: dict with reasoning config (optional)
                 - temperature, top_p, max_tokens, etc.
         
@@ -223,6 +280,10 @@ class BailianProvider(Provider):
             "messages": messages,  # Already converted
             "result_format": "message",  # Use message format for easier parsing
         }
+        
+        # Add tools if present
+        if "tools" in kwargs and kwargs["tools"]:
+            params["tools"] = kwargs["tools"]
         
         # Add optional parameters
         if "temperature" in kwargs:
@@ -246,7 +307,7 @@ class BailianProvider(Provider):
         
         Args:
             messages: Already converted provider-format messages
-            **kwargs: Additional parameters
+            **kwargs: Additional parameters including tools
         
         Returns:
             Iterator of DashScope streaming chunks
@@ -263,6 +324,10 @@ class BailianProvider(Provider):
             "stream": True,
             "incremental_output": True,  # Required for streaming
         }
+        
+        # Add tools if present
+        if "tools" in kwargs and kwargs["tools"]:
+            params["tools"] = kwargs["tools"]
         
         # Add optional parameters
         if "temperature" in kwargs:

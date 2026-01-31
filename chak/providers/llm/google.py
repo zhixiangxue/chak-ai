@@ -14,6 +14,7 @@ from typing import Optional, Dict, Any
 from pydantic import field_validator
 
 from .base import BaseProviderConfig, OpenAICompatibleMessageConverter, OpenAICompatibleProvider
+from ...metadata import Metadata
 
 
 class GoogleConfig(BaseProviderConfig):
@@ -30,10 +31,10 @@ class GoogleConfig(BaseProviderConfig):
 class GoogleMessageConverter(OpenAICompatibleMessageConverter):
     """Converter for Google AI message formats."""
     
-    def _build_metadata(self, response: Any, choice: Any) -> Dict[str, Any]:
+    def _build_metadata(self, response: Any, choice: Any) -> Metadata:
         """Build metadata with 'google' as provider name."""
         metadata = super()._build_metadata(response, choice)
-        metadata["provider"] = "google"
+        metadata.provider = "google"
         return metadata
     
     def _build_chunk_metadata(self, chunk: Any, choice: Any) -> Dict[str, Any]:

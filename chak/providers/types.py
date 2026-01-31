@@ -2,6 +2,11 @@
 
 from enum import Enum
 
+# Re-export metadata types for backward compatibility
+from ..metadata import Usage, Metadata
+
+__all__ = ["ProviderCategory", "Usage", "Metadata"]
+
 
 class ProviderCategory(str, Enum):
     """Provider类别枚举

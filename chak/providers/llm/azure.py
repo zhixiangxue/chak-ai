@@ -19,6 +19,7 @@ import openai
 from pydantic import field_validator
 
 from .base import BaseProviderConfig, OpenAICompatibleMessageConverter, OpenAICompatibleProvider
+from ...metadata import Metadata
 
 
 class AzureConfig(BaseProviderConfig):
@@ -41,10 +42,10 @@ class AzureConfig(BaseProviderConfig):
 class AzureMessageConverter(OpenAICompatibleMessageConverter):
     """Converter for Azure OpenAI message formats."""
     
-    def _build_metadata(self, response: Any, choice: Any) -> Dict[str, Any]:
+    def _build_metadata(self, response: Any, choice: Any) -> Metadata:
         """Build metadata with 'azure' as provider name."""
         metadata = super()._build_metadata(response, choice)
-        metadata["provider"] = "azure"
+        metadata.provider = "azure"
         return metadata
     
     def _build_chunk_metadata(self, chunk: Any, choice: Any) -> Dict[str, Any]:

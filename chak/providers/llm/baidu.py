@@ -3,6 +3,7 @@ from typing import Optional, Dict, Any
 from pydantic import field_validator
 
 from .base import BaseProviderConfig, OpenAICompatibleMessageConverter, OpenAICompatibleProvider
+from ...metadata import Metadata
 
 
 class BaiduConfig(BaseProviderConfig):
@@ -19,10 +20,10 @@ class BaiduConfig(BaseProviderConfig):
 class BaiduMessageConverter(OpenAICompatibleMessageConverter):
     """Converter for Baidu message formats."""
     
-    def _build_metadata(self, response: Any, choice: Any) -> Dict[str, Any]:
+    def _build_metadata(self, response: Any, choice: Any) -> Metadata:
         """Build metadata with 'baidu' as provider name."""
         metadata = super()._build_metadata(response, choice)
-        metadata["provider"] = "baidu"
+        metadata.provider = "baidu"
         return metadata
     
     def _build_chunk_metadata(self, chunk: Any, choice: Any) -> Dict[str, Any]:

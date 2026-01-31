@@ -3,6 +3,7 @@ from typing import Optional, Dict, Any
 from pydantic import field_validator
 
 from .base import BaseProviderConfig, OpenAICompatibleMessageConverter, OpenAICompatibleProvider
+from ...metadata import Metadata
 
 
 class TencentConfig(BaseProviderConfig):
@@ -19,10 +20,10 @@ class TencentConfig(BaseProviderConfig):
 class TencentMessageConverter(OpenAICompatibleMessageConverter):
     """Converter for Tencent Cloud message formats."""
     
-    def _build_metadata(self, response: Any, choice: Any) -> Dict[str, Any]:
+    def _build_metadata(self, response: Any, choice: Any) -> Metadata:
         """Build metadata with 'tencent' as provider name."""
         metadata = super()._build_metadata(response, choice)
-        metadata["provider"] = "tencent"
+        metadata.provider = "tencent"
         return metadata
     
     def _build_chunk_metadata(self, chunk: Any, choice: Any) -> Dict[str, Any]:

@@ -1,10 +1,16 @@
+import uuid
 from datetime import datetime
 from typing import Literal, Optional, List, Union, Dict, Any, TYPE_CHECKING
+from contextvars import ContextVar
 
 from pydantic import BaseModel, Field
 
 # Always import Attachment for runtime (Pydantic needs it)
 from .attachment import Attachment
+from .metadata import Metadata
+
+# Context variable for tracking turn ID across the call stack
+_current_turn_id: ContextVar[Optional[str]] = ContextVar('turn_id', default=None)
 
 
 class Function(BaseModel):
@@ -25,14 +31,16 @@ class ChatCompletionMessageToolCall(BaseModel):
 # ===== Base Message =====
 class BaseMessage(BaseModel):
     """所有消息的基类"""
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))  # Unique message ID
     content: Optional[Union[str, List[Dict[str, Any]]]] = None  # Text or multimodal content array
     reasoning_content: Optional[str] = None
     tool_calls: Optional[List[ChatCompletionMessageToolCall]] = None
     refusal: Optional[str] = None
     attachments: List[Attachment] = Field(default_factory=list)  # Original attachments associated with this message
-    metadata: Dict[str, Any] = Field(default_factory=dict)  # Metadata (provider, model, usage, etc.)
+    metadata: Metadata = Field(default_factory=Metadata)  # Metadata (provider, model, usage, etc.)
     custom: Dict[str, Any] = Field(default_factory=dict)  # Custom data for application-specific use
     timestamp: datetime = Field(default_factory=datetime.now)  # 消息创建时间
+    turn_id: Optional[str] = Field(default_factory=lambda: _current_turn_id.get())  # Turn ID from context
     
     class Config:
         arbitrary_types_allowed = True  # Allow non-Pydantic types like Attachment

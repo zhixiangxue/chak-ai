@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, List, Dict, Any, Iterator, Union, Optional, As
 
 from .attachment import Attachment
 from .context.handlers import BaseContextHandler, NoopContextHandler
-from .message import Message, MessageChunk, ReasoningChunk, HumanMessage, AIMessage, SystemMessage, ToolMessage
+from .message import Message, MessageChunk, ReasoningChunk, HumanMessage, AIMessage, SystemMessage, ToolMessage, _current_turn_id
 from .providers import create_provider
 from .providers.types import ProviderCategory
 from .utils.uri import parse as parse_uri
@@ -410,97 +410,105 @@ class Conversation:
             conv.send(SystemMessage(content="You are helpful"))
             conv.send(HumanMessage(content="Hello"))
         """
-        # Check if tools are configured
-        if self._raw_tools:
-            raise RuntimeError(
-                "MCP tools require async execution. "
-                "Please use: await conv.asend(message)"
-            )
+        # Set turn ID for this entire send operation
+        turn_id = str(uuid.uuid4())
+        token = _current_turn_id.set(turn_id)
         
-        # Check if structured output is requested
-        if returns is not None:
-            raise RuntimeError(
-                "Structured output (returns parameter) requires async execution. "
-                "Please use: await conv.asend(message, returns=YourModel)"
-            )
-        
-        # Merge timeout into kwargs if specified
-        if timeout is not None:
-            kwargs['timeout'] = timeout
-        
-        # Check if in async context
         try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
+            # Check if tools are configured
+            if self._raw_tools:
                 raise RuntimeError(
-                    "Cannot use sync send() in async context. "
+                    "MCP tools require async execution. "
                     "Please use: await conv.asend(message)"
                 )
-        except RuntimeError:
-            pass
-        
-        # Convert str to HumanMessage and merge attachments if present
-        if isinstance(message, str):
-            if attachments:
-                # Create multimodal message
-                content_parts = [{"type": "text", "text": message}]
-                for att in attachments:
-                    if att.mime_type.is_image():
-                        content_parts.append({
-                            "type": "image_url",
-                            "image_url": {"url": att.source}
-                        })
-                    elif att.mime_type.is_audio():
-                        content_parts.append({
-                            "type": "input_audio",
-                            "input_audio": {
-                                "data": att.source,
-                                "format": att.mime_type.subtype
-                            }
-                        })
-                    elif att.mime_type.is_video():
-                        content_parts.append({
-                            "type": "video",
-                            "video": {"url": att.source}
-                        })
-                    elif att.mime_type.is_document() or att.reader:
-                        # Document types (PDF, DOC, Excel, TXT, Link, etc.)
-                        # Need to read and extract text content first
-                        doc_result = att.read()  # Sync read for sync method
-                        if doc_result and doc_result.content:
-                            # Add extracted text as text part
-                            doc_text = doc_result.content
-                            # Include metadata info if available
-                            if doc_result.meta:
-                                meta_str = ", ".join([f"{k}: {v}" for k, v in doc_result.meta.items() if k != "error"])
-                                if meta_str:
-                                    doc_text = f"[Document metadata: {meta_str}]\n\n{doc_text}"
+            
+            # Check if structured output is requested
+            if returns is not None:
+                raise RuntimeError(
+                    "Structured output (returns parameter) requires async execution. "
+                    "Please use: await conv.asend(message, returns=YourModel)"
+                )
+            
+            # Merge timeout into kwargs if specified
+            if timeout is not None:
+                kwargs['timeout'] = timeout
+            
+            # Check if in async context
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    raise RuntimeError(
+                        "Cannot use sync send() in async context. "
+                        "Please use: await conv.asend(message)"
+                    )
+            except RuntimeError:
+                pass
+            
+            # Convert str to HumanMessage and merge attachments if present
+            if isinstance(message, str):
+                if attachments:
+                    # Create multimodal message
+                    content_parts = [{"type": "text", "text": message}]
+                    for att in attachments:
+                        if att.mime_type.is_image():
                             content_parts.append({
-                                "type": "text",
-                                "text": doc_text
+                                "type": "image_url",
+                                "image_url": {"url": att.source}
                             })
-                user_message = HumanMessage(content=content_parts, attachments=list(attachments) if attachments else [])
+                        elif att.mime_type.is_audio():
+                            content_parts.append({
+                                "type": "input_audio",
+                                "input_audio": {
+                                    "data": att.source,
+                                    "format": att.mime_type.subtype
+                                }
+                            })
+                        elif att.mime_type.is_video():
+                            content_parts.append({
+                                "type": "video",
+                                "video": {"url": att.source}
+                            })
+                        elif att.mime_type.is_document() or att.reader:
+                            # Document types (PDF, DOC, Excel, TXT, Link, etc.)
+                            # Need to read and extract text content first
+                            doc_result = att.read()  # Sync read for sync method
+                            if doc_result and doc_result.content:
+                                # Add extracted text as text part
+                                doc_text = doc_result.content
+                                # Include metadata info if available
+                                if doc_result.meta:
+                                    meta_str = ", ".join([f"{k}: {v}" for k, v in doc_result.meta.items() if k != "error"])
+                                    if meta_str:
+                                        doc_text = f"[Document metadata: {meta_str}]\n\n{doc_text}"
+                                content_parts.append({
+                                    "type": "text",
+                                    "text": doc_text
+                                })
+                    user_message = HumanMessage(content=content_parts, attachments=list(attachments) if attachments else [])
+                else:
+                    # Simple text message
+                    user_message = HumanMessage(content=message)
             else:
-                # Simple text message
-                user_message = HumanMessage(content=message)
-        else:
-            # User provided a Message object directly
-            user_message = message
-        
-        self.messages.append(user_message)
-        
-        # Track attachments at conversation level
-        if attachments:
-            self.attachments.extend(attachments)
+                # User provided a Message object directly
+                user_message = message
+            
+            self.messages.append(user_message)
+            
+            # Track attachments at conversation level
+            if attachments:
+                self.attachments.extend(attachments)
 
-        # Apply context handler
-        messages_to_send = self._apply_context_handler()
+            # Apply context handler
+            messages_to_send = self._apply_context_handler()
 
-        # Normal LLM call (no tools)
-        if stream:
-            return self._send_stream(messages_to_send, **kwargs)
-        else:
-            return self._send_nonstream(messages_to_send, **kwargs)
+            # Normal LLM call (no tools)
+            if stream:
+                return self._send_stream(messages_to_send, **kwargs)
+            else:
+                return self._send_nonstream(messages_to_send, **kwargs)
+        finally:
+            # Reset turn ID context
+            _current_turn_id.reset(token)
     
     async def asend(
             self,
@@ -594,110 +602,118 @@ class Conversation:
             await conv.asend(SystemMessage(content="You are helpful"))
             await conv.asend(HumanMessage(content="Hello"))
         """
-        # Merge timeout into kwargs if specified
-        if timeout is not None:
-            kwargs['timeout'] = timeout
+        # Set turn ID for this entire asend operation
+        turn_id = str(uuid.uuid4())
+        token = _current_turn_id.set(turn_id)
         
-        # Handle structured output (returns parameter)
-        if returns is not None:
-            try:
-                return await self._asend_with_structured_output(
-                    message=message,
-                    attachments=attachments,
-                    returns=returns,
-                    **kwargs
-                )
-            except Exception:
-                # Structured output failed, return None
-                return None
-        
-        # Convert str to HumanMessage and merge attachments if present
-        if isinstance(message, str):
-            if attachments:
-                # Create multimodal message
-                content_parts = [{"type": "text", "text": message}]
-                for att in attachments:
-                    if att.mime_type.is_image():
-                        content_parts.append({
-                            "type": "image_url",
-                            "image_url": {"url": att.source}
-                        })
-                    elif att.mime_type.is_audio():
-                        content_parts.append({
-                            "type": "input_audio",
-                            "input_audio": {
-                                "data": att.source,
-                                "format": att.mime_type.subtype
-                            }
-                        })
-                    elif att.mime_type.is_video():
-                        content_parts.append({
-                            "type": "video",
-                            "video": {"url": att.source}
-                        })
-                    elif att.mime_type.is_document() or att.reader:
-                        # Document types (PDF, DOC, Excel, TXT, Link, etc.)
-                        # Need to read and extract text content first
-                        doc_result = await att.aread()  # Async read for async method
-                        if doc_result and doc_result.content:
-                            # Add extracted text as text part
-                            doc_text = doc_result.content
-                            # Include metadata info if available
-                            if doc_result.meta:
-                                meta_str = ", ".join([f"{k}: {v}" for k, v in doc_result.meta.items() if k != "error"])
-                                if meta_str:
-                                    doc_text = f"[Document metadata: {meta_str}]\n\n{doc_text}"
-                            content_parts.append({
-                                "type": "text",
-                                "text": doc_text
-                            })
-                user_message = HumanMessage(content=content_parts, attachments=list(attachments) if attachments else [])
-            else:
-                # Simple text message
-                user_message = HumanMessage(content=message)
-        else:
-            # User provided a Message object directly
-            user_message = message
-        
-        self.messages.append(user_message)
-        
-        # Track attachments at conversation level
-        if attachments:
-            self.attachments.extend(attachments)
-
-        # Apply context handler
-        messages_to_send = self._apply_context_handler()
-
-        # Check if event stream mode is requested
-        if event:
-            # Event stream mode: returns MessageChunk + ToolCall events
-            # This overrides stream parameter and provides full observability
-            return self._asend_with_events(messages_to_send, tool_executor, **kwargs)
-
-        # Check if tools are configured
-        if self._tool_manager:
-            # Temporarily override executor if specified for this call
-            original_executor = None
-            if tool_executor is not None:
-                original_executor = self._tool_manager.executor
-                self._tool_manager.executor = self._get_executor(tool_executor)
+        try:
+            # Merge timeout into kwargs if specified
+            if timeout is not None:
+                kwargs['timeout'] = timeout
             
-            try:
-                # MCP tools mode
-                if stream:
-                    return self._asend_stream_with_tools(messages_to_send, **kwargs)
+            # Handle structured output (returns parameter)
+            if returns is not None:
+                try:
+                    return await self._asend_with_structured_output(
+                        message=message,
+                        attachments=attachments,
+                        returns=returns,
+                        **kwargs
+                    )
+                except Exception:
+                    # Structured output failed, return None
+                    return None
+        
+                # Convert str to HumanMessage and merge attachments if present
+            if isinstance(message, str):
+                if attachments:
+                    # Create multimodal message
+                    content_parts = [{"type": "text", "text": message}]
+                    for att in attachments:
+                        if att.mime_type.is_image():
+                            content_parts.append({
+                                "type": "image_url",
+                                "image_url": {"url": att.source}
+                            })
+                        elif att.mime_type.is_audio():
+                            content_parts.append({
+                                "type": "input_audio",
+                                "input_audio": {
+                                    "data": att.source,
+                                    "format": att.mime_type.subtype
+                                }
+                            })
+                        elif att.mime_type.is_video():
+                            content_parts.append({
+                                "type": "video",
+                                "video": {"url": att.source}
+                            })
+                        elif att.mime_type.is_document() or att.reader:
+                            # Document types (PDF, DOC, Excel, TXT, Link, etc.)
+                            # Need to read and extract text content first
+                            doc_result = await att.aread()  # Async read for async method
+                            if doc_result and doc_result.content:
+                                # Add extracted text as text part
+                                doc_text = doc_result.content
+                                # Include metadata info if available
+                                if doc_result.meta:
+                                    meta_str = ", ".join([f"{k}: {v}" for k, v in doc_result.meta.items() if k != "error"])
+                                    if meta_str:
+                                        doc_text = f"[Document metadata: {meta_str}]\n\n{doc_text}"
+                                content_parts.append({
+                                    "type": "text",
+                                    "text": doc_text
+                                })
+                    user_message = HumanMessage(content=content_parts, attachments=list(attachments) if attachments else [])
                 else:
-                    return await self._asend_nonstream_with_tools(messages_to_send, **kwargs)
-            finally:
-                # Restore original executor
-                if original_executor is not None:
-                    self._tool_manager.executor = original_executor
-        else:
-            # Normal LLM mode
-            if stream:
-                return self._asend_stream(messages_to_send, **kwargs)
+                    # Simple text message
+                    user_message = HumanMessage(content=message)
             else:
-                return await self._asend_nonstream(messages_to_send, **kwargs)
+                # User provided a Message object directly
+                user_message = message
+            
+            self.messages.append(user_message)
+            
+            # Track attachments at conversation level
+            if attachments:
+                self.attachments.extend(attachments)
+
+            # Apply context handler
+            messages_to_send = self._apply_context_handler()
+
+            # Check if event stream mode is requested
+            if event:
+                # Event stream mode: returns MessageChunk + ToolCall events
+                # This overrides stream parameter and provides full observability
+                return self._asend_with_events(messages_to_send, tool_executor, **kwargs)
+
+            # Check if tools are configured
+            if self._tool_manager:
+                # Temporarily override executor if specified for this call
+                original_executor = None
+                if tool_executor is not None:
+                    original_executor = self._tool_manager.executor
+                    self._tool_manager.executor = self._get_executor(tool_executor)
+                
+                try:
+                    # MCP tools mode
+                    if stream:
+                        return self._asend_stream_with_tools(messages_to_send, **kwargs)
+                    else:
+                        return await self._asend_nonstream_with_tools(messages_to_send, **kwargs)
+                finally:
+                    # Restore original executor
+                    if original_executor is not None:
+                        self._tool_manager.executor = original_executor
+            else:
+                # Normal LLM mode
+                if stream:
+                    return self._asend_stream(messages_to_send, **kwargs)
+                else:
+                    return await self._asend_nonstream(messages_to_send, **kwargs)
+        finally:
+            # Reset turn ID context
+            _current_turn_id.reset(token)
     
     async def _asend_stream(self, messages: List[Message], **kwargs) -> AsyncIterator[Union[MessageChunk, ReasoningChunk]]:
         """Handle async streaming response with support for both answer and reasoning chunks."""
@@ -1199,9 +1215,9 @@ class Conversation:
                     'assistant': 4,
                     'context': 1
                 },
-                'total_tokens': '12.5K',
-                'input_tokens': '8.2K',
-                'output_tokens': '4.3K'
+                'total_tokens': 12543,
+                'input_tokens': 8234,
+                'output_tokens': 4309
             }
         """
         stats = {
@@ -1217,40 +1233,191 @@ class Conversation:
             msg_type = msg.role
             stats['by_type'][msg_type] = stats['by_type'].get(msg_type, 0) + 1
             
-            # Count tokens (from metadata)
-            if 'usage' in msg.metadata:
-                usage = msg.metadata['usage']
-                # Handle both dict and object types (e.g., CompletionUsage)
-                if isinstance(usage, dict):
-                    stats['total_tokens'] += usage.get('total_tokens', 0)
-                    stats['input_tokens'] += usage.get('prompt_tokens', 0) or usage.get('input_tokens', 0)
-                    stats['output_tokens'] += usage.get('completion_tokens', 0) or usage.get('output_tokens', 0)
-                elif hasattr(usage, 'total_tokens'):
-                    # Object type (e.g., CompletionUsage from OpenAI SDK)
-                    stats['total_tokens'] += getattr(usage, 'total_tokens', 0)
-                    stats['input_tokens'] += getattr(usage, 'prompt_tokens', 0) or getattr(usage, 'input_tokens', 0)
-                    stats['output_tokens'] += getattr(usage, 'completion_tokens', 0) or getattr(usage, 'output_tokens', 0)
-        
-        # Format token counts (use K for numbers over 1000)
-        stats['total_tokens'] = self._format_tokens(stats['total_tokens'])
-        stats['input_tokens'] = self._format_tokens(stats['input_tokens'])
-        stats['output_tokens'] = self._format_tokens(stats['output_tokens'])
+            # Count tokens (from metadata.usage)
+            usage = getattr(msg.metadata, 'usage', None)
+            if usage is not None:
+                stats['total_tokens'] += usage.total_tokens
+                stats['input_tokens'] += usage.prompt_tokens
+                stats['output_tokens'] += usage.completion_tokens
         
         return stats
     
-    def _format_tokens(self, tokens: int) -> str:
+    def get_messages(
+        self,
+        turn_ids: Optional[Union[str, List[str]]] = None,
+        turns: Optional[Union[int, tuple[int, int]]] = None,
+        messages: Optional[Union[int, tuple[int, int]]] = None,
+        roles: Optional[Union[str, List[str]]] = None,
+        has_tool_calls: Optional[bool] = None,
+        has_attachments: Optional[bool] = None,
+        message_ids: Optional[Union[str, List[str]]] = None,
+    ) -> List[Message]:
         """
-        Format token count, use K notation for numbers over 1000.
+        Get filtered messages from conversation.
+        
+        All filters are combined with AND logic.
         
         Args:
-            tokens: Token count
-            
+            turn_ids: Filter by turn ID(s)
+            turns: Filter by turn index/range
+                - Positive int: First N turns (e.g., 3 = first 3 turns)
+                - Negative int: Last N turns (e.g., -3 = last 3 turns)
+                - Tuple: Turn range (start, end) - e.g., (1, 4) = turns 1-3 (0-indexed)
+            messages: Filter by message index/range
+                - Positive int: First N messages
+                - Negative int: Last N messages
+                - Tuple: Message range (start, end) - standard Python slice
+            roles: Filter by role(s) - "user", "assistant", "system", "tool"
+            has_tool_calls: Filter messages with/without tool calls
+            has_attachments: Filter messages with/without attachments
+            message_ids: Filter by message ID(s)
+        
         Returns:
-            Formatted string
+            Filtered list of messages
+        
+        Examples:
+            # Last 3 turns
+            conv.get_messages(turns=-3)
+            
+            # First 2 turns
+            conv.get_messages(turns=2)
+            
+            # Turn 1 to 3 (0-indexed)
+            conv.get_messages(turns=(1, 4))
+            
+            # Last 10 messages
+            conv.get_messages(messages=-10)
+            
+            # First 5 messages
+            conv.get_messages(messages=5)
+            
+            # Message 10 to 20
+            conv.get_messages(messages=(10, 20))
+            
+            # All user messages
+            conv.get_messages(roles="user")
+            
+            # Get messages from specific turns
+            conv.get_messages(turn_ids=["abc-123", "def-456"])
+            
+            # All assistant messages with tool calls
+            conv.get_messages(roles="assistant", has_tool_calls=True)
+            
+            # Last 2 turns, only user and assistant
+            conv.get_messages(turns=-2, roles=["user", "assistant"])
         """
-        if tokens >= 1000:
-            return f"{tokens / 1000:.1f}K"
-        return str(tokens)
+        result = list(self.messages)
+        
+        # Filter by messages index/range first (before other filters)
+        if messages is not None:
+            if isinstance(messages, tuple):
+                # Range: (start, end)
+                start, end = messages
+                result = result[start:end]
+            elif messages > 0:
+                # Positive: first N messages
+                result = result[:messages]
+            else:
+                # Negative: last N messages
+                result = result[messages:]
+        
+        # Filter by turns index/range
+        if turns is not None:
+            # Get unique turn IDs in order
+            seen = set()
+            turn_ids_in_order = []
+            for msg in result:
+                if msg.turn_id and msg.turn_id not in seen:
+                    turn_ids_in_order.append(msg.turn_id)
+                    seen.add(msg.turn_id)
+            
+            # Select turns based on parameter type
+            if isinstance(turns, tuple):
+                # Range: (start, end)
+                start, end = turns
+                selected_turn_ids = set(turn_ids_in_order[start:end])
+            elif turns > 0:
+                # Positive: first N turns
+                selected_turn_ids = set(turn_ids_in_order[:turns])
+            else:
+                # Negative: last N turns
+                selected_turn_ids = set(turn_ids_in_order[turns:])
+            
+            result = [msg for msg in result if msg.turn_id in selected_turn_ids]
+        
+        # Filter by turn_ids
+        if turn_ids is not None:
+            if isinstance(turn_ids, str):
+                turn_ids = [turn_ids]
+            turn_id_set = set(turn_ids)
+            result = [msg for msg in result if msg.turn_id in turn_id_set]
+        
+        # Filter by roles
+        if roles is not None:
+            if isinstance(roles, str):
+                roles = [roles]
+            role_set = set(roles)
+            result = [msg for msg in result if msg.role in role_set]
+        
+        # Filter by message_ids
+        if message_ids is not None:
+            if isinstance(message_ids, str):
+                message_ids = [message_ids]
+            msg_id_set = set(message_ids)
+            result = [msg for msg in result if msg.id in msg_id_set]
+        
+        # Filter by has_tool_calls
+        if has_tool_calls is not None:
+            if has_tool_calls:
+                result = [msg for msg in result if msg.tool_calls]
+            else:
+                result = [msg for msg in result if not msg.tool_calls]
+        
+        # Filter by has_attachments
+        if has_attachments is not None:
+            if has_attachments:
+                result = [msg for msg in result if msg.attachments]
+            else:
+                result = [msg for msg in result if not msg.attachments]
+        
+        return result
+    
+    @property
+    def user_messages(self) -> List[Message]:
+        """Get all user messages."""
+        return self.get_messages(roles="user")
+    
+    @property
+    def assistant_messages(self) -> List[Message]:
+        """Get all assistant messages."""
+        return self.get_messages(roles="assistant")
+    
+    @property
+    def tool_messages(self) -> List[Message]:
+        """Get all tool messages."""
+        return self.get_messages(roles="tool")
+    
+    @property
+    def turns(self) -> List[str]:
+        """
+        Get all unique turn IDs in chronological order.
+        
+        Returns:
+            List of turn IDs
+        
+        Example:
+            >>> turn_ids = conv.turns
+            >>> print(f"Total turns: {len(turn_ids)}")
+            >>> # Get first turn's messages
+            >>> first_turn_msgs = conv.get_messages(turn_ids=turn_ids[0])
+        """
+        seen = set()
+        turn_ids = []
+        for msg in self.messages:
+            if msg.turn_id and msg.turn_id not in seen:
+                turn_ids.append(msg.turn_id)
+                seen.add(msg.turn_id)
+        return turn_ids
     
     @property
     def provider_name(self) -> str:

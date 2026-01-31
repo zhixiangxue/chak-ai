@@ -1,4 +1,3 @@
-# src/chak/providers/llm/base.py
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional, List, Iterator, Union
 
@@ -9,6 +8,7 @@ from pydantic import BaseModel, Field, field_validator
 from ... import __version__
 from ...exceptions import ProviderError
 from ...message import Message, MessageChunk, ReasoningChunk, AIMessage, ChatCompletionMessageToolCall, Function
+from ...metadata import Metadata, Usage
 
 
 class BaseProviderConfig(BaseModel):
@@ -207,14 +207,44 @@ class OpenAICompatibleMessageConverter(BaseMessageConverter):
 
         return normalized_content, reasoning
 
-    def _build_metadata(self, response: Any, choice: Any) -> Dict[str, Any]:
+    def _build_metadata(self, response: Any, choice: Any) -> Metadata:
         """Build metadata - subclasses can override to change provider name."""
-        return {
-            "provider": "openai",  # Subclass should override this
-            "model": response.model,
-            "usage": getattr(response, 'usage', {}),
-            "finish_reason": choice.finish_reason if choice is not None else None,
-        }
+        raw_usage = getattr(response, "usage", None)
+        usage: Optional[Usage] = None
+
+        if raw_usage is not None:
+            if isinstance(raw_usage, dict):
+                prompt_tokens = int(raw_usage.get("prompt_tokens") or raw_usage.get("input_tokens") or 0)
+                completion_tokens = int(raw_usage.get("completion_tokens") or raw_usage.get("output_tokens") or 0)
+                total_tokens = int(raw_usage.get("total_tokens") or (prompt_tokens + completion_tokens))
+            else:
+                prompt_tokens = int(
+                    getattr(raw_usage, "prompt_tokens", None)
+                    or getattr(raw_usage, "input_tokens", 0)
+                    or 0
+                )
+                completion_tokens = int(
+                    getattr(raw_usage, "completion_tokens", None)
+                    or getattr(raw_usage, "output_tokens", 0)
+                    or 0
+                )
+                total_tokens = int(
+                    getattr(raw_usage, "total_tokens", None)
+                    or (prompt_tokens + completion_tokens)
+                )
+
+            usage = Usage(
+                prompt_tokens=max(prompt_tokens, 0),
+                completion_tokens=max(completion_tokens, 0),
+                total_tokens=max(total_tokens, 0),
+            )
+
+        return Metadata(
+            provider="openai",  # Subclass should override this
+            model=getattr(response, "model", None),
+            usage=usage,
+            finish_reason=choice.finish_reason if choice is not None else None,
+        )
     
     def from_provider_chunk(self, chunk: Any) -> Union[MessageChunk, ReasoningChunk]:
         """Convert OpenAI-compatible streaming chunk to standard MessageChunk or ReasoningChunk.
@@ -238,12 +268,38 @@ class OpenAICompatibleMessageConverter(BaseMessageConverter):
         """Build chunk metadata - subclasses can override."""
         metadata = {
             "provider": "openai",
-            "model": chunk.model,
-            "finish_reason": choice.finish_reason if choice else None
+            "model": getattr(chunk, "model", None),
+            "finish_reason": choice.finish_reason if choice else None,
         }
         # Add usage info if available (for stream chunks with stream_options)
-        if hasattr(chunk, 'usage') and chunk.usage:
-            metadata["usage"] = chunk.usage
+        if hasattr(chunk, "usage") and chunk.usage:
+            raw_usage = chunk.usage
+            if isinstance(raw_usage, dict):
+                prompt_tokens = int(raw_usage.get("prompt_tokens") or raw_usage.get("input_tokens") or 0)
+                completion_tokens = int(raw_usage.get("completion_tokens") or raw_usage.get("output_tokens") or 0)
+                total_tokens = int(raw_usage.get("total_tokens") or (prompt_tokens + completion_tokens))
+            else:
+                prompt_tokens = int(
+                    getattr(raw_usage, "prompt_tokens", None)
+                    or getattr(raw_usage, "input_tokens", 0)
+                    or 0
+                )
+                completion_tokens = int(
+                    getattr(raw_usage, "completion_tokens", None)
+                    or getattr(raw_usage, "output_tokens", 0)
+                    or 0
+                )
+                total_tokens = int(
+                    getattr(raw_usage, "total_tokens", None)
+                    or (prompt_tokens + completion_tokens)
+                )
+
+            metadata["usage"] = {
+                "prompt_tokens": max(prompt_tokens, 0),
+                "completion_tokens": max(completion_tokens, 0),
+                "total_tokens": max(total_tokens, 0),
+            }
+
         return metadata
 
 

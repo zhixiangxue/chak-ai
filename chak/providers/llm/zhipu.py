@@ -3,6 +3,7 @@ from typing import Optional, Dict, Any
 from pydantic import field_validator
 
 from .base import BaseProviderConfig, OpenAICompatibleMessageConverter, OpenAICompatibleProvider
+from ...metadata import Metadata
 
 
 class ZhipuConfig(BaseProviderConfig):
@@ -19,10 +20,10 @@ class ZhipuConfig(BaseProviderConfig):
 class ZhipuMessageConverter(OpenAICompatibleMessageConverter):
     """Converter for Zhipu AI message formats."""
     
-    def _build_metadata(self, response: Any, choice: Any) -> Dict[str, Any]:
+    def _build_metadata(self, response: Any, choice: Any) -> Metadata:
         """Build metadata with 'zhipu' as provider name."""
         metadata = super()._build_metadata(response, choice)
-        metadata["provider"] = "zhipu"
+        metadata.provider = "zhipu"
         return metadata
     
     def _build_chunk_metadata(self, chunk: Any, choice: Any) -> Dict[str, Any]:

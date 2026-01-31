@@ -16,6 +16,7 @@ from typing import Optional, Dict, Any
 from pydantic import field_validator
 
 from .base import BaseProviderConfig, OpenAICompatibleMessageConverter, OpenAICompatibleProvider
+from ...metadata import Metadata
 
 
 class MistralConfig(BaseProviderConfig):
@@ -32,10 +33,10 @@ class MistralConfig(BaseProviderConfig):
 class MistralMessageConverter(OpenAICompatibleMessageConverter):
     """Converter for Mistral AI message formats."""
     
-    def _build_metadata(self, response: Any, choice: Any) -> Dict[str, Any]:
+    def _build_metadata(self, response: Any, choice: Any) -> Metadata:
         """Build metadata with 'mistral' as provider name."""
         metadata = super()._build_metadata(response, choice)
-        metadata["provider"] = "mistral"
+        metadata.provider = "mistral"
         return metadata
     
     def _build_chunk_metadata(self, chunk: Any, choice: Any) -> Dict[str, Any]:
