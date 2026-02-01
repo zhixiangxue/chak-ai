@@ -60,7 +60,7 @@ async def main():
         "bailian/qwen-plus",
         api_key=api_key,
         tools=[add, multiply, broken_tool],
-        system_message="You are a helpful math assistant. Use tools to calculate."
+        system_prompt="You are a helpful math assistant. Use tools to calculate."
     )
     
     print("=" * 70)

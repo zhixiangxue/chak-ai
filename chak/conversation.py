@@ -9,6 +9,7 @@ from .context.handlers import BaseContextHandler, NoopContextHandler
 from .message import Message, MessageChunk, ReasoningChunk, HumanMessage, AIMessage, SystemMessage, ToolMessage, _current_turn_id
 from .providers import create_provider
 from .providers.types import ProviderCategory
+from .schemas import Reasoning
 from .utils.uri import parse as parse_uri
 
 if TYPE_CHECKING:
@@ -351,6 +352,7 @@ class Conversation:
             stream: bool = False,
             timeout: Optional[int] = None,
             returns: Optional[type] = None,
+            reasoning: Optional[Union[Reasoning, dict]] = None,
             **kwargs
     ) -> Union[Message, Iterator[Union[MessageChunk, ReasoningChunk]], Any]:
         """
@@ -360,6 +362,7 @@ class Conversation:
         - ✅ Streaming
         - ✅ Non-streaming
         - ✅ Multimodal (images, audio)
+        - ✅ Reasoning mode (for compatible models)
         - ❌ MCP tools (not supported)
         
         For MCP tool usage, please use: await conv.asend(message)
@@ -501,6 +504,10 @@ class Conversation:
             # Apply context handler
             messages_to_send = self._apply_context_handler()
 
+            # Add reasoning to kwargs if provided
+            if reasoning is not None:
+                kwargs['reasoning'] = reasoning
+
             # Normal LLM call (no tools)
             if stream:
                 return self._send_stream(messages_to_send, **kwargs)
@@ -519,6 +526,7 @@ class Conversation:
             timeout: Optional[int] = None,
             returns: Optional[type] = None,
             tool_executor: Optional[ToolExecutor] = None,
+            reasoning: Optional[Union[Reasoning, dict]] = None,
             **kwargs
     ) -> Union[Message, AsyncIterator[Union[MessageChunk, ReasoningChunk]], AsyncIterator['StreamEvent'], Any, None]:
         """
@@ -531,6 +539,7 @@ class Conversation:
         - ✅ MCP tools (both modes)
         - ✅ Structured output (returns parameter)
         - ✅ Event stream (for tool observability)
+        - ✅ Reasoning mode (for compatible models)
         
         Args:
             message: Message content (str will be converted to HumanMessage)
@@ -544,6 +553,8 @@ class Conversation:
                     forces LLM to return data matching this schema via function calling.
                     Returns None if extraction fails.
             tool_executor: Optional override for tool execution mode (for this call only)
+            reasoning: Optional reasoning configuration dict (e.g., {"effort": "medium"})
+                      for compatible models (OpenAI o1/o3, Bailian QwQ).
             **kwargs: Additional LLM parameters
         
         Returns:
@@ -706,6 +717,10 @@ class Conversation:
                     if original_executor is not None:
                         self._tool_manager.executor = original_executor
             else:
+                # Add reasoning to kwargs if provided
+                if reasoning is not None:
+                    kwargs['reasoning'] = reasoning
+                
                 # Normal LLM mode
                 if stream:
                     return self._asend_stream(messages_to_send, **kwargs)
@@ -735,29 +750,33 @@ class Conversation:
         last_chunk_metadata = {}
         
         for provider_chunk in provider_chunks:
-            chunk = self.provider.converter.from_provider_chunk(provider_chunk)
+            unified_chunk = self.provider.converter.from_provider_chunk(provider_chunk)
             
-            # Handle different chunk types
-            if isinstance(chunk, MessageChunk):
-                complete_content += chunk.content
-                
-                # Check if this chunk is already marked as final
-                if chunk.is_final:
-                    last_chunk_was_final = True
-                
-                # Save metadata from last chunk (may contain usage info)
-                if chunk.metadata:
-                    last_chunk_metadata = chunk.metadata
+            # Handle reasoning content
+            if unified_chunk.reasoning_content:
+                complete_reasoning_content += unified_chunk.reasoning_content
+                if unified_chunk.metadata:
+                    last_chunk_metadata.update(unified_chunk.metadata)
+                yield ReasoningChunk(
+                    content=unified_chunk.reasoning_content,
+                    is_final=False,
+                    metadata=unified_chunk.metadata
+                )
             
-            elif isinstance(chunk, ReasoningChunk):
-                complete_reasoning_content += chunk.content
-                
-                # Reasoning chunks don't affect final message flag
-                # but we still save metadata if present
-                if chunk.metadata:
-                    last_chunk_metadata.update(chunk.metadata)
+            # Handle regular content
+            if unified_chunk.content:
+                complete_content += unified_chunk.content
+                if unified_chunk.metadata:
+                    last_chunk_metadata = unified_chunk.metadata
+                yield MessageChunk(
+                    content=unified_chunk.content,
+                    is_final=False,
+                    metadata=unified_chunk.metadata
+                )
             
-            yield chunk
+            # Check if final
+            if unified_chunk.is_final:
+                last_chunk_was_final = True
 
         # Only send additional final chunk if provider didn't send one
         if complete_content and not last_chunk_was_final:
@@ -1097,29 +1116,33 @@ class Conversation:
         last_chunk_metadata = {}
         
         for provider_chunk in provider_chunks:
-            chunk = self.provider.converter.from_provider_chunk(provider_chunk)
+            unified_chunk = self.provider.converter.from_provider_chunk(provider_chunk)
             
-            # Handle different chunk types
-            if isinstance(chunk, MessageChunk):
-                complete_content += chunk.content
-                
-                # Check if this chunk is already marked as final
-                if chunk.is_final:
-                    last_chunk_was_final = True
-                
-                # Save metadata from last chunk (may contain usage info)
-                if chunk.metadata:
-                    last_chunk_metadata = chunk.metadata
+            # Handle reasoning content
+            if unified_chunk.reasoning_content:
+                complete_reasoning_content += unified_chunk.reasoning_content
+                if unified_chunk.metadata:
+                    last_chunk_metadata.update(unified_chunk.metadata)
+                yield ReasoningChunk(
+                    content=unified_chunk.reasoning_content,
+                    is_final=False,
+                    metadata=unified_chunk.metadata
+                )
             
-            elif isinstance(chunk, ReasoningChunk):
-                complete_reasoning_content += chunk.content
-                
-                # Reasoning chunks don't affect final message flag
-                # but we still save metadata if present
-                if chunk.metadata:
-                    last_chunk_metadata.update(chunk.metadata)
+            # Handle regular content
+            if unified_chunk.content:
+                complete_content += unified_chunk.content
+                if unified_chunk.metadata:
+                    last_chunk_metadata = unified_chunk.metadata
+                yield MessageChunk(
+                    content=unified_chunk.content,
+                    is_final=False,
+                    metadata=unified_chunk.metadata
+                )
             
-            yield chunk
+            # Check if final
+            if unified_chunk.is_final:
+                last_chunk_was_final = True
 
         # Only send additional final chunk if provider didn't send one
         if complete_content and not last_chunk_was_final:

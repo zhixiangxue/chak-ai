@@ -8,8 +8,6 @@
 [![Downloads](https://img.shields.io/pypi/dm/chakpy)](https://pypi.org/project/chakpy/)
 [![GitHub Stars](https://img.shields.io/github/stars/zhixiangxue/chak-ai?style=social)](https://github.com/zhixiangxue/chak-ai)
 
-[English](README.md) | [中文](docs/README_CN.md)
-
 **A multi-model LLM client with built-in context management and flexible tool calling.**
 
 chak is not another liteLLM, one-api, or OpenRouter, but a client library that actively manages conversation context and tool calls for you. Just focus on building your application, let chak handle the complexity.
@@ -26,7 +24,12 @@ chak is not another liteLLM, one-api, or OpenRouter, but a client library that a
 
 ## 🌵 What's New
 
-- **2025-01-31 | v0.3.0** - Major update: Added skill-based progressive disclosure for tool calling, turn ID tracking & message filtering, reasoning support, and refactored context handler architecture. See [Release Notes](tmp/release-notes-0.3.0.md)
+- **2025-01-31 | v0.3.0** - Major update:
+  - **Skill-based progressive disclosure** for tool calling - prevent overwhelming LLMs with too many tools
+  - **Turn ID tracking & message filtering** - fine-grained conversation history management
+  - **Reasoning support** - compatible with OpenAI gpt-5/o1/o3 and Bailian QwQ models
+  - **Context handler refactoring** - replaced strategies with handlers for better clarity (⚠️ Breaking change)
+  - See [Release Notes](tmp/release-notes-0.3.0.md) for details
 - **2025-01-29 | v0.2.7** - Added human-in-the-loop tool approval via `tool_approval_handler`, with CLI and browser/WebSocket support. See [Human-in-the-loop Approval](#tool-calling-human-approval) in [Tool Calling](#tool-calling).
 - **2025-01-12 | v0.2.6** - Added event stream support for real-time tool call observability. Use `event=True` to observe tool execution in your UI. See [Tool Call Observability](#tool-call-observability)
 - **2025-01-09 | v0.2.5** - Added configurable tool executor for CPU-intensive tasks. Use `tool_executor` parameter to control execution mode. See [Tool Calling](#tool-calling)
@@ -44,7 +47,12 @@ No complex configurations, no learning curve. chak is designed to be intuitive:
 
 ```python
 # Use as SDK - connect to any LLM with a simple URI
-conv = chak.Conversation("openai/gpt-4o-mini", api_key="YOUR_KEY")
+conv = chak.Conversation(
+    "openai/gpt-4o-mini",
+    api_key="YOUR_KEY",
+    event=True,      # Enable event streaming for real-time tool call observability
+    reasoning=True   # Enable reasoning mode for compatible models
+)
 response = conv.send("Hello!")
 
 # Or run as a local gateway - start in 2 lines
@@ -97,23 +105,40 @@ conv = chak.Conversation(
 )
 ```
 
-chak's handler pattern makes it fully pluggable and extensible.
+chak's handler pattern makes it fully pluggable and extensible. Want custom logic? Just inherit from `BaseContextHandler`:
+
+```python
+from chak import BaseContextHandler
+
+class MyCustomHandler(BaseContextHandler):
+    def handle(self, messages, *, conversation_id):
+        # Your custom logic here
+        # messages: complete conversation history (read-only)
+        # Return: messages to send to LLM in this round
+        return messages  # or your filtered/modified messages
+```
 
 ### 🌻 Simple Tool Calling
 
-Write tools your way - functions, objects, or MCP servers, chak handles the rest:
+Write tools your way - functions, objects (regular or skill-based), or MCP servers, chak handles the rest:
 
 ```python
 # Functions
 def get_weather(city: str) -> str:
     ...
 
-# Objects
+# Regular objects
 class ShoppingCart:
     def add_item(self, name: str, price: float): ...
     def get_total(self) -> float: ...
 
+# Skill-based objects (group related tools)
+class FileSkill(SkillBase):
+    def read_file(self, path: str): ...
+    def analyze_size(self, path: str): ...
+
 cart = ShoppingCart()
+file_skill = FileSkill()
 
 # MCP servers
 from chak.tools.mcp import Server
@@ -259,9 +284,36 @@ resp = conv.send("Explain context management in one sentence")
 print(resp.content)
 ```
 
+**Key parameters**:
+
+**Constructor (`Conversation`):**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `model_uri` | `str` | Model URI (e.g., `"openai/gpt-4o-mini"`) |
+| `api_key` | `str` | API key for authentication |
+| `system_prompt` | `str` | System instructions for the LLM |
+| `context_handler` | `BaseContextHandler` | Context management handler (FIFO, LRU, Summarization) |
+| `tools` | `List` | Tools for function calling (functions, objects, skills, MCP) |
+| `tool_executor` | `ToolExecutor` | Execution mode: `ASYNCIO` (IO-bound), `THREAD` (sync), `PROCESS` (CPU-bound) |
+| `tool_approval_handler` | `Callable` | Human-in-the-loop approval for tool calls |
+
+**Send methods (`send` / `asend`):**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `message` | `str` | Message content to send |
+| `attachments` | `List[Attachment]` | Multimodal attachments (images, audio, PDFs) |
+| `stream` | `bool` | Enable streaming response |
+| `event` | `bool` | Enable event streaming for real-time tool call observability |
+| `reasoning` | `dict` | Enable reasoning mode (e.g., `{"effort": "medium"}`) for compatible models |
+| `timeout` | `int` | Request timeout in seconds |
+| `returns` | `type` | Pydantic model for structured output |
+
 chak handles: connection initialization, message alignment, retry logic, context management, model format conversion... You just need to `send` messages.
 
 ---
+<a id="context-handler"></a>
 
 ## 🌒 Enable Automatic Context Management
 

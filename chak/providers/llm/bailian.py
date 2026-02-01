@@ -8,16 +8,16 @@ Supported models:
 - Qwen series: qwen-plus, qwen-turbo, qwen-max, etc.
 - With reasoning: qwen-plus (enable_thinking), QwQ models, etc.
 """
-from typing import Optional, Dict, Any, List, Iterator, Union
-import os
+from typing import Optional, Dict, Any, List, Iterator
 
 from pydantic import field_validator
 from dashscope import Generation
 from dashscope.api_entities.dashscope_response import GenerationResponse
 
 from .base import Provider, BaseProviderConfig, BaseMessageConverter
-from ...message import Message, AIMessage, MessageChunk, ReasoningChunk
+from ...message import Message, AIMessage, MessageChunk, ReasoningChunk, UnifiedStreamChunk, ToolCallDelta
 from ...metadata import Metadata, Usage
+from ...schemas import Reasoning
 
 
 class BailianConfig(BaseProviderConfig):
@@ -132,18 +132,23 @@ class BailianMessageConverter(BaseMessageConverter):
             metadata=metadata,
         )
     
-    def from_provider_chunk(self, chunk: Any) -> Union[MessageChunk, ReasoningChunk]:
-        """Convert DashScope streaming chunk to MessageChunk or ReasoningChunk.
+    def from_provider_chunk(self, chunk: Any) -> UnifiedStreamChunk:
+        """Convert DashScope streaming chunk to UnifiedStreamChunk.
         
         DashScope streaming chunk structure (with incremental_output=True):
         - chunk.output.choices[0].message.content: answer content delta
         - chunk.output.choices[0].message.reasoning_content: reasoning content delta
+        - chunk.output.choices[0].message.tool_calls: incremental tool_calls
+        - chunk.output.choices[0].finish_reason: finish reason
+        
+        Returns:
+            UnifiedStreamChunk with all information extracted
         """
         # Convert chunk to dict to safely access fields (avoid __getattr__ bug)
         chunk_dict = dict(chunk) if hasattr(chunk, '__iter__') else {}
         
         if 'output' not in chunk_dict or not chunk_dict['output']:
-            return MessageChunk(content="", is_final=False)
+            return UnifiedStreamChunk(content="", is_final=False)
         
         output = chunk_dict['output']
         # If output is also a custom object, convert it too
@@ -155,7 +160,7 @@ class BailianMessageConverter(BaseMessageConverter):
         # Get choices (streaming uses choices format like non-streaming)
         choices = output_dict.get('choices')
         if not choices or not isinstance(choices, list) or len(choices) == 0:
-            return MessageChunk(content="", is_final=False)
+            return UnifiedStreamChunk(content="", is_final=False)
         
         choice = choices[0]
         if hasattr(choice, '__iter__') and not isinstance(choice, str):
@@ -165,29 +170,52 @@ class BailianMessageConverter(BaseMessageConverter):
         
         # Get message
         message = choice_dict.get('message')
-        if hasattr(message, '__iter__') and not isinstance(message, str):
-            message_dict = dict(message)
-        else:
-            message_dict = {}
+        if message is None:
+            return UnifiedStreamChunk(content="", is_final=False)
         
-        # Check for reasoning content first
-        reasoning_content = message_dict.get('reasoning_content')
-        if reasoning_content:
-            return ReasoningChunk(
-                content=reasoning_content,
-                is_final=False,
-                metadata=self._build_chunk_metadata(chunk)
-            )
+        # Extract reasoning_content and content directly via attribute access
+        # NOTE: dict(message) does NOT include reasoning_content in keys!
+        # Must use getattr to access it.
+        reasoning_content = None
+        content = ''
         
-        # Check for answer content
-        content = message_dict.get('content', '')
+        try:
+            reasoning_content = getattr(message, 'reasoning_content', None)
+        except Exception:
+            reasoning_content = None
+        
+        try:
+            content = getattr(message, 'content', '')
+            if content is None:
+                content = ''
+        except Exception:
+            content = ''
+        
+        # Extract tool_calls (DashScope uses dict-style access)
+        tool_calls_delta = []
+        if 'tool_calls' in message and message['tool_calls']:
+            for tc in message['tool_calls']:
+                # Skip empty tool_calls (DashScope sends empty ones on finish)
+                if not tc.get('id') and not tc.get('function', {}).get('name') and not tc.get('function', {}).get('arguments'):
+                    continue
+                
+                tool_calls_delta.append(ToolCallDelta(
+                    index=tc.get('index', 0),
+                    id=tc.get('id'),
+                    type=tc.get('type'),
+                    function_name=tc.get('function', {}).get('name'),
+                    function_arguments=tc.get('function', {}).get('arguments')
+                ))
         
         # Check if final
         finish_reason = choice_dict.get('finish_reason')
         is_final = (finish_reason is not None and finish_reason != "null")
         
-        return MessageChunk(
+        return UnifiedStreamChunk(
             content=content,
+            reasoning_content=reasoning_content,
+            tool_calls_delta=tool_calls_delta,
+            finish_reason=finish_reason,
             is_final=is_final,
             metadata=self._build_chunk_metadata(chunk)
         )
@@ -366,13 +394,32 @@ class BailianProvider(Provider):
         if not reasoning:
             return
         
+        # Normalize Reasoning object to dict
+        if isinstance(reasoning, Reasoning):
+            reasoning_dict = reasoning.model_dump(exclude_none=True)
+        elif isinstance(reasoning, dict):
+            reasoning_dict = reasoning
+        else:
+            # Unknown type, skip
+            return
+        
         # Enable thinking mode
         kwargs['enable_thinking'] = True
         
         # Map chak's parameters to DashScope
-        # DashScope doesn't have 'effort' parameter, only thinking_budget
-        if 'budget' in reasoning:
-            kwargs['thinking_budget'] = reasoning['budget']
+        # Prefer explicit budget if provided
+        budget = reasoning_dict.get('budget')
+        if isinstance(budget, int) and budget > 0:
+            kwargs['thinking_budget'] = budget
+        else:
+            # Optional: map effort to a reasonable thinking_budget range
+            effort = reasoning_dict.get('effort')
+            if effort == 'low':
+                kwargs['thinking_budget'] = 256
+            elif effort == 'medium':
+                kwargs['thinking_budget'] = 512
+            elif effort == 'high':
+                kwargs['thinking_budget'] = 1024
         
-        # Note: DashScope doesn't support OpenAI's 'effort' levels (low/medium/high)
-        # We could potentially map them to thinking_budget values if needed
+        # Note: DashScope doesn't support OpenAI's 'effort' levels directly, we
+        # approximate them via thinking_budget when budget is not explicitly set.

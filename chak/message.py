@@ -106,6 +106,40 @@ class ReasoningChunk(BaseModel):
     content: str = ""
     is_final: bool = False
     metadata: Optional[Dict[str, Any]] = None
+
+
+class ToolCallDelta(BaseModel):
+    """Represents an incremental update to a tool call.
+    
+    Used in streaming responses to accumulate tool_calls progressively.
+    """
+    index: int = 0
+    id: Optional[str] = None
+    type: Optional[str] = None
+    function_name: Optional[str] = None
+    function_arguments: Optional[str] = None  # Incremental arguments string
+
+
+class UnifiedStreamChunk(BaseModel):
+    """Unified streaming chunk format for all providers.
+    
+    This is the internal format that all provider converters must produce.
+    Manager only processes this unified format, never raw provider chunks.
+    
+    Attributes:
+        content: User-visible text content (if any)
+        reasoning_content: Reasoning/thinking content (if any)
+        tool_calls_delta: Incremental tool call updates (if any)
+        finish_reason: Finish reason ('stop', 'tool_calls', etc.)
+        is_final: Whether this is the last chunk
+        metadata: Additional metadata
+    """
+    content: str = ""
+    reasoning_content: Optional[str] = None
+    tool_calls_delta: List[ToolCallDelta] = Field(default_factory=list)
+    finish_reason: Optional[str] = None
+    is_final: bool = False
+    metadata: Optional[Dict[str, Any]] = None
 # ===== Stream Events (for event=True mode) =====
 class StreamEvent(BaseModel):
     """流式事件基类

@@ -34,10 +34,13 @@ from .exceptions import (
 )
 from .message import (
     Message, MessageChunk, ReasoningChunk,
-    BaseMessage, HumanMessage, AIMessage, SystemMessage, ToolMessage
+    BaseMessage, HumanMessage, AIMessage, SystemMessage, ToolMessage,
+    ToolCallStartEvent, ToolCallSuccessEvent, ToolCallErrorEvent
 )
 # Attachment classes for multimodal support
 from .attachment import Image, Audio, Video, MimeType, PDF, DOC, Excel, TXT, Link
+# Types
+from .schemas import Reasoning
 # Utility functions
 from .utils.uri import build, build_simple, parse
 
@@ -88,6 +91,9 @@ __all__ = [
     'AIMessage',
     'SystemMessage',
     'ToolMessage',
+    'ToolCallStartEvent',
+    'ToolCallSuccessEvent',
+    'ToolCallErrorEvent',
     
     # Multimodal attachments
     'Image',
@@ -99,6 +105,9 @@ __all__ = [
     'Excel',
     'TXT',
     'Link',
+    
+    # Types
+    'Reasoning',
     
     # Exceptions
     'ChakError',

@@ -361,15 +361,12 @@ class ToolManager:
                         )
                     stream = await asyncio.to_thread(_get_fallback_stream)
                     
-                    # Yield all chunks from the fallback stream
-                    for chunk in stream:
-                        choice = chunk.choices[0] if chunk.choices else None
-                        if not choice:
-                            continue
-                        delta = choice.delta
-                        if delta and hasattr(delta, 'content') and delta.content:
+                    # Yield all chunks from the fallback stream (using converter)
+                    for provider_chunk in stream:
+                        unified_chunk = provider.converter.from_provider_chunk(provider_chunk)
+                        if unified_chunk.content:
                             yield MessageChunk(
-                                content=delta.content,
+                                content=unified_chunk.content,
                                 is_final=False
                             ), new_messages
                     
@@ -379,47 +376,45 @@ class ToolManager:
                     logger.error(f"❌ [Tool] LLM call failed: {str(e)}")
                     raise
             
-            # Step 2: Process streaming chunks (in event loop friendly way)
-            for chunk in stream:
-                choice = chunk.choices[0] if chunk.choices else None
-                if not choice:
-                    continue
+            # Step 2: Process streaming chunks (Manager only handles UnifiedStreamChunk)
+            for provider_chunk in stream:
+                # Convert provider chunk to unified format
+                unified_chunk = provider.converter.from_provider_chunk(provider_chunk)
                 
-                delta = choice.delta
-                finish_reason = choice.finish_reason
-                
-                # 2.1 Has content? -> yield immediately
-                if delta and hasattr(delta, 'content') and delta.content:
-                    accumulated_content += delta.content
+                # Handle regular content
+                if unified_chunk.content:
+                    accumulated_content += unified_chunk.content
                     yield MessageChunk(
-                        content=delta.content,
+                        content=unified_chunk.content,
                         is_final=False,
                         metadata={"iteration": iteration}
                     ), new_messages
                 
-                # 2.2 Has tool_calls? -> accumulate
-                if delta and hasattr(delta, 'tool_calls') and delta.tool_calls:
-                    for tc_delta in delta.tool_calls:
-                        index = tc_delta.index
-                        
-                        # Ensure list is large enough
-                        while len(accumulated_tool_calls) <= index:
-                            accumulated_tool_calls.append({
-                                "id": None,
-                                "type": "function",
-                                "function": {"name": "", "arguments": ""}
-                            })
-                        
-                        # Update accumulated tool call
-                        if tc_delta.id:
-                            accumulated_tool_calls[index]["id"] = tc_delta.id
-                        if tc_delta.type:
-                            accumulated_tool_calls[index]["type"] = tc_delta.type
-                        if tc_delta.function:
-                            if tc_delta.function.name:
-                                accumulated_tool_calls[index]["function"]["name"] = tc_delta.function.name
-                            if tc_delta.function.arguments:
-                                accumulated_tool_calls[index]["function"]["arguments"] += tc_delta.function.arguments
+                # Handle tool_calls delta (accumulate)
+                for tc_delta in unified_chunk.tool_calls_delta:
+                    index = tc_delta.index
+                    
+                    # Ensure list is large enough
+                    while len(accumulated_tool_calls) <= index:
+                        accumulated_tool_calls.append({
+                            "id": None,
+                            "type": "function",
+                            "function": {"name": "", "arguments": ""}
+                        })
+                    
+                    # Update accumulated tool call (incremental)
+                    if tc_delta.id:
+                        accumulated_tool_calls[index]["id"] = tc_delta.id
+                    if tc_delta.type:
+                        accumulated_tool_calls[index]["type"] = tc_delta.type
+                    if tc_delta.function_name:
+                        accumulated_tool_calls[index]["function"]["name"] = tc_delta.function_name
+                    if tc_delta.function_arguments:
+                        accumulated_tool_calls[index]["function"]["arguments"] += tc_delta.function_arguments
+                
+                # Update finish_reason if present
+                if unified_chunk.finish_reason:
+                    finish_reason = unified_chunk.finish_reason
             
             # Step 3: Check finish_reason
             logger.debug(f"📊 [Tool Loop] Iteration {iteration}: finish_reason={finish_reason}, tool_calls_count={len(accumulated_tool_calls)}")
@@ -521,7 +516,7 @@ class ToolManager:
         Raises:
             Exception: Max iteration reached or other errors
         """
-        from ..message import AIMessage, ToolMessage, MessageChunk, ToolCallStartEvent, ToolCallSuccessEvent, ToolCallErrorEvent, ChatCompletionMessageToolCall, Function
+        from ..message import AIMessage, ToolMessage, MessageChunk, ReasoningChunk, ToolCallStartEvent, ToolCallSuccessEvent, ToolCallErrorEvent, ChatCompletionMessageToolCall, Function
         import json
         
         current_messages = messages.copy()
@@ -563,16 +558,11 @@ class ToolManager:
                     stream = await asyncio.to_thread(_get_fallback_stream)
                     
                     # Yield all content events from the fallback stream
-                    for chunk in stream:
-                        choice = chunk.choices[0] if chunk.choices else None
-                        if not choice:
-                            continue
-                        delta = choice.delta
-                        if delta and hasattr(delta, 'content') and delta.content:
-                            yield MessageChunk(
-                                content=delta.content,
-                                is_final=False
-                            )
+                    for provider_chunk in stream:
+                        # Use converter to handle different provider formats
+                        chunk = provider.converter.from_provider_chunk(provider_chunk)
+                        if isinstance(chunk, MessageChunk) and chunk.content:
+                            yield chunk
                     
                     yield MessageChunk(content="", is_final=True)
                     return
@@ -580,46 +570,56 @@ class ToolManager:
                     logger.error(f"❌ [Tool] LLM call failed: {str(e)}")
                     raise
             
-            # Step 2: Process streaming chunks
-            for chunk in stream:
-                choice = chunk.choices[0] if chunk.choices else None
-                if not choice:
-                    continue
+            # Step 2: Process streaming chunks (Manager only handles UnifiedStreamChunk)
+            for provider_chunk in stream:
+                # Convert provider chunk to unified format
+                unified_chunk = provider.converter.from_provider_chunk(provider_chunk)
                 
-                delta = choice.delta
-                finish_reason = choice.finish_reason
+                # Handle reasoning content
+                if unified_chunk.reasoning_content:
+                    yield ReasoningChunk(
+                        content=unified_chunk.reasoning_content,
+                        is_final=False,
+                        metadata=unified_chunk.metadata
+                    )
                 
-                # 2.1 Has content? -> yield MessageChunk immediately
-                if delta and hasattr(delta, 'content') and delta.content:
-                    accumulated_content += delta.content
+                # Handle regular content
+                if unified_chunk.content:
+                    accumulated_content += unified_chunk.content
                     yield MessageChunk(
-                        content=delta.content,
+                        content=unified_chunk.content,
                         is_final=False
                     )
                 
-                # 2.2 Has tool_calls? -> accumulate
-                if delta and hasattr(delta, 'tool_calls') and delta.tool_calls:
-                    for tc_delta in delta.tool_calls:
-                        index = tc_delta.index
-                        
-                        # Ensure list is large enough
-                        while len(accumulated_tool_calls) <= index:
-                            accumulated_tool_calls.append({
-                                "id": None,
-                                "type": "function",
-                                "function": {"name": "", "arguments": ""}
-                            })
-                        
-                        # Update accumulated tool call
-                        if tc_delta.id:
-                            accumulated_tool_calls[index]["id"] = tc_delta.id
-                        if tc_delta.type:
-                            accumulated_tool_calls[index]["type"] = tc_delta.type
-                        if tc_delta.function:
-                            if tc_delta.function.name:
-                                accumulated_tool_calls[index]["function"]["name"] = tc_delta.function.name
-                            if tc_delta.function.arguments:
-                                accumulated_tool_calls[index]["function"]["arguments"] += tc_delta.function.arguments
+                # Handle tool_calls delta (accumulate)
+                for tc_delta in unified_chunk.tool_calls_delta:
+                    index = tc_delta.index
+                    
+                    # Ensure list is large enough
+                    while len(accumulated_tool_calls) <= index:
+                        accumulated_tool_calls.append({
+                            "id": None,
+                            "type": "function",
+                            "function": {"name": "", "arguments": ""}
+                        })
+                    
+                    # Update accumulated tool call (incremental)
+                    if tc_delta.id:
+                        accumulated_tool_calls[index]["id"] = tc_delta.id
+                    if tc_delta.type:
+                        accumulated_tool_calls[index]["type"] = tc_delta.type
+                    if tc_delta.function_name:
+                        accumulated_tool_calls[index]["function"]["name"] = tc_delta.function_name
+                    if tc_delta.function_arguments:
+                        accumulated_tool_calls[index]["function"]["arguments"] += tc_delta.function_arguments
+                
+                # Update finish_reason if present
+                if unified_chunk.finish_reason:
+                    finish_reason = unified_chunk.finish_reason
+                
+                # Check if final
+                if unified_chunk.is_final:
+                    finish_reason = finish_reason or "stop"
             
             # Step 3: Check finish_reason
             logger.debug(f"📊 [Tool Loop] Iteration {iteration}: finish_reason={finish_reason}, tool_calls_count={len(accumulated_tool_calls)}")
