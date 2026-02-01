@@ -97,10 +97,7 @@ conv = chak.Conversation(
 )
 ```
 
-- **Now**: Short-term memory handlers (FIFO, Summarization, LRU) - production ready
-- **Planning**: Long-term memory (RAG, memory bank) - making conversations truly "memorable"
-
-No one else automates context management at this level. chak's handler pattern makes it fully pluggable and extensible.
+chak's handler pattern makes it fully pluggable and extensible.
 
 ### 🌻 Simple Tool Calling
 
@@ -307,17 +304,20 @@ Just pass what you have, and it works.
 Group related tools as **skills** to prevent overwhelming LLMs with too many options. LLMs see a skill catalog first, then access internal tools after activation.
 
 **Why skills?**
-- ✅ **Progressive disclosure**: LLM discovers skills first, loads tools on demand
-- ✅ **Better organization**: Group related tools by capability
-- ✅ **No decorators**: Public methods are auto-exposed
-- ✅ **Type-safe**: Full Python type hints support
+-  **Progressive disclosure**: LLM discovers skills first, loads tools on demand
+-  **Better organization**: Group related tools by capability
+-  **No decorators**: Public methods are auto-exposed
+-  **Type-safe**: Full Python type hints support
 
 ```python
 from chak import Conversation
-from chak.tools import SkillBase, wrap_tools
+from chak.tools import SkillBase
 
-class FileSkill(SkillBase):
-    """File operation skill for reading, analyzing, and summarizing files."""
+
+class FileSkill(SkillBase): # Simply inherit from SkillBase - everything else is just a regular Python class.
+    Public methods are automatically exposed as tools.
+    """File operation skill for reading, analyzing, and summarizing files.
+    """
     
     name = "file_helper"
     description = "Handle file reading, analysis and summarization tasks"
@@ -333,7 +333,7 @@ class FileSkill(SkillBase):
         size_kb = os.path.getsize(path) / 1024
         return f"File size: {size_kb:.2f} KB"
 
-tools = wrap_tools([FileSkill()])
+tools = [FileSkill()]
 conv = Conversation("openai/gpt-4o", tools=tools)
 
 # LLM sees: file_helper skill
@@ -598,6 +598,7 @@ See complete examples:
 - **MCP (HTTP)**: [examples/tool_calling_chat_mcp_http.py](examples/tool_calling_chat_mcp_http.py)
 - **Human-in-the-loop Approval (CLI)**: [examples/tool_calling_approval_demo.py](examples/tool_calling_approval_demo.py)
 - **Human-in-the-loop Approval (WebSocket/Web)**: [examples/tool_approval_web_demo.py](examples/tool_approval_web_demo.py)
+- **Skill-based Tool Calling**: [examples/tool_calling_skills.py](examples/tool_calling_skills.py)
 
 
 ---

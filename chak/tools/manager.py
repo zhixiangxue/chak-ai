@@ -93,7 +93,7 @@ class ToolManager:
         self._tool_map = self._build_tool_map()
         self._skill_map = self._build_skill_map()
         self._active_skill: Optional[SkillObjectTool] = None  # Track currently active skill instance
-        self.max_iterations = max_iterations
+        self.max_iterations = max_iterations if max_iterations is not None else 10
         self.executor = executor
         self.approval_handler = approval_handler
     
