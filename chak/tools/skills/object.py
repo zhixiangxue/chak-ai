@@ -7,7 +7,7 @@ This module provides skill-aware wrapping that enables two-stage tool exposure:
 """
 
 import inspect
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from ..native.function import NativeFunctionTool
 
@@ -85,10 +85,14 @@ class SkillObjectTool:
             "type": "function",
             "function": {
                 "name": self.name,
-                "description": f"{self.description}",
+                "description": f"{self.description}\n\nCall this skill to see available methods, or specify a method to use directly.",
                 "parameters": {
                     "type": "object",
                     "properties": {
+                        "method": {
+                            "type": "string",
+                            "description": f"(Optional) Specific method to call. Available: {', '.join(self.method_names)}"
+                        },
                         "instruction": {
                             "type": "string",
                             "description": "What you want to do with this skill"
@@ -98,6 +102,57 @@ class SkillObjectTool:
                 }
             }
         }
+    
+    def generate_method_summary(self, instruction: Optional[str] = None) -> str:
+        """
+        Generate method summary for LLM to choose from (Stage 2).
+        
+        Args:
+            instruction: Optional instruction to help filter relevant methods
+            
+        Returns:
+            Formatted method summary string
+        """
+        import inspect
+        
+        method_summaries = []
+        
+        for name, tool in self._method_tools.items():
+            # Build method signature
+            try:
+                sig = inspect.signature(tool.func)
+                params = []
+                for pname, param in sig.parameters.items():
+                    # Get type annotation
+                    if param.annotation != inspect.Parameter.empty:
+                        ptype = param.annotation.__name__ if hasattr(param.annotation, '__name__') else str(param.annotation)
+                    else:
+                        ptype = "Any"
+                    params.append(f"{pname}: {ptype}")
+                
+                signature = f"{name}({', '.join(params)})"
+                
+                # Add return type
+                if sig.return_annotation != inspect.Signature.empty:
+                    rtype = sig.return_annotation.__name__ if hasattr(sig.return_annotation, '__name__') else str(sig.return_annotation)
+                    signature += f" -> {rtype}"
+                
+            except Exception:
+                # Fallback to simple name if signature parsing fails
+                signature = f"{name}(...)"
+            
+            # Combine: signature + description
+            desc = tool.description or "No description"
+            method_summaries.append(f"  • {signature}\n    {desc}")
+        
+        summary = f"Skill '{self.name}' activated.\n\n"
+        summary += f"Available methods ({len(self._method_tools)}):\n"
+        summary += "\n".join(method_summaries)
+        summary += f"\n\nTo use a method, call '{self.name}' with the method parameter:\n"
+        summary += f"Example: {self.name}(method='method_name', ...method_args)\n"
+        summary += f"Note: You can call multiple methods in parallel by making multiple tool calls."
+        
+        return summary
     
     def to_openai_tools(self) -> List[Dict[str, Any]]:
         """

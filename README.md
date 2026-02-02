@@ -24,17 +24,16 @@ chak is not another liteLLM, one-api, or OpenRouter, but a client library that a
 
 ## 🌵 What's New
 
-- **2025-01-31 | v0.3.0** - Major update:
-  - **Skill-based progressive disclosure** for tool calling - prevent overwhelming LLMs with too many tools
-  - **Turn ID tracking & message filtering** - fine-grained conversation history management
-  - **Reasoning support** - compatible with OpenAI gpt-5/o1/o3 and Bailian QwQ models
-  - **Context handler refactoring** - replaced strategies with handlers for better clarity (⚠️ Breaking change)
-  - See [Release Notes](tmp/release-notes-0.3.0.md) for details
-- **2025-01-29 | v0.2.7** - Added human-in-the-loop tool approval via `tool_approval_handler`, with CLI and browser/WebSocket support. See [Human-in-the-loop Approval](#tool-calling-human-approval) in [Tool Calling](#tool-calling).
-- **2025-01-12 | v0.2.6** - Added event stream support for real-time tool call observability. Use `event=True` to observe tool execution in your UI. See [Tool Call Observability](#tool-call-observability)
-- **2025-01-09 | v0.2.5** - Added configurable tool executor for CPU-intensive tasks. Use `tool_executor` parameter to control execution mode. See [Tool Calling](#tool-calling)
-- **2025-01-07 | v0.2.3** - Conversation now supports structured outputs via `returns` parameter. See [Structured Output](#structured-output)
-- **2024-12-02 | v0.2.2** - Conversation now supports multimodal inputs. See [Multimodal Support](#multimodal-support)
+- **2026-02-02 | v0.3.0** - Major update:
+  - **Skill-based progressive disclosure** for tool calling - prevent overwhelming LLMs with too many tools. See [Skill-based Tools](#skill-based-tools-new-in-0-3-0).
+  - **Turn ID tracking & message filtering** - fine-grained conversation history management. See examples [examples/turn_id_tracking.py](examples/turn_id_tracking.py) and [examples/message_filtering_demo.py](examples/message_filtering_demo.py).
+  - **Reasoning support** - compatible with OpenAI gpt-5/o1/o3 and Bailian QwQ models. See examples [examples/reasoning_chat.py](examples/reasoning_chat.py) and [examples/chat_reasoning.py](examples/chat_reasoning.py).
+  - **Context handler refactoring** - replaced strategies with handlers for better clarity (⚠️ Breaking change). See [Pluggable Context Management](#context-handler).
+- **2026-01-29 | v0.2.7** - Added human-in-the-loop tool approval via `tool_approval_handler`, with CLI and browser/WebSocket support. See [Human-in-the-loop Approval](#tool-calling-human-approval) in [Tool Calling](#tool-calling).
+- **2026-01-12 | v0.2.6** - Added event stream support for real-time tool call observability. Use `event=True` to observe tool execution in your UI. See [Tool Call Observability](#tool-call-observability)
+- **2026-01-09 | v0.2.5** - Added configurable tool executor for CPU-intensive tasks. Use `tool_executor` parameter to control execution mode. See [Tool Calling](#tool-calling)
+- **2026-01-07 | v0.2.3** - Conversation now supports structured outputs via `returns` parameter. See [Structured Output](#structured-output)
+- **2025-12-02 | v0.2.2** - Conversation now supports multimodal inputs. See [Multimodal Support](#multimodal-support)
 
 ---
 
@@ -343,45 +342,30 @@ See full examples (parameters, how it works, tips):
 
 ### Create Custom Handler
 
-Implement your own context strategy by subclassing `BaseContextHandler`:
+Implement your own context strategy by subclassing `BaseContextHandler`.
+
+To create a custom handler you only need to:
+
+1. Inherit `BaseContextHandler`
+2. Implement `handle(messages, *, conversation_id) -> List[Message]`
 
 ```python
-from chak.context.handlers import BaseContextHandler
 from typing import List
+from chak.context.handlers import BaseContextHandler
 
 class MyCustomHandler(BaseContextHandler):
-    """Custom handler example: keep only messages with specific keywords"""
-    
-    def __init__(self, keywords: List[str]):
-        super().__init__()
-        self.keywords = keywords
-    
+    """Minimal example: decide which messages should be sent to the LLM."""
+
     def handle(self, messages: List[Message], *, conversation_id: str) -> List[Message]:
-        """
-        Process messages and return context for this LLM call.
-        
-        Args:
-            messages: Complete conversation history (read-only)
-            conversation_id: Unique ID for this conversation
-            
-        Returns:
-            Filtered messages to send to LLM
-        """
-        # Keep system messages + messages containing keywords
-        filtered = []
-        for msg in messages:
-            if msg.role == "system":
-                filtered.append(msg)
-            elif any(kw in msg.content for kw in self.keywords):
-                filtered.append(msg)
-        
-        return filtered
+        """Receive full conversation history and return messages to send for this call."""
+        # Your logic here: filter, summarize, reorder, etc.
+        return messages
 
 # Use your custom handler
 conv = Conversation(
     "openai/gpt-4o",
     api_key="YOUR_KEY",
-    context_handler=MyCustomHandler(keywords=["important", "urgent"])
+    context_handler=MyCustomHandler(),
 )
 ```
 
@@ -400,74 +384,127 @@ Write tools the way you like - functions, objects, skills, or MCP servers. chak 
 
 Just pass what you have, and it works.
 
+<a id="skill-based-tools-new-in-0-3-0"></a>
+
 ### Skill-based Tools (New in 0.3.0)
 
-Group related tools as **skills** to prevent overwhelming LLMs with too many options. LLMs see a skill catalog first, then access internal tools after activation.
+**Write 50+ methods without worrying about overwhelming the LLM.** Skills use **3-stage progressive disclosure** to handle large tool sets intelligently.
 
 **Why skills?**
--  **Progressive disclosure**: LLM discovers skills first, loads tools on demand
--  **Better organization**: Group related tools by capability
--  **No decorators**: Public methods are auto-exposed
--  **Type-safe**: Full Python type hints support
+- ✅ **Scale effortlessly**: Write 50, 100, or more methods - the framework handles it
+- ✅ **Zero overhead**: Just inherit `SkillBase`, public methods auto-expose as tools
+- ✅ **Smart disclosure**: LLM discovers skills → reads summary → calls specific methods
+- ✅ **No token waste**: Only 1 skill entry in tool list, not 50 detailed schemas
 
-**How it works:**
+**How to create a custom skill?**
 
-Skills use a two-stage progressive disclosure mechanism:
-
-1. **Stage 1 - Skill Discovery**: LLM sees a skill catalog with entry tools (just name + description of each skill)
-2. **Stage 2 - Skill Activation**: When LLM calls a skill entry, ToolManager activates it and expands all internal method tools
-3. **Stage 2 - Tool Usage**: LLM can now call specific methods from the activated skill
-
-```python
-# Initial tool list (Stage 1)
-[
-    {"name": "FileOperations", "description": "Handle file operations"},
-    {"name": "Calculator", "description": "Perform calculations"},
-    # ... other skills and regular tools
-]
-
-# After LLM calls FileOperations (Stage 2)
-[
-    {"name": "read_file", "description": "Read file content"},
-    {"name": "write_file", "description": "Write content to file"},
-    {"name": "delete_file", "description": "Delete a file"},
-    # ... expanded from FileOperations skill
-]
-```
+Simply inherit from `SkillBase` - that's it! Write your class like any normal Python class, and all public methods will automatically become callable tools.
 
 ```python
 from chak import Conversation
 from chak.tools import SkillBase
 
-
-class FileSkill(SkillBase): # Simply inherit from SkillBase - everything else is just a regular Python class.
-    Public methods are automatically exposed as tools.
-    """File operation skill for reading, analyzing, and summarizing files.
-    """
+class MegaSkill(SkillBase):
+    """Inherit SkillBase and write methods - framework does the rest."""
     
-    name = "file_helper"
-    description = "Handle file reading, analysis and summarization tasks"
+    name = "mega_operations"  # Skill name LLM will see
+    description = "Comprehensive operations toolkit"  # Skill description
     
-    def read_file(self, path: str) -> str:
+    # File operations (10 methods)
+    def file_read(self, path: str) -> str:
         """Read content from a file."""
         with open(path, 'r') as f:
             return f.read()
     
-    def analyze_size(self, path: str) -> str:
-        """Analyze file size and estimate reading time."""
+    def file_write(self, path: str, content: str) -> str:
+        """Write content to a file."""
+        with open(path, 'w') as f:
+            f.write(content)
+        return f"Wrote {len(content)} bytes to {path}"
+    
+    def file_delete(self, path: str) -> str:
+        """Delete a file."""
         import os
-        size_kb = os.path.getsize(path) / 1024
-        return f"File size: {size_kb:.2f} KB"
+        os.remove(path)
+        return f"Deleted {path}"
+    
+    # ... 7 more file methods
+    
+    # Database operations (10 methods)
+    def db_connect(self, host: str, port: int) -> str:
+        """Connect to database."""
+        return f"Connected to {host}:{port}"
+    
+    def db_query(self, sql: str) -> str:
+        """Execute SQL query."""
+        # Your implementation
+        return "Query executed"
+    
+    # ... 8 more db methods
+    
+    # Network operations (10 methods)
+    def net_get(self, url: str) -> str:
+        """HTTP GET request."""
+        import requests
+        return requests.get(url).text
+    
+    def net_post(self, url: str, data: dict) -> str:
+        """HTTP POST request."""
+        import requests
+        return requests.post(url, json=data).text
+    
+    # ... 8 more net methods
+    
+    # Data processing (10 methods)
+    def data_parse_json(self, text: str) -> dict:
+        """Parse JSON string."""
+        import json
+        return json.loads(text)
+    
+    # ... 9 more data methods
+    
+    # String operations (10 methods)
+    def str_upper(self, text: str) -> str:
+        """Convert to uppercase."""
+        return text.upper()
+    
+    def str_lower(self, text: str) -> str:
+        """Convert to lowercase."""
+        return text.lower()
+    
+    # ... 8 more string methods
 
-tools = [FileSkill()]
-conv = Conversation("openai/gpt-4o", tools=tools)
+# Usage - exactly like regular tools
+tools = [MegaSkill()]
+conv = Conversation("bailian/qwen-plus", tools=tools)
 
-# LLM sees: file_helper skill
-# After activation: read_file, analyze_size tools
-response = await conv.asend("Analyze README.md file")
+# The LLM only sees 1 skill entry, not 50 individual tools!
+response = await conv.asend("Read /tmp/test.txt and convert to uppercase")
 ```
 
-See full example: [examples/tool_calling_skills.py](examples/tool_calling_skills.py)
+**How it works - 3-stage progressive disclosure:**
+
+1. **Step 1 – Skill listing**: ToolManager turns your `SkillBase` subclasses into **one skill entry per class**. The LLM only sees the skill name + description + class docstring (e.g. `mega_operations`) – it does **not** see every method yet.
+2. **Step 2 – Capability summary**: When the LLM first calls the skill *without* a `method` parameter, Chak inspects all public methods and returns a natural-language summary of their names, docstrings and signatures as normal assistant text (not tool schemas).
+3. **Step 3 – Method planning & execution**: Based on that summary, the LLM decides which concrete methods to use and calls the same skill again with `method='...'` and the actual arguments. Chak then routes the call to your real Python method(s) and returns their results.
+
+**Real execution flow:**
+```
+User: "Read /tmp/test.txt and convert to uppercase"
+
+1. LLM sees: [mega_operations] (1 entry in tool list)
+2. LLM calls: mega_operations() 
+3. Framework returns: "Available methods: file_read(), file_write(), ..., str_upper(), str_lower(), ..."
+4. LLM calls: mega_operations(method='file_read', path='/tmp/test.txt')
+5. LLM calls: mega_operations(method='str_upper', text='file content here')
+6. Done!
+```
+
+**Key benefit**: The LLM never sees 50 detailed tool schemas at once - it discovers them progressively as needed. This prevents token waste and keeps the LLM focused.
+
+**See examples:**
+- Simple skill: [examples/tool_calling_skills_simple.py](examples/tool_calling_skills_simple.py)
+- Large-scale skill (50 methods): [examples/tool_calling_skills_large_scale.py](examples/tool_calling_skills_large_scale.py)
 
 ### Pass Functions
 
@@ -677,42 +714,13 @@ conv = Conversation(
 <a id="tool-calling-human-approval"></a>
 ### Human-in-the-loop Approval
 
-Require manual approval before executing tools via `tool_approval_handler`:
+Require manual approval before executing tools, and optionally auto-approve safe read-only tools via `tool_approval_handler`:
 
 ```python
 from chak.tools.manager import ToolCallApproval
 
-
-def get_current_time() -> str:
-    """Get current date and time"""
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-
 async def my_approval_handler(approval: ToolCallApproval) -> bool:
-    """Return True to allow this tool call, False to reject it.
-
-    The approval object contains the tool name, arguments and a
-    unique call_id for this invocation.
-    """
-    print("tool =", approval.tool_name)
-    print("args =", approval.arguments)
-    answer = input("Allow this tool call? (y/n): ").strip().lower()
-    return answer == "y"
-
-
-conv = chak.Conversation(
-    model_uri="openai/gpt-4o",
-    api_key="YOUR_KEY",
-    tools=[get_current_time],
-    tool_approval_handler=my_approval_handler
-)
-```
-
-**Skip approval for specific tools** (e.g., always allow safe read-only operations):
-
-```python
-async def smart_approval_handler(approval: ToolCallApproval) -> bool:
-    """Auto-approve safe tools, prompt for others"""
+    """Auto-approve safe tools, prompt for others."""
     
     # Whitelist: auto-approve read-only tools without prompting
     SAFE_TOOLS = {"search_web", "get_current_time", "read_file"}
@@ -728,31 +736,17 @@ async def smart_approval_handler(approval: ToolCallApproval) -> bool:
     return answer == "y"
 
 
+# Assume search_web, get_current_time, delete_file are tools you provided
 conv = chak.Conversation(
     model_uri="openai/gpt-4o",
     api_key="YOUR_KEY",
     tools=[search_web, get_current_time, delete_file],  # Mix safe and dangerous tools
-    tool_approval_handler=smart_approval_handler
+    tool_approval_handler=my_approval_handler,
 )
 
 response = await conv.asend("What time is it now?")
 ```
 
-### Examples
-
-See complete examples:
-
-- **Native Functions**: [examples/tool_calling_chat_functions.py](examples/tool_calling_chat_functions.py)
-- **Functions with Pydantic**: [examples/tool_calling_chat_functions_pydantic.py](examples/tool_calling_chat_functions_pydantic.py)
-- **Stateful Objects**: [examples/tool_calling_chat_objects_stateful.py](examples/tool_calling_chat_objects_stateful.py)
-- **Objects with Pydantic**: [examples/tool_calling_chat_objects_pydantic.py](examples/tool_calling_chat_objects_pydantic.py)
-- **Event Stream (Observability)**: [examples/event_stream_chat_demo.py](examples/event_stream_chat_demo.py)
-- **MCP (SSE)**: [examples/tool_calling_chat_mcp_sse.py](examples/tool_calling_chat_mcp_sse.py)
-- **MCP (stdio)**: [examples/tool_calling_chat_mcp_stdio.py](examples/tool_calling_chat_mcp_stdio.py)
-- **MCP (HTTP)**: [examples/tool_calling_chat_mcp_http.py](examples/tool_calling_chat_mcp_http.py)
-- **Human-in-the-loop Approval (CLI)**: [examples/tool_calling_approval_demo.py](examples/tool_calling_approval_demo.py)
-- **Human-in-the-loop Approval (WebSocket/Web)**: [examples/tool_approval_web_demo.py](examples/tool_approval_web_demo.py)
-- **Skill-based Tool Calling**: [examples/tool_calling_skills.py](examples/tool_calling_skills.py)
 
 
 ---
@@ -1197,6 +1191,8 @@ The `custom` field is completely flexible - use it however your application need
 
 ## Local Server Mode (Optional)
 
+> ⚠️ chak is primarily an SDK. The built-in local server is intended for local development and prototyping only, and is **not** recommended or hardened for production use.
+
 Start a local gateway service with 2 lines of code:
 
 ### 1. Create Configuration File
@@ -1332,5 +1328,7 @@ If you:
 - Want to focus on building applications, not wrestling with context and tools
 
 Then chak is made for you.
+
+To get started quickly, explore the [examples/](examples) directory for end-to-end demos (tool calling, skills, multimodal, structured output, local server, etc.).
 
 <div align="right"><a href="https://youtube.com/watch?v=xOKQ7EQcggw"><img src="https://raw.githubusercontent.com/zhixiangxue/chak-ai/main/docs/assets/logo.png" alt="Demo Video" width="120"></a></div>
