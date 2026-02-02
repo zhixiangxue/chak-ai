@@ -329,14 +329,14 @@ class ToolManager:
         """
         from ..message import AIMessage, ToolMessage, MessageChunk
         
+        # Reset active skill at the start of each conversation turn
+        self._active_skill = None
+        
         current_messages = messages.copy()
         new_messages = []  # Track all new messages added during this loop
-        openai_tools = []
-        for tool in self.tools:
-            if isinstance(tool, NativeObjectTool):
-                openai_tools.extend(tool.to_openai_tools())
-            else:
-                openai_tools.append(tool.to_openai_tool())
+        
+        # Convert tools to OpenAI format (same as execute_loop)
+        openai_tools = self._get_openai_tools()
         
         for iteration in range(self.max_iterations):
             accumulated_content = ""
@@ -466,6 +466,11 @@ class ToolManager:
                     current_messages.append(tool_msg)
                     new_messages.append(tool_msg)
                 
+                # Update tool list for next iteration if skill was activated
+                if self._active_skill:
+                    openai_tools = self._get_openai_tools()
+                    logger.debug(f"🌟 [Skill] Updated tool list for activated skill: {self._active_skill.name}")
+                
                 logger.debug(f"🔁 [Tool Loop] Loop continues to iteration {iteration + 1}...")
                 # Loop continues (next iteration will call LLM with tool results)
             else:
@@ -526,13 +531,13 @@ class ToolManager:
         from ..message import AIMessage, ToolMessage, MessageChunk, ReasoningChunk, ToolCallStartEvent, ToolCallSuccessEvent, ToolCallErrorEvent, ChatCompletionMessageToolCall, Function
         import json
         
+        # Reset active skill at the start of each conversation turn
+        self._active_skill = None
+        
         current_messages = messages.copy()
-        openai_tools = []
-        for tool in self.tools:
-            if isinstance(tool, NativeObjectTool):
-                openai_tools.extend(tool.to_openai_tools())
-            else:
-                openai_tools.append(tool.to_openai_tool())
+        
+        # Convert tools to OpenAI format (same as execute_loop)
+        openai_tools = self._get_openai_tools()
         
         for iteration in range(self.max_iterations):
             accumulated_content = ""
@@ -701,6 +706,11 @@ class ToolManager:
                         tool_call_id=result.call_id
                     ))
                 
+                # Update tool list for next iteration if skill was activated
+                if self._active_skill:
+                    openai_tools = self._get_openai_tools()
+                    logger.debug(f"🌟 [Skill] Updated tool list for activated skill: {self._active_skill.name}")
+                
                 logger.debug(f"🔁 [Tool Loop] Loop continues to iteration {iteration + 1}...")
                 # Loop continues (next iteration will call LLM with tool results)
             else:
@@ -836,6 +846,7 @@ class ToolManager:
                     )
                     
                 except ValueError as e:
+                    # Method not found - this is a real error
                     logger.error(f"❌ [Skill] Method '{method_name}' not found in skill '{tool_name}'")
                     return ToolCallResult(
                         call_id=call_id,
@@ -843,7 +854,13 @@ class ToolManager:
                         is_error=True
                     )
                 except Exception as e:
-                    logger.error(f"❌ [Skill] Method '{method_name}' failed: {str(e)}")
+                    # Method execution failed - could be LLM learning process (missing args) or real error
+                    # Don't alarm developers - this is expected in progressive skill disclosure
+                    logger.warning(
+                        f"🔄 [Skill] LLM attempting method call (progressive learning): "
+                        f"'{method_name}' - {str(e)}. "
+                        f"This is normal - LLM will self-correct in next iteration."
+                    )
                     return ToolCallResult(
                         call_id=call_id,
                         content=f"Error: {str(e)}",
