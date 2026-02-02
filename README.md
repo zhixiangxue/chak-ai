@@ -713,8 +713,6 @@ conv = Conversation(
 
 <a id="tool-calling-human-approval"></a>
 ### Human-in-the-loop Approval
-### Human-in-the-loop Approval
-
 Require manual approval before executing tools, and optionally auto-approve safe read-only tools via `tool_approval_handler`:
 
 ```python
@@ -758,11 +756,6 @@ response = await conv.asend("What time is it now?")
 ## 🌙 Structured Output
 
 chak's `Conversation` supports structured outputs through the `returns` parameter. Instead of parsing LLM text responses manually, you can specify a Pydantic model and get validated, type-safe data directly.
-
-**Supported types:**
-- ✅ `BaseModel` - Single Pydantic model
-- ✅ `List[BaseModel]` - List of models (NEW!)
-- ✅ `Dict[str, BaseModel]` - Dictionary of models (NEW!)
 
 **Supported types:**
 - ✅ `BaseModel` - Single Pydantic model
