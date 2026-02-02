@@ -713,6 +713,7 @@ conv = Conversation(
 
 <a id="tool-calling-human-approval"></a>
 ### Human-in-the-loop Approval
+### Human-in-the-loop Approval
 
 Require manual approval before executing tools, and optionally auto-approve safe read-only tools via `tool_approval_handler`:
 
@@ -739,6 +740,7 @@ async def my_approval_handler(approval: ToolCallApproval) -> bool:
 # Assume search_web, get_current_time, delete_file are tools you provided
 conv = chak.Conversation(
     model_uri="openai/gpt-4o",
+    model_uri="openai/gpt-4o",
     api_key="YOUR_KEY",
     tools=[search_web, get_current_time, delete_file],  # Mix safe and dangerous tools
     tool_approval_handler=my_approval_handler,
@@ -756,6 +758,11 @@ response = await conv.asend("What time is it now?")
 ## 🌙 Structured Output
 
 chak's `Conversation` supports structured outputs through the `returns` parameter. Instead of parsing LLM text responses manually, you can specify a Pydantic model and get validated, type-safe data directly.
+
+**Supported types:**
+- ✅ `BaseModel` - Single Pydantic model
+- ✅ `List[BaseModel]` - List of models (NEW!)
+- ✅ `Dict[str, BaseModel]` - Dictionary of models (NEW!)
 
 **Supported types:**
 - ✅ `BaseModel` - Single Pydantic model
@@ -793,6 +800,7 @@ print(user.age)    # 30
 
 ```python
 from typing import List, Dict
+from typing import List, Dict
 from pydantic import BaseModel, Field
 
 class Address(BaseModel):
@@ -816,6 +824,34 @@ print(company.name)              # "Apple Inc"
 print(company.address.city)      # "Cupertino"
 print(company.employee_count)    # 150000
 ```
+
+#### Extract Lists and Dictionaries
+
+```python
+from typing import List, Dict
+from pydantic import BaseModel
+
+class Product(BaseModel):
+    name: str
+    price: float
+    category: str
+
+# Extract list of models
+products = await conv.asend(
+    "List 3 popular tech products: iPhone 15 Pro ($999), MacBook Air ($1199), AirPods Pro ($249)",
+    returns=List[Product]
+)
+# Returns: [Product(...), Product(...), Product(...)]
+
+# Extract dictionary of models
+products_dict = await conv.asend(
+    "Create product catalog keyed by name",
+    returns=Dict[str, Product]
+)
+# Returns: {"iPhone 15 Pro": Product(...), "MacBook Air": Product(...), ...}
+```
+
+**Note:** Supports `BaseModel`, `List[BaseModel]`, and `Dict[str, BaseModel]`. Other generic types (e.g., `Tuple`, `Set`, `Dict[int, T]`) are not supported.
 
 #### Extract Lists and Dictionaries
 
