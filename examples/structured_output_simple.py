@@ -8,11 +8,12 @@ This example shows how to:
 - Define Pydantic models for structured output
 - Use the returns parameter to force structured responses
 - Extract validated data from LLM
+- Support for List[BaseModel] and Dict[str, BaseModel] (NEW!)
 """
 
 import asyncio
 import os
-from typing import Optional
+from typing import Optional, List, Dict
 
 from pydantic import BaseModel, Field
 import dotenv
@@ -26,7 +27,7 @@ import chak
 class User(BaseModel):
     """User information"""
     name: str = Field(description="User's full name")
-    email: str = Field(description="User's email address")
+    email: Optional[str] = Field(default=None, description="User's email address")
     age: Optional[int] = Field(default=None, description="User's age")
 
 
@@ -43,6 +44,13 @@ class Sentiment(BaseModel):
     label: str = Field(description="Sentiment label: positive, negative, or neutral")
     confidence: float = Field(description="Confidence score between 0 and 1")
     reasoning: str = Field(description="Brief explanation of the sentiment")
+
+
+class Company(BaseModel):
+    """Company information"""
+    name: str = Field(description="Company name")
+    industry: str = Field(description="Industry sector")
+    employee_count: int = Field(description="Number of employees")
 
 
 async def main():
@@ -65,7 +73,7 @@ async def main():
     print("=== Structured Output Demo ===\n")
     
     # Example 1: Extract user information
-    print("📝 Example 1: Extract User Information")
+    print("📝 Example 1: Extract Single User")
     print("-" * 50)
     user = await conv.asend(
         "Create a user profile for John Doe, email john@example.com, 30 years old",
@@ -81,7 +89,7 @@ async def main():
     print()
     
     # Example 2: Extract product information
-    print("📝 Example 2: Extract Product Information")
+    print("📝 Example 2: Extract Single Product")
     print("-" * 50)
     product = await conv.asend(
         "I'm looking at a MacBook Pro 16-inch, it costs $2499 and belongs to the laptops category",
@@ -97,8 +105,53 @@ async def main():
         print("❌ Failed to extract product information")
     print()
     
-    # Example 3: Sentiment analysis
-    print("📝 Example 3: Sentiment Analysis")
+    # Example 3: Extract List[BaseModel] - NEW!
+    print("📝 Example 3: Extract List of Products (NEW!)")
+    print("-" * 50)
+    products = await conv.asend(
+        "List 3 popular tech products: iPhone 15 Pro ($999), MacBook Air ($1199), AirPods Pro ($249)",
+        returns=List[Product]
+    )
+    if products:
+        print(f"✅ Result type: {type(products).__name__} with {len(products)} items")
+        for i, prod in enumerate(products, 1):
+            print(f"   {i}. {prod.name}: ${prod.price} ({prod.category})")
+    else:
+        print("❌ Failed to extract products")
+    print()
+    
+    # Example 4: Extract Dict[str, BaseModel] - NEW!
+    print("📝 Example 4: Extract Dict of Companies (NEW!)")
+    print("-" * 50)
+    companies = await conv.asend(
+        "Give me info about 3 tech companies: Apple (technology, 150000 employees), Microsoft (software, 220000 employees), Google (internet, 190000 employees)",
+        returns=Dict[str, Company]
+    )
+    if companies:
+        print(f"✅ Result type: {type(companies).__name__} with {len(companies)} items")
+        for key, company in companies.items():
+            print(f"   {key}: {company.name} ({company.industry}, {company.employee_count:,} employees)")
+    else:
+        print("❌ Failed to extract companies")
+    print()
+    
+    # Example 5: Extract List[User] - Multiple users
+    print("📝 Example 5: Extract List of Users")
+    print("-" * 50)
+    users = await conv.asend(
+        "Create profiles for 3 scientists: Albert Einstein (age 76), Marie Curie (age 66), Isaac Newton (age 84)",
+        returns=List[User]
+    )
+    if users:
+        print(f"✅ Result type: list with {len(users)} users")
+        for i, user in enumerate(users, 1):
+            print(f"   {i}. {user.name} (Age: {user.age})")
+    else:
+        print("❌ Failed to extract users")
+    print()
+    
+    # Example 6: Sentiment analysis (single model)
+    print("📝 Example 6: Sentiment Analysis")
     print("-" * 50)
     sentiment = await conv.asend(
         "This movie was absolutely amazing! The acting was superb and the plot kept me engaged throughout.",

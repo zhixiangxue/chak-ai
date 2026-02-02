@@ -851,22 +851,53 @@ class Conversation:
         3. Parses and validates the result
         4. Returns the Pydantic model instance
         
+        Supports:
+        - BaseModel: returns=MyModel
+        - List[BaseModel]: returns=List[MyModel]
+        - Dict[str, BaseModel]: returns=Dict[str, MyModel]
+        
         Args:
             message: User message
             attachments: Optional attachments
-            returns: Pydantic BaseModel class
+            returns: Pydantic BaseModel class or generic type (List/Dict)
             **kwargs: Additional LLM parameters
             
         Returns:
-            Instance of the Pydantic model
+            Instance of the Pydantic model (or List/Dict of instances)
         """
-        from pydantic import BaseModel
+        from pydantic import BaseModel, RootModel
+        from typing import get_origin, get_args
         import json
         
-        # Validate returns is a Pydantic model
-        if not (isinstance(returns, type) and issubclass(returns, BaseModel)):
+        # Check if returns is a generic type (List/Dict)
+        origin = get_origin(returns)
+        is_wrapped = False
+        original_returns = returns
+        
+        if origin is list:
+            # List[BaseModel] -> wrap with RootModel
+            args = get_args(returns)
+            if not args or not (isinstance(args[0], type) and issubclass(args[0], BaseModel)):
+                raise TypeError(
+                    f"List type must contain a Pydantic BaseModel, got List[{args[0] if args else 'Unknown'}]"
+                )
+            # Create RootModel wrapper
+            returns = RootModel[original_returns]
+            is_wrapped = True
+        elif origin is dict:
+            # Dict[str, BaseModel] -> wrap with RootModel
+            args = get_args(returns)
+            if len(args) != 2 or args[0] != str or not (isinstance(args[1], type) and issubclass(args[1], BaseModel)):
+                raise TypeError(
+                    f"Dict type must be Dict[str, BaseModel], got Dict[{args[0] if len(args) > 0 else 'Unknown'}, {args[1] if len(args) > 1 else 'Unknown'}]"
+                )
+            # Create RootModel wrapper
+            returns = RootModel[original_returns]
+            is_wrapped = True
+        elif not (isinstance(returns, type) and issubclass(returns, BaseModel)):
+            # Not a BaseModel and not a supported generic type
             raise TypeError(
-                f"returns must be a Pydantic BaseModel subclass, got {type(returns)}"
+                f"returns must be a Pydantic BaseModel, List[BaseModel], or Dict[str, BaseModel], got {type(returns)}"
             )
         
         # Convert str to HumanMessage (same logic as regular asend)
@@ -963,6 +994,10 @@ class Conversation:
             arguments = json.loads(tool_call.function.arguments)
             result = returns.model_validate(arguments)
             
+            # Unwrap RootModel if it was auto-wrapped
+            if is_wrapped:
+                result = result.root
+            
             # Save the AI message to conversation history
             if isinstance(response, AIMessage):
                 # Response is already AIMessage, save it directly
@@ -994,21 +1029,30 @@ class Conversation:
         Generate OpenAI tool schema from Pydantic model.
         
         Args:
-            model: Pydantic BaseModel class
+            model: Pydantic BaseModel class (or RootModel for List/Dict)
             
         Returns:
             OpenAI tool definition dict
         """
+        from pydantic import RootModel
+        
         schema = model.model_json_schema()
         
         # Extract description from model docstring or use default
-        description = model.__doc__ or f"Correctly extracted `{model.__name__}` with all required parameters"
-        description = description.strip()
+        # For RootModel, extract from the wrapped type
+        if hasattr(model, '__pydantic_generic_metadata__'):
+            # This is a RootModel, use generic description
+            model_name = "ExtractedData"
+            description = "Correctly extracted structured data with all required parameters"
+        else:
+            model_name = model.__name__
+            description = model.__doc__ or f"Correctly extracted `{model.__name__}` with all required parameters"
+            description = description.strip()
         
         return {
             "type": "function",
             "function": {
-                "name": model.__name__,
+                "name": model_name,
                 "description": description,
                 "parameters": schema
             }
