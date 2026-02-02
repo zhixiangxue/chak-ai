@@ -341,6 +341,55 @@ See full examples (parameters, how it works, tips):
 - Summarization: [examples/context_handler_summarization.py](examples/context_handler_summarization.py)
 - LRU: [examples/context_handler_lru.py](examples/context_handler_lru.py)
 
+### Create Custom Handler
+
+Implement your own context strategy by subclassing `BaseContextHandler`:
+
+```python
+from chak.context.handlers import BaseContextHandler
+from typing import List
+
+class MyCustomHandler(BaseContextHandler):
+    """Custom handler example: keep only messages with specific keywords"""
+    
+    def __init__(self, keywords: List[str]):
+        super().__init__()
+        self.keywords = keywords
+    
+    def handle(self, messages: List[Message], *, conversation_id: str) -> List[Message]:
+        """
+        Process messages and return context for this LLM call.
+        
+        Args:
+            messages: Complete conversation history (read-only)
+            conversation_id: Unique ID for this conversation
+            
+        Returns:
+            Filtered messages to send to LLM
+        """
+        # Keep system messages + messages containing keywords
+        filtered = []
+        for msg in messages:
+            if msg.role == "system":
+                filtered.append(msg)
+            elif any(kw in msg.content for kw in self.keywords):
+                filtered.append(msg)
+        
+        return filtered
+
+# Use your custom handler
+conv = Conversation(
+    "openai/gpt-4o",
+    api_key="YOUR_KEY",
+    context_handler=MyCustomHandler(keywords=["important", "urgent"])
+)
+```
+
+**Key points:**
+- Input: complete message history (read-only snapshot)
+- Output: messages to send to LLM in this round
+- You can add/delete/modify messages freely
+
 ---
 
 <a id="tool-calling"></a>
@@ -351,7 +400,7 @@ Write tools the way you like - functions, objects, skills, or MCP servers. chak 
 
 Just pass what you have, and it works.
 
-### 🌟 Skill-based Tools (New in 0.3.0)
+### Skill-based Tools (New in 0.3.0)
 
 Group related tools as **skills** to prevent overwhelming LLMs with too many options. LLMs see a skill catalog first, then access internal tools after activation.
 
@@ -360,6 +409,31 @@ Group related tools as **skills** to prevent overwhelming LLMs with too many opt
 -  **Better organization**: Group related tools by capability
 -  **No decorators**: Public methods are auto-exposed
 -  **Type-safe**: Full Python type hints support
+
+**How it works:**
+
+Skills use a two-stage progressive disclosure mechanism:
+
+1. **Stage 1 - Skill Discovery**: LLM sees a skill catalog with entry tools (just name + description of each skill)
+2. **Stage 2 - Skill Activation**: When LLM calls a skill entry, ToolManager activates it and expands all internal method tools
+3. **Stage 2 - Tool Usage**: LLM can now call specific methods from the activated skill
+
+```python
+# Initial tool list (Stage 1)
+[
+    {"name": "FileOperations", "description": "Handle file operations"},
+    {"name": "Calculator", "description": "Perform calculations"},
+    # ... other skills and regular tools
+]
+
+# After LLM calls FileOperations (Stage 2)
+[
+    {"name": "read_file", "description": "Read file content"},
+    {"name": "write_file", "description": "Write content to file"},
+    {"name": "delete_file", "description": "Delete a file"},
+    # ... expanded from FileOperations skill
+]
+```
 
 ```python
 from chak import Conversation
@@ -600,8 +674,8 @@ conv = Conversation(
 )
 ```
 
-### Human-in-the-loop Approval
 <a id="tool-calling-human-approval"></a>
+### Human-in-the-loop Approval
 
 Require manual approval before executing tools via `tool_approval_handler`:
 
@@ -627,10 +701,38 @@ async def my_approval_handler(approval: ToolCallApproval) -> bool:
 
 
 conv = chak.Conversation(
-    "openai/gpt-4o-mini",
+    model_uri="openai/gpt-4o",
     api_key="YOUR_KEY",
     tools=[get_current_time],
-    tool_approval_handler=my_approval_handler,
+    tool_approval_handler=my_approval_handler
+)
+```
+
+**Skip approval for specific tools** (e.g., always allow safe read-only operations):
+
+```python
+async def smart_approval_handler(approval: ToolCallApproval) -> bool:
+    """Auto-approve safe tools, prompt for others"""
+    
+    # Whitelist: auto-approve read-only tools without prompting
+    SAFE_TOOLS = {"search_web", "get_current_time", "read_file"}
+    
+    if approval.tool_name in SAFE_TOOLS:
+        print(f"✓ Auto-approved safe tool: {approval.tool_name}")
+        return True
+    
+    # For other tools, require manual approval
+    print(f"⚠️  Tool '{approval.tool_name}' requires approval")
+    print(f"   Arguments: {approval.arguments}")
+    answer = input("   Allow? (y/n): ").strip().lower()
+    return answer == "y"
+
+
+conv = chak.Conversation(
+    model_uri="openai/gpt-4o",
+    api_key="YOUR_KEY",
+    tools=[search_web, get_current_time, delete_file],  # Mix safe and dangerous tools
+    tool_approval_handler=smart_approval_handler
 )
 
 response = await conv.asend("What time is it now?")
@@ -660,6 +762,11 @@ See complete examples:
 ## 🌙 Structured Output
 
 chak's `Conversation` supports structured outputs through the `returns` parameter. Instead of parsing LLM text responses manually, you can specify a Pydantic model and get validated, type-safe data directly.
+
+**Supported types:**
+- ✅ `BaseModel` - Single Pydantic model
+- ✅ `List[BaseModel]` - List of models (NEW!)
+- ✅ `Dict[str, BaseModel]` - Dictionary of models (NEW!)
 
 ### Basic Usage
 
@@ -691,7 +798,7 @@ print(user.age)    # 30
 #### Complex Nested Models
 
 ```python
-from typing import List
+from typing import List, Dict
 from pydantic import BaseModel, Field
 
 class Address(BaseModel):
@@ -715,6 +822,34 @@ print(company.name)              # "Apple Inc"
 print(company.address.city)      # "Cupertino"
 print(company.employee_count)    # 150000
 ```
+
+#### Extract Lists and Dictionaries
+
+```python
+from typing import List, Dict
+from pydantic import BaseModel
+
+class Product(BaseModel):
+    name: str
+    price: float
+    category: str
+
+# Extract list of models
+products = await conv.asend(
+    "List 3 popular tech products: iPhone 15 Pro ($999), MacBook Air ($1199), AirPods Pro ($249)",
+    returns=List[Product]
+)
+# Returns: [Product(...), Product(...), Product(...)]
+
+# Extract dictionary of models
+products_dict = await conv.asend(
+    "Create product catalog keyed by name",
+    returns=Dict[str, Product]
+)
+# Returns: {"iPhone 15 Pro": Product(...), "MacBook Air": Product(...), ...}
+```
+
+**Note:** Supports `BaseModel`, `List[BaseModel]`, and `Dict[str, BaseModel]`. Other generic types (e.g., `Tuple`, `Set`, `Dict[int, T]`) are not supported.
 
 ### Multimodal Structured Output
 
