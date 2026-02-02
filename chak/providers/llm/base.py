@@ -270,7 +270,7 @@ class OpenAICompatibleMessageConverter(BaseMessageConverter):
         if delta and hasattr(delta, 'tool_calls') and delta.tool_calls:
             for tc_delta in delta.tool_calls:
                 tool_call_delta = ToolCallDelta(
-                    index=tc_delta.index,
+                    index=getattr(tc_delta, 'index', 0) or 0,
                     id=getattr(tc_delta, 'id', None),
                     type=getattr(tc_delta, 'type', None),
                     function_name=getattr(tc_delta.function, 'name', None) if hasattr(tc_delta, 'function') else None,
