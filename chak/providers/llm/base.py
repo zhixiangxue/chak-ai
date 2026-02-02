@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from ... import __version__
 from ...exceptions import ProviderError
-from ...message import Message, MessageChunk, ReasoningChunk, AIMessage, ChatCompletionMessageToolCall, Function
+from ...message import Message, MessageChunk, ReasoningChunk, AIMessage, ChatCompletionMessageToolCall, Function, UnifiedStreamChunk
 from ...metadata import Metadata, Usage
 
 
@@ -52,8 +52,8 @@ class BaseMessageConverter(ABC):
         pass
 
     @abstractmethod
-    def from_provider_chunk(self, chunk: Any) -> MessageChunk:
-        """Convert provider streaming chunk to standard MessageChunk."""
+    def from_provider_chunk(self, chunk: Any) -> UnifiedStreamChunk:
+        """Convert provider streaming chunk to UnifiedStreamChunk."""
         pass
 
 
@@ -246,22 +246,48 @@ class OpenAICompatibleMessageConverter(BaseMessageConverter):
             finish_reason=choice.finish_reason if choice is not None else None,
         )
     
-    def from_provider_chunk(self, chunk: Any) -> Union[MessageChunk, ReasoningChunk]:
-        """Convert OpenAI-compatible streaming chunk to standard MessageChunk or ReasoningChunk.
+    def from_provider_chunk(self, chunk: Any) -> UnifiedStreamChunk:
+        """Convert OpenAI-compatible streaming chunk to UnifiedStreamChunk.
         
-        Base implementation only handles answer content chunks (MessageChunk).
-        Subclasses should override this method if their provider supports reasoning streaming.
+        Base implementation handles:
+        - Answer content (delta.content)
+        - Tool calls delta (delta.tool_calls)
+        - Finish reason and metadata
+        
+        Subclasses should override if their provider supports reasoning streaming.
         """
+        from ...message import ToolCallDelta
+        
         choice = chunk.choices[0] if chunk.choices else None
         delta = choice.delta if choice else None
         
         content = delta.content if delta and delta.content else ""
         is_final = bool(choice and choice.finish_reason is not None)
+        finish_reason = choice.finish_reason if choice else None
         
-        return MessageChunk(
+        # Extract tool_calls delta
+        tool_calls_delta = []
+        if delta and hasattr(delta, 'tool_calls') and delta.tool_calls:
+            for tc_delta in delta.tool_calls:
+                tool_call_delta = ToolCallDelta(
+                    index=tc_delta.index,
+                    id=getattr(tc_delta, 'id', None),
+                    type=getattr(tc_delta, 'type', None),
+                    function_name=getattr(tc_delta.function, 'name', None) if hasattr(tc_delta, 'function') else None,
+                    function_arguments=getattr(tc_delta.function, 'arguments', None) if hasattr(tc_delta, 'function') else None,
+                )
+                tool_calls_delta.append(tool_call_delta)
+        
+        # Build metadata
+        metadata = self._build_chunk_metadata(chunk, choice)
+        
+        return UnifiedStreamChunk(
             content=content,
+            reasoning_content=None,  # Base implementation doesn't support reasoning
+            tool_calls_delta=tool_calls_delta,
             is_final=is_final,
-            metadata=self._build_chunk_metadata(chunk, choice)
+            finish_reason=finish_reason,
+            metadata=metadata,
         )
     
     def _build_chunk_metadata(self, chunk: Any, choice: Any) -> Dict[str, Any]:
@@ -348,12 +374,6 @@ class OpenAICompatibleProvider(Provider):
             messages=messages,
             **kwargs
         )
-        
-        # DEBUG: Print entire response with rich
-        from rich import print as rprint
-        rprint("\n=== DEBUG: Raw SDK Response ===")
-        rprint(raw_response)
-        rprint("=== END DEBUG ===\n")
         
         return raw_response
     

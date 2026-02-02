@@ -1,23 +1,27 @@
 """
-Reasoning Chat - Bailian (Alibaba Cloud QwQ)
+Reasoning Chat - Universal Provider Test
 
-This example demonstrates reasoning mode with Bailian's QwQ model.
+This example demonstrates reasoning mode with any provider.
 Reasoning mode allows the model to "think" before answering.
 
 Prerequisites:
-    1. Get your Bailian API key from: https://bailian.console.aliyun.com
-    2. Set environment variable: export BAILIAN_API_KEY=your_key_here
+    Set environment variables based on provider:
+    - BAILIAN_API_KEY for bailian/*
+    - OPENAI_API_KEY for openai/*
+    - etc.
 
 Features:
     - Reasoning mode (reasoning=chak.Reasoning(...))
     - Both streaming and non-streaming
     - Both sync and async versions
-    - ReasoningChunk vs MessageChunk
+    - Command-line provider selection
 
 Usage:
-    python examples/chat_reasoning_bailian.py
+    python examples/chat_reasoning.py openai/gpt-4o-mini
+    python examples/chat_reasoning.py bailian/qwen-plus
 """
 
+import argparse
 import asyncio
 import os
 
@@ -28,25 +32,32 @@ import chak
 dotenv.load_dotenv()
 
 
-def example_sync_nonstream():
+def get_api_key(model_uri: str) -> str:
+    """Get API key based on provider name."""
+    provider = model_uri.split("/")[0].upper()
+    key = os.getenv(f"{provider}_API_KEY", "")
+    if not key:
+        raise ValueError(f"Please set {provider}_API_KEY environment variable")
+    return key
+
+
+def example_sync_nonstream(model_uri: str):
     """Sync non-streaming reasoning example."""
-    api_key = os.getenv("BAILIAN_API_KEY", "")
-    if not api_key:
-        print("❌ Error: Please set BAILIAN_API_KEY environment variable")
-        return
+    api_key = get_api_key(model_uri)
 
     conv = chak.Conversation(
-        "bailian/qwen-plus",
+        model_uri,
         api_key=api_key,
         system_prompt="你是一个会先认真思考再给出结论的助手。",
     )
 
     print("\n=== Sync Non-Streaming Reasoning ===")
+    print(f"Model: {model_uri}")
     print("Question: 请分析 1 到 10 的整数中有多少个质数。\n")
     
     response = conv.send(
         "请分析 1 到 10 的整数中有多少个质数。",
-        reasoning=chak.Reasoning(effort="medium"),
+        reasoning=chak.Reasoning(effort="high", summary="auto"),
         timeout=120
     )
 
@@ -56,26 +67,24 @@ def example_sync_nonstream():
     print(f"[Final Answer]\n{response.content}\n")
 
 
-def example_sync_stream():
+def example_sync_stream(model_uri: str):
     """Sync streaming reasoning example."""
-    api_key = os.getenv("BAILIAN_API_KEY", "")
-    if not api_key:
-        print("❌ Error: Please set BAILIAN_API_KEY environment variable")
-        return
+    api_key = get_api_key(model_uri)
 
     conv = chak.Conversation(
-        "bailian/qwen-plus",
+        model_uri,
         api_key=api_key,
         system_prompt="你是一个会先认真思考再给出结论的助手。",
     )
 
     print("\n=== Sync Streaming Reasoning ===")
+    print(f"Model: {model_uri}")
     print("Question: 请分析 1 到 10 的整数中有多少个质数。\n")
     
     print("[Streaming Output]\n")
     for chunk in conv.send(
         "请分析 1 到 10 的整数中有多少个质数。",
-        reasoning=chak.Reasoning(effort="medium"),
+        reasoning=chak.Reasoning(effort="high", summary="auto"),
         stream=True,
         timeout=120
     ):
@@ -87,25 +96,23 @@ def example_sync_stream():
     print("\n")
 
 
-async def example_async_nonstream():
+async def example_async_nonstream(model_uri: str):
     """Async non-streaming reasoning example."""
-    api_key = os.getenv("BAILIAN_API_KEY", "")
-    if not api_key:
-        print("❌ Error: Please set BAILIAN_API_KEY environment variable")
-        return
+    api_key = get_api_key(model_uri)
 
     conv = chak.Conversation(
-        "bailian/qwen-plus",
+        model_uri,
         api_key=api_key,
         system_prompt="你是一个会先认真思考再给出结论的助手。",
     )
 
     print("\n=== Async Non-Streaming Reasoning ===")
+    print(f"Model: {model_uri}")
     print("Question: 请分析 1 到 10 的整数中有多少个质数。\n")
     
     response = await conv.asend(
         "请分析 1 到 10 的整数中有多少个质数。",
-        reasoning=chak.Reasoning(effort="medium"),
+        reasoning=chak.Reasoning(effort="high", summary="auto"),
         timeout=120
     )
 
@@ -115,26 +122,24 @@ async def example_async_nonstream():
     print(f"[Final Answer]\n{response.content}\n")
 
 
-async def example_async_stream():
+async def example_async_stream(model_uri: str):
     """Async streaming reasoning example."""
-    api_key = os.getenv("BAILIAN_API_KEY", "")
-    if not api_key:
-        print("❌ Error: Please set BAILIAN_API_KEY environment variable")
-        return
+    api_key = get_api_key(model_uri)
 
     conv = chak.Conversation(
-        "bailian/qwen-plus",
+        model_uri,
         api_key=api_key,
         system_prompt="你是一个会先认真思考再给出结论的助手。",
     )
 
     print("\n=== Async Streaming Reasoning ===")
+    print(f"Model: {model_uri}")
     print("Question: 请分析 1 到 10 的整数中有多少个质数。\n")
     
     print("[Streaming Output]\n")
     async for chunk in await conv.asend(
         "请分析 1 到 10 的整数中有多少个质数。",
-        reasoning=chak.Reasoning(effort="medium"),
+        reasoning=chak.Reasoning(effort="high", summary="auto"),
         stream=True,
         timeout=120
     ):
@@ -146,23 +151,32 @@ async def example_async_stream():
     print("\n")
 
 
-async def main_async():
+async def main_async(model_uri: str):
     """Run async examples."""
-    await example_async_nonstream()
-    await example_async_stream()
+    await example_async_nonstream(model_uri)
+    await example_async_stream(model_uri)
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Reasoning chat example")
+    parser.add_argument(
+        "model_uri",
+        nargs="?",
+        default="openai/gpt-5",
+        help="Model URI (e.g., bailian/qwen-plus, openai/gpt-5)",
+    )
+    args = parser.parse_args()
+    
     print("\n" + "="*60)
-    print("Reasoning Chat Examples - Bailian (QwQ)")
+    print(f"Reasoning Chat Example - {args.model_uri}")
     print("="*60)
     
     # Sync examples
-    example_sync_nonstream()
-    example_sync_stream()
+    example_sync_nonstream(args.model_uri)
+    example_sync_stream(args.model_uri)
     
     # Async examples
-    asyncio.run(main_async())
+    asyncio.run(main_async(args.model_uri))
     
     print("="*60)
     print("✓ All examples completed")

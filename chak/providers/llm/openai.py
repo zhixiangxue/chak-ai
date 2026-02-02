@@ -21,10 +21,8 @@ from openai.types.responses import (
 )
 
 from .base import BaseProviderConfig, OpenAICompatibleMessageConverter, OpenAICompatibleProvider
-from ...message import AIMessage, MessageChunk, ReasoningChunk
-
-# Get all Responses API event types from the Union
-_RESPONSE_EVENT_TYPES = get_args(ResponseStreamEvent)
+from ...message import AIMessage, MessageChunk, ReasoningChunk, UnifiedStreamChunk
+from ...schemas import Reasoning
 
 
 class OpenAIConfig(BaseProviderConfig):
@@ -55,21 +53,23 @@ class OpenAIMessageConverter(OpenAICompatibleMessageConverter):
             metadata=metadata,
         )
     
-    def from_provider_chunk(self, chunk: Any) -> Union[MessageChunk, ReasoningChunk]:
-        """Convert OpenAI streaming chunk to MessageChunk or ReasoningChunk.
+    def from_provider_chunk(self, chunk: Any) -> UnifiedStreamChunk:
+        """Convert OpenAI streaming chunk to UnifiedStreamChunk.
         
         Handles both:
-        - Chat Completions API chunks (delta-based)
-        - Responses API streaming events (event-based)
+        - Chat Completions API chunks (delta-based, has 'choices' attribute)
+        - Responses API streaming events (event-based, no 'choices' attribute)
         """
-        # Check if this is a Responses API event
-        if isinstance(chunk, _RESPONSE_EVENT_TYPES):
+        # Distinguish by checking for 'choices' attribute
+        # Chat Completions chunks have 'choices', Responses API events don't
+        if hasattr(chunk, 'choices'):
+            # Chat Completions chunk handling
+            return super().from_provider_chunk(chunk)
+        else:
+            # Responses API event handling
             return self._from_responses_event(chunk)
-        
-        # Fall back to Chat Completions chunk handling
-        return super().from_provider_chunk(chunk)
     
-    def _from_responses_event(self, event: Any) -> Union[MessageChunk, ReasoningChunk]:
+    def _from_responses_event(self, event: Any) -> UnifiedStreamChunk:
         """Handle OpenAI Responses API streaming events.
         
         Event types and flow:
@@ -94,15 +94,17 @@ class OpenAIMessageConverter(OpenAICompatibleMessageConverter):
         """
         # Handle reasoning summary text delta events (REASONING CONTENT)
         if isinstance(event, ResponseReasoningSummaryTextDeltaEvent):
-            return ReasoningChunk(
-                content=event.delta,
+            return UnifiedStreamChunk(
+                content="",
+                reasoning_content=event.delta,
                 is_final=False,
             )
         
         # Handle answer text delta events (ANSWER CONTENT)
         if isinstance(event, ResponseTextDeltaEvent):
-            return MessageChunk(
+            return UnifiedStreamChunk(
                 content=event.delta,
+                reasoning_content=None,
                 is_final=False,
             )
         
@@ -112,19 +114,25 @@ class OpenAIMessageConverter(OpenAICompatibleMessageConverter):
             
             # Reasoning item added - reasoning started
             if item_type == 'reasoning':
-                return ReasoningChunk(content="", is_final=False)
+                return UnifiedStreamChunk(content="", reasoning_content="", is_final=False)
             
             # Message item added - answer message started
             if item_type == 'message':
-                return MessageChunk(content="", is_final=False)
+                return UnifiedStreamChunk(content="", reasoning_content=None, is_final=False)
         
         # Handle completion events
         if isinstance(event, ResponseCompletedEvent):
             metadata = self._build_metadata(event.response, choice=None)
-            return MessageChunk(content="", is_final=True, metadata=metadata)
+            return UnifiedStreamChunk(
+                content="",
+                reasoning_content=None,
+                is_final=True,
+                finish_reason=getattr(event.response, 'status', None),
+                metadata=metadata.model_dump() if metadata else None,
+            )
         
-        # For other events (created, in_progress, done, etc.), return empty MessageChunk
-        return MessageChunk(content="", is_final=False)
+        # For other events (created, in_progress, done, etc.), return empty chunk
+        return UnifiedStreamChunk(content="", reasoning_content=None, is_final=False)
 
     def _from_responses_response(self, response: Any):
         """Handle OpenAI Responses API response.
@@ -195,48 +203,153 @@ class OpenAIMessageConverter(OpenAICompatibleMessageConverter):
 class OpenAIProvider(OpenAICompatibleProvider):
     """OpenAI provider implementation."""
     
+    def _apply_reasoning_params(self, kwargs: dict) -> None:
+        """Apply reasoning parameters for OpenAI.
+        
+        OpenAI Responses API natively supports 'reasoning' parameter with format:
+            reasoning = {"effort": "low|medium|high", "summary": "auto|detailed|concise"}
+        
+        This method transforms chak's Reasoning object to OpenAI's format.
+        For Chat Completions API fallback, the parameter will be removed in exception handlers.
+        """
+        reasoning = kwargs.get('reasoning')
+        if not reasoning:
+            return
+        
+        # Convert Reasoning object to dict if needed
+        if isinstance(reasoning, Reasoning):
+            reasoning_dict = reasoning.model_dump(exclude_none=True)
+        elif isinstance(reasoning, dict):
+            reasoning_dict = reasoning
+        else:
+            # Unknown type, remove it
+            kwargs.pop('reasoning', None)
+            return
+        
+        # Build OpenAI reasoning parameter
+        openai_reasoning = {}
+        
+        # Map effort (direct mapping)
+        if 'effort' in reasoning_dict:
+            openai_reasoning['effort'] = reasoning_dict['effort']
+        
+        # Map summary (chak uses "auto"/"enabled"/"disabled", OpenAI uses "auto"/"detailed"/"concise")
+        if 'summary' in reasoning_dict:
+            summary_value = reasoning_dict['summary']
+            if summary_value == 'enabled':
+                openai_reasoning['summary'] = 'auto'  # Use auto to get best available
+            elif summary_value == 'auto':
+                openai_reasoning['summary'] = 'auto'
+            # 'disabled' means don't include summary parameter at all
+        
+        # Replace with OpenAI format
+        if openai_reasoning:
+            kwargs['reasoning'] = openai_reasoning
+        else:
+            # No valid reasoning config, remove it
+            kwargs.pop('reasoning', None)
+    
     def _send_complete(self, messages, **kwargs):
         """Send non-streaming request for OpenAI.
 
-        OpenAI recommends the Responses API for reasoning models. Here we
-        optimistically use `client.responses.create` first; if that fails
-        (e.g. model not supported by Responses), we fall back to the chat
-        completions implementation in the base class.
+        OpenAI has two APIs:
+        1. Responses API: Supports reasoning, but NOT function calling
+        2. Chat Completions API: Supports function calling, but NOT reasoning
+        
+        Strategy:
+        - If reasoning is requested → Use Responses API
+        - Otherwise → Use Chat Completions API (default, supports function calling)
+        
+        Returns:
+            Raw SDK response object (will be parsed by converter later)
         """
         model = self.config.model
-
-        # Prefer Responses API when available
-        try:
-            response = self._client.responses.create(
-                model=model,
-                input=messages,
-                **kwargs,
-            )
-
-            return response
-        except Exception:
-            # Fallback to chat.completions path from base class
-            response = super()._send_complete(messages, **kwargs)
-
-            return response
+        has_reasoning = 'reasoning' in kwargs
+        
+        # Route 1: Responses API (for reasoning)
+        if has_reasoning:
+            try:
+                response = self._client.responses.create(
+                    model=model,
+                    input=messages,
+                    **kwargs,
+                )
+                # Return raw Responses API response
+                return response
+            except Exception as e:
+                # Friendly error for unsupported models
+                error_msg = str(e).lower()
+                if 'unsupported parameter' in error_msg or 'reasoning' in error_msg:
+                    raise ValueError(
+                        f"Model '{model}' does not support reasoning parameter. "
+                        f"Reasoning is only supported by specific models like gpt-5, gpt-5-mini, etc. "
+                        f"Please use a reasoning-capable model or remove the reasoning parameter."
+                    ) from e
+                # Other errors: fallback to Chat Completions without reasoning
+                kwargs.pop('reasoning', None)
+        
+        # Route 2: Chat Completions API (default, supports function calling)
+        # Apply provider-specific reasoning parameter transformations
+        self._apply_reasoning_params(kwargs)
+        
+        # Call Chat Completions API
+        raw_response = self._client.chat.completions.create(
+            model=model,
+            messages=messages,
+            **kwargs
+        )
+        
+        # Return raw Chat Completions response
+        return raw_response
     
     def _send_stream(self, messages, **kwargs):
         """Send streaming request for OpenAI.
 
-        OpenAI's Responses API supports streaming with reasoning. Here we
-        optimistically use `client.responses.create` with `stream=True` first;
-        if that fails, we fall back to chat completions streaming.
+        OpenAI has two APIs:
+        1. Responses API: Supports reasoning, but NOT function calling
+        2. Chat Completions API: Supports function calling, but NOT reasoning
+        
+        Strategy:
+        - If reasoning is requested → Use Responses API streaming
+        - Otherwise → Use Chat Completions API streaming (default, supports function calling)
         """
         model = self.config.model
+        has_reasoning = 'reasoning' in kwargs
 
-        # Prefer Responses API streaming when available
-        try:
-            return self._client.responses.create(
-                model=model,
-                input=messages,
-                stream=True,
-                **kwargs,
-            )
-        except Exception:
-            # Fallback to chat.completions streaming from base class
-            return super()._send_stream(messages, **kwargs)
+        # Route 1: Responses API streaming (for reasoning)
+        if has_reasoning:
+            try:
+                return self._client.responses.create(
+                    model=model,
+                    input=messages,
+                    stream=True,
+                    **kwargs,
+                )
+            except Exception as e:
+                # Friendly error for unsupported models
+                error_msg = str(e).lower()
+                if 'unsupported parameter' in error_msg or 'reasoning' in error_msg:
+                    raise ValueError(
+                        f"Model '{model}' does not support reasoning parameter. "
+                        f"Reasoning is only supported by specific models like gpt-5, gpt-5-mini, etc. "
+                        f"Please use a reasoning-capable model or remove the reasoning parameter."
+                    ) from e
+                # Other errors: fallback to Chat Completions without reasoning
+                kwargs.pop('reasoning', None)
+        
+        # Route 2: Chat Completions API streaming (default, supports function calling)
+        # Apply provider-specific reasoning parameter transformations
+        self._apply_reasoning_params(kwargs)
+        
+        # Add stream_options to include usage in streaming mode (if not already set)
+        if 'stream_options' not in kwargs:
+            kwargs['stream_options'] = {"include_usage": True}
+        
+        stream = self._client.chat.completions.create(
+            model=model,
+            messages=messages,
+            stream=True,
+            **kwargs
+        )
+        
+        return stream

@@ -27,7 +27,7 @@ chak is not another liteLLM, one-api, or OpenRouter, but a client library that a
 - **2026-02-02 | v0.3.0** - Major update:
   - **Skill-based progressive disclosure** for tool calling - prevent overwhelming LLMs with too many tools. See [Skill-based Tools](#skill-based-tools-new-in-0-3-0).
   - **Turn ID tracking & message filtering** - fine-grained conversation history management. See examples [examples/turn_id_tracking.py](examples/turn_id_tracking.py) and [examples/message_filtering_demo.py](examples/message_filtering_demo.py).
-  - **Reasoning support** - compatible with OpenAI gpt-5/o1/o3 and Bailian QwQ models. See examples [examples/reasoning_chat.py](examples/reasoning_chat.py) and [examples/chat_reasoning.py](examples/chat_reasoning.py).
+  - **Reasoning support** - compatible with OpenAI gpt-5/o1/o3 and Bailian QwQ models. See examples [examples/chat_reasoning.py](examples/chat_reasoning.py).
   - **Context handler refactoring** - replaced strategies with handlers for better clarity (⚠️ Breaking change). See [Pluggable Context Management](#context-handler).
 - **2026-01-29 | v0.2.7** - Added human-in-the-loop tool approval via `tool_approval_handler`, with CLI and browser/WebSocket support. See [Human-in-the-loop Approval](#tool-calling-human-approval) in [Tool Calling](#tool-calling).
 - **2026-01-12 | v0.2.6** - Added event stream support for real-time tool call observability. Use `event=True` to observe tool execution in your UI. See [Tool Call Observability](#tool-call-observability)
