@@ -794,13 +794,20 @@ class Conversation:
                 final_message=final_message
             )
         elif complete_content:
-            # Provider sent final chunk, just save the message
+            # Provider sent final chunk, save the message AND send final MessageChunk
             final_message = AIMessage(
                 content=complete_content,
                 reasoning_content=complete_reasoning_content if complete_reasoning_content else None,
                 metadata=last_chunk_metadata
             )
             self.messages.append(final_message)
+            
+            # Send final MessageChunk with final_message so callers can capture it
+            yield MessageChunk(
+                content="",
+                is_final=True,
+                final_message=final_message
+            )
     
     async def _asend_stream_with_tools(self, messages: List[Message], **kwargs) -> AsyncIterator[Union[MessageChunk, ReasoningChunk]]:
         """Handle async streaming response with MCP tools, supporting both answer and reasoning chunks."""
@@ -1204,13 +1211,20 @@ class Conversation:
                 final_message=final_message
             )
         elif complete_content:
-            # Provider sent final chunk, just save the message
+            # Provider sent final chunk, save the message AND send final MessageChunk
             final_message = AIMessage(
                 content=complete_content,
                 reasoning_content=complete_reasoning_content if complete_reasoning_content else None,
                 metadata=last_chunk_metadata
             )
             self.messages.append(final_message)
+            
+            # Send final MessageChunk with final_message so callers can capture it
+            yield MessageChunk(
+                content="",
+                is_final=True,
+                final_message=final_message
+            )
 
     def _apply_context_handler(self) -> List[Message]:
         """
