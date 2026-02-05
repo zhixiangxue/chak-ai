@@ -98,18 +98,25 @@ def set_log_level(level: str):
     Set log level at runtime.
     
     Args:
-        level: Log level string (DEBUG/INFO/WARNING/ERROR/CRITICAL)
+        level: Log level string (DEBUG/INFO/WARNING/ERROR/CRITICAL/DISABLE)
     
     Example:
         >>> import chak
-        >>> chak.set_log_level("ERROR")  # Only show ERROR and above
-        >>> chak.set_log_level("DEBUG")  # Show all logs
+        >>> chak.set_log_level("ERROR")   # Only show ERROR and above
+        >>> chak.set_log_level("DEBUG")   # Show all logs
+        >>> chak.set_log_level("DISABLE") # Disable all logs
     """
     level = level.upper()
+    
+    # Special case: disable all logging
+    if level == "DISABLE":
+        _logger.remove()
+        return
+    
     valid_levels = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
     
     if level not in valid_levels:
-        raise ValueError(f"Invalid log level: {level}. Must be one of {valid_levels}")
+        raise ValueError(f"Invalid log level: {level}. Must be one of {valid_levels + ['DISABLE']}")
     
     # Remove all existing handlers
     _logger.remove()

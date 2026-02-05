@@ -1174,7 +1174,8 @@ Control log output at runtime:
 ```python
 import chak
 
-chak.set_log_level("ERROR")   # Only errors (production)
+chak.set_log_level("DISABLE") # Disable all logs (production)
+chak.set_log_level("ERROR")   # Only errors
 chak.set_log_level("WARNING") # Warnings + errors
 chak.set_log_level("INFO")    # Default, shows tool execution
 chak.set_log_level("DEBUG")   # Detailed logs with file:line
