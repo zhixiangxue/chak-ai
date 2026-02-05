@@ -553,12 +553,12 @@ class ToolManager:
             model_uri: Model URI
         
         Yields:
-            StreamEvent: MessageChunk, ToolCallStartEvent, ToolCallSuccessEvent, or ToolCallErrorEvent
+            StreamEvent: MessageChunk, ToolCallStartEvent, ToolCallSuccessEvent, ToolCallErrorEvent, or ConversationCompleteEvent
         
         Raises:
             Exception: Max iteration reached or other errors
         """
-        from ..message import AIMessage, ToolMessage, MessageChunk, ReasoningChunk, ToolCallStartEvent, ToolCallSuccessEvent, ToolCallErrorEvent, ChatCompletionMessageToolCall, Function
+        from ..message import AIMessage, ToolMessage, MessageChunk, ReasoningChunk, ToolCallStartEvent, ToolCallSuccessEvent, ToolCallErrorEvent, ConversationCompleteEvent, ChatCompletionMessageToolCall, Function
         import json
         
         # Reset active skill and selected methods at the start of each conversation turn
@@ -566,6 +566,7 @@ class ToolManager:
         self._selected_methods = []
         
         current_messages = messages.copy()
+        new_messages = []  # Track all messages created during this turn
         
         # Convert tools to OpenAI format (same as execute_loop)
         openai_tools = self._get_openai_tools()
@@ -725,17 +726,21 @@ class ToolManager:
                         )
                 
                 # Add assistant message (with tool_calls)
-                current_messages.append(AIMessage(
+                assistant_msg = AIMessage(
                     content=accumulated_content,
                     tool_calls=tool_calls_objects
-                ))
+                )
+                current_messages.append(assistant_msg)
+                new_messages.append(assistant_msg)
                 
                 # Add tool results
                 for result in tool_results:
-                    current_messages.append(ToolMessage(
+                    tool_msg = ToolMessage(
                         content=result.content,
                         tool_call_id=result.call_id
-                    ))
+                    )
+                    current_messages.append(tool_msg)
+                    new_messages.append(tool_msg)
                 
                 # Update tool list for next iteration if skill was activated
                 if self._active_skill:
@@ -748,7 +753,14 @@ class ToolManager:
                 # No tool calls or finish_reason != 'tool_calls' -> done
                 logger.info(f"ℹ️ [Tool] No tool calls in this iteration, LLM returned final answer")
                 logger.debug(f"✅ [Tool Loop] No tool calls, finishing...")
+                
+                # Add final AIMessage to new_messages
+                if accumulated_content:
+                    final_msg = AIMessage(content=accumulated_content)
+                    new_messages.append(final_msg)
+                
                 yield MessageChunk(content="", is_final=True)
+                yield ConversationCompleteEvent(messages=new_messages)
                 return
         
         # Max iteration reached

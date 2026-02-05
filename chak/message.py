@@ -219,3 +219,16 @@ class ToolCallErrorEvent(StreamEvent):
     tool_name: str = ""
     call_id: str = ""
     error: str = ""
+
+
+class ConversationCompleteEvent(StreamEvent):
+    """Conversation turn complete event (internal use only)
+    
+    Marks the end of a conversation turn and carries all messages created during this turn.
+    This event is consumed internally by conversation.py and NOT exposed to external users.
+    
+    Attributes:
+        messages: List of all messages (AIMessage, ToolMessage) created during this turn
+        timestamp: Event timestamp
+    """
+    messages: List['Message'] = Field(default_factory=list)

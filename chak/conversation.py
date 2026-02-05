@@ -617,6 +617,29 @@ class Conversation:
         turn_id = str(uuid.uuid4())
         token = _current_turn_id.set(turn_id)
         
+        # Check if event stream mode is requested FIRST (before try block)
+        # This must be handled separately because it returns an async generator
+        if event:
+            # Event stream mode: returns MessageChunk + ToolCall events
+            # This overrides stream parameter and provides full observability
+            # NOTE: Cannot use try-finally here for ContextVar management because
+            # we're returning a generator. The generator execution happens AFTER
+            # this function returns, so finally would reset ContextVar too early.
+            # Solution: consume the generator within the try block using yield from
+            async def _event_stream_wrapper():
+                try:
+                    async for evt in self._asend_with_events_impl(
+                        message=message,
+                        attachments=attachments,
+                        tool_executor=tool_executor,
+                        **kwargs
+                    ):
+                        yield evt
+                finally:
+                    _current_turn_id.reset(token)
+            
+            return _event_stream_wrapper()
+        
         try:
             # Merge timeout into kwargs if specified
             if timeout is not None:
@@ -691,12 +714,6 @@ class Conversation:
 
             # Apply context handler
             messages_to_send = self._apply_context_handler()
-
-            # Check if event stream mode is requested
-            if event:
-                # Event stream mode: returns MessageChunk + ToolCall events
-                # This overrides stream parameter and provides full observability
-                return self._asend_with_events(messages_to_send, tool_executor, **kwargs)
 
             # Check if tools are configured
             if self._tool_manager:
@@ -1088,23 +1105,61 @@ class Conversation:
         self.messages.append(ai_response)
         return ai_response
     
-    async def _asend_with_events(
+    async def _asend_with_events_impl(
         self,
-        messages: List[Message],
+        message: Union[str, Message],
+        attachments: Optional[List[Attachment]],
         tool_executor: Optional[ToolExecutor],
         **kwargs
     ) -> AsyncIterator['StreamEvent']:
         """
-        Return unified event stream (content + tool calls).
+        Internal implementation of event stream mode.
         
-        This method provides complete observability of the conversation flow,
-        including LLM content generation and tool execution details.
+        This method handles the full workflow: convert message, apply context handler,
+        then delegate to tool manager's event stream.
         
         Yields:
             StreamEvent: MessageChunk, ReasoningChunk, ToolCallStartEvent, ToolCallSuccessEvent, or ToolCallErrorEvent
         """
-        from .message import MessageChunk, ReasoningChunk
+        from .message import MessageChunk, ReasoningChunk, ConversationCompleteEvent, _current_turn_id
         
+        # Convert str to HumanMessage and merge attachments if present
+        if isinstance(message, str):
+            if attachments:
+                # Create multimodal message
+                content_parts = [{"type": "text", "text": message}]
+                for att in attachments:
+                    if att.mime_type.is_image():
+                        content_parts.append({
+                            "type": "image_url",
+                            "image_url": {"url": att.source}
+                        })
+                    elif att.mime_type.is_audio():
+                        content_parts.append({
+                            "type": "input_audio",
+                            "input_audio": {
+                                "data": att.source,
+                                "format": att.mime_type.subtype
+                            }
+                        })
+                user_message = HumanMessage(content=content_parts)
+            else:
+                # Simple text message
+                user_message = HumanMessage(content=message)
+        else:
+            # User provided a Message object directly
+            user_message = message
+        
+        self.messages.append(user_message)
+        
+        # Track attachments at conversation level
+        if attachments:
+            self.attachments.extend(attachments)
+
+        # Apply context handler
+        messages_to_send = self._apply_context_handler()
+        
+        # Delegate to tool manager's event stream
         if self._tool_manager:
             # Temporarily override executor if specified
             original_executor = None
@@ -1114,19 +1169,28 @@ class Conversation:
             
             try:
                 # Has tools: return full event stream from tool manager
+                all_new_messages = []
                 async for event in self._tool_manager.execute_loop_with_events(
                     provider=self.provider,
-                    messages=messages,
+                    messages=messages_to_send,
                     model_uri=self.model_uri
                 ):
-                    yield event
+                    # Intercept ConversationCompleteEvent (internal use only)
+                    if isinstance(event, ConversationCompleteEvent):
+                        all_new_messages = event.messages
+                        # Do NOT yield this event to external users
+                    else:
+                        yield event
+                
+                # Save all messages to conversation history
+                self.messages.extend(all_new_messages)
             finally:
                 # Restore original executor
                 if original_executor is not None:
                     self._tool_manager.executor = original_executor
         else:
             # No tools: only return content events (both MessageChunk and ReasoningChunk)
-            async for chunk in self._asend_stream(messages, **kwargs):
+            async for chunk in self._asend_stream(messages_to_send, **kwargs):
                 # Directly yield the chunk (whether MessageChunk or ReasoningChunk)
                 yield chunk
 
