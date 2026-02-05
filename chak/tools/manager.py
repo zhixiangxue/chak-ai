@@ -81,11 +81,11 @@ class ToolManager:
         )
     """
     
-    def __init__(self, tools: List[Union[MCPTool, NativeFunctionTool, NativeObjectTool, SkillObjectTool]], max_iterations: int = 10, executor=None, approval_handler: Optional[ToolApprovalHandler] = None):
+    def __init__(self, tools: List[Union[MCPTool, NativeFunctionTool, NativeObjectTool, SkillObjectTool]], max_iterations: int = 50, executor=None, approval_handler: Optional[ToolApprovalHandler] = None):
         """
         Args:
             tools: 工具列表（MCPTool、NativeFunctionTool、NativeObjectTool 或 SkillObjectTool）
-            max_iterations: 最大迭代次数（防止无限循环）
+            max_iterations: 最大迭代次数（防止无限循环），默认 50（每个 skill 调用消耗 2-3 轮）
             executor: 执行器实例（ThreadPoolExecutor/ProcessPoolExecutor）或 None（使用 asyncio）
             approval_handler: Optional approval handler for human-in-the-loop tool calls
         """
@@ -93,7 +93,7 @@ class ToolManager:
         self._tool_map = self._build_tool_map()
         self._skill_map = self._build_skill_map()
         self._active_skill: Optional[SkillObjectTool] = None  # Track currently active skill instance
-        self.max_iterations = max_iterations if max_iterations is not None else 10
+        self.max_iterations = max_iterations if max_iterations is not None else 50
         self.executor = executor
         self.approval_handler = approval_handler
     
@@ -854,17 +854,16 @@ class ToolManager:
                         is_error=True
                     )
                 except Exception as e:
-                    # Method execution failed - could be LLM learning process (missing args) or real error
-                    # Don't alarm developers - this is expected in progressive skill disclosure
-                    logger.warning(
-                        f"🔄 [Skill] LLM attempting method call (progressive learning): "
-                        f"'{method_name}' - {str(e)}. "
-                        f"This is normal - LLM will self-correct in next iteration."
+                    # Method execution failed - LLM learning process (missing/wrong args)
+                    # Return as normal result (not error) to let LLM self-correct
+                    logger.info(
+                        f"🔄 [Skill] LLM learning - method '{method_name}' call incomplete: {str(e)}. "
+                        f"Returning as normal result for LLM to refine."
                     )
                     return ToolCallResult(
                         call_id=call_id,
-                        content=f"Error: {str(e)}",
-                        is_error=True
+                        content=f"Method call incomplete: {str(e)}. Please provide all required parameters.",
+                        is_error=False
                     )
             else:
                 # Stage 2: No method specified, activate skill and return method summary

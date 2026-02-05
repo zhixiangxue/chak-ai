@@ -85,13 +85,13 @@ class SkillObjectTool:
             "type": "function",
             "function": {
                 "name": self.name,
-                "description": f"{self.description}\n\nCall this skill to see available methods, or specify a method to use directly.",
+                "description": f"{self.description}\n\nCall this skill first to see available methods and their parameters, then call again with specific method.",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "method": {
                             "type": "string",
-                            "description": f"(Optional) Specific method to call. Available: {', '.join(self.method_names)}"
+                            "description": "Specific method to call. Leave empty to see available methods first."
                         },
                         "instruction": {
                             "type": "string",
