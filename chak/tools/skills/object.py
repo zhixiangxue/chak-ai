@@ -71,33 +71,42 @@ class SkillObjectTool:
         """Get list of available method names"""
         return list(self._method_tools.keys())
     
-    def to_skill_entry_tool(self) -> Dict[str, Any]:
+    def to_skill_entry_tool(self, include_method_param: bool = False) -> Dict[str, Any]:
         """
-        Convert to skill entry tool (Stage 1)
+        Convert to skill entry tool (Stage 1 or Stage 2)
         
-        Returns a single tool definition representing the skill itself.
-        When LLM calls this, it signals intent to use the skill.
+        Stage 1 (include_method_param=False): Activation mode, returns method summary
+        Stage 2 (include_method_param=True): Selection mode, allows method selection with enum constraint
+        
+        Args:
+            include_method_param: If True, include method parameter with enum constraint
         
         Returns:
             OpenAI tool definition for skill entry
         """
+        properties = {
+            "instruction": {
+                "type": "string",
+                "description": "Your goal or the user's question"
+            }
+        }
+        
+        if include_method_param:
+            # Stage 2: Add method parameter with enum constraint
+            properties["method"] = {
+                "type": "string",
+                "enum": list(self.method_names),
+                "description": "Select method(s) from available methods based on your analysis of the task requirements"
+            }
+        
         return {
             "type": "function",
             "function": {
                 "name": self.name,
-                "description": f"{self.description}\n\nCall this skill first to see available methods and their parameters, then call again with specific method.",
+                "description": f"{self.description}\n\n{'Select specific method(s) to use.' if include_method_param else 'Call this skill to see available methods and their parameters.'}",
                 "parameters": {
                     "type": "object",
-                    "properties": {
-                        "method": {
-                            "type": "string",
-                            "description": "Specific method to call. Leave empty to see available methods first."
-                        },
-                        "instruction": {
-                            "type": "string",
-                            "description": "What you want to do with this skill"
-                        }
-                    },
+                    "properties": properties,
                     "required": []
                 }
             }
@@ -148,9 +157,8 @@ class SkillObjectTool:
         summary = f"Skill '{self.name}' activated.\n\n"
         summary += f"Available methods ({len(self._method_tools)}):\n"
         summary += "\n".join(method_summaries)
-        summary += f"\n\nTo use a method, call '{self.name}' with the method parameter:\n"
-        summary += f"Example: {self.name}(method='method_name', ...method_args)\n"
-        summary += f"Note: You can call multiple methods in parallel by making multiple tool calls."
+        summary += f"\n\nNext step: Call '{self.name}' again with the 'method' parameter to select which method(s) you need.\n"
+        summary += f"You can select multiple methods by making multiple tool calls if needed for comparison or comprehensive analysis."
         
         return summary
     
