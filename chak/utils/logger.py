@@ -56,6 +56,10 @@ LOG_FORMAT = DETAILED_FORMAT if LOG_LEVEL == "DEBUG" else SIMPLE_FORMAT
 def _setup_logger():
     """配置 logger（模块导入时自动执行）"""
     
+    # Special case: if LOG_LEVEL is DISABLE, don't add any handlers
+    if LOG_LEVEL == "DISABLE":
+        return
+    
     # 1. 控制台输出（始终开启）
     _logger.add(
         sys.stdout,
@@ -83,7 +87,6 @@ def _setup_logger():
             diagnose=True,
             encoding="utf-8"
         )
-        _logger.info(f"日志文件输出已启用: {LOG_FILE}")
 
 
 # 初始化 logger
@@ -148,8 +151,6 @@ def set_log_level(level: str):
             diagnose=True,
             encoding="utf-8"
         )
-    
-    _logger.info(f"Log level changed to {level}")
 
 
 __all__ = ["logger", "set_log_level"]
