@@ -1167,16 +1167,36 @@ print(stats)
 # }
 ```
 
-### Debug Mode
+### Logging Configuration
 
-Set environment variables to see internal execution details:
+Control log output at runtime:
 
-```bash
-export CHAK_LOG_LEVEL=DEBUG
-python your_script.py
+```python
+import chak
+
+chak.set_log_level("ERROR")   # Only errors (production)
+chak.set_log_level("WARNING") # Warnings + errors
+chak.set_log_level("INFO")    # Default, shows tool execution
+chak.set_log_level("DEBUG")   # Detailed logs with file:line
 ```
 
-chak will output detailed logs for:
+Or use environment variables (set before importing):
+
+```bash
+export CHAK_LOG_LEVEL=ERROR
+export CHAK_LOG_TO_FILE=true      # Optional: enable file logging
+export CHAK_LOG_FILE=logs/chak.log
+```
+
+### Debug Mode
+
+Use DEBUG level for detailed logs:
+
+```python
+chak.set_log_level("DEBUG")
+```
+
+Shows:
 - **Context strategies**: trigger points, retention intervals, summary previews, token counts
 - **Tool calls**: tool invocation, request/response details, execution results
 

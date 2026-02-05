@@ -43,6 +43,7 @@ from .attachment import Image, Audio, Video, MimeType, PDF, DOC, Excel, TXT, Lin
 from .schemas import Reasoning
 # Utility functions
 from .utils.uri import build, build_simple, parse
+from .utils.logger import set_log_level
 
 # MCP integration (optional)
 try:
@@ -127,6 +128,7 @@ __all__ = [
     'build',
     'build_simple',
     'parse',
+    'set_log_level',
     
     # Server
     'serve',

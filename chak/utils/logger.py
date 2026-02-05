@@ -92,4 +92,57 @@ _setup_logger()
 # 导出 logger（用户直接使用这个）
 logger = _logger
 
-__all__ = ["logger"]
+
+def set_log_level(level: str):
+    """
+    Set log level at runtime.
+    
+    Args:
+        level: Log level string (DEBUG/INFO/WARNING/ERROR/CRITICAL)
+    
+    Example:
+        >>> import chak
+        >>> chak.set_log_level("ERROR")  # Only show ERROR and above
+        >>> chak.set_log_level("DEBUG")  # Show all logs
+    """
+    level = level.upper()
+    valid_levels = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
+    
+    if level not in valid_levels:
+        raise ValueError(f"Invalid log level: {level}. Must be one of {valid_levels}")
+    
+    # Remove all existing handlers
+    _logger.remove()
+    
+    # Re-add console handler with new level
+    log_format = DETAILED_FORMAT if level == "DEBUG" else SIMPLE_FORMAT
+    _logger.add(
+        sys.stdout,
+        format=log_format,
+        level=level,
+        colorize=True,
+        backtrace=True,
+        diagnose=True
+    )
+    
+    # Re-add file handler if enabled
+    if LOG_TO_FILE:
+        log_file_path = Path(LOG_FILE)
+        log_file_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        _logger.add(
+            LOG_FILE,
+            format=DETAILED_FORMAT,
+            level=level,
+            rotation="10 MB",
+            retention="30 days",
+            compression="zip",
+            backtrace=True,
+            diagnose=True,
+            encoding="utf-8"
+        )
+    
+    _logger.info(f"Log level changed to {level}")
+
+
+__all__ = ["logger", "set_log_level"]

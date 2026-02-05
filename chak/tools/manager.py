@@ -13,7 +13,7 @@ import asyncio
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional, Union
 
-from loguru import logger
+from ..utils.logger import logger
 
 if TYPE_CHECKING:
     from ..message import Message
