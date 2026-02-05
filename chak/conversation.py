@@ -640,6 +640,22 @@ class Conversation:
             
             return _event_stream_wrapper()
         
+        # Check if stream mode is requested (also returns async generator)
+        if stream:
+            async def _stream_wrapper():
+                try:
+                    async for chunk in self._asend_stream_impl(
+                        message=message,
+                        attachments=attachments,
+                        tool_executor=tool_executor,
+                        **kwargs
+                    ):
+                        yield chunk
+                finally:
+                    _current_turn_id.reset(token)
+            
+            return _stream_wrapper()
+        
         try:
             # Merge timeout into kwargs if specified
             if timeout is not None:
@@ -724,11 +740,8 @@ class Conversation:
                     self._tool_manager.executor = self._get_executor(tool_executor)
                 
                 try:
-                    # MCP tools mode
-                    if stream:
-                        return self._asend_stream_with_tools(messages_to_send, **kwargs)
-                    else:
-                        return await self._asend_nonstream_with_tools(messages_to_send, **kwargs)
+                    # MCP tools mode (non-stream only, stream handled by wrapper above)
+                    return await self._asend_nonstream_with_tools(messages_to_send, **kwargs)
                 finally:
                     # Restore original executor
                     if original_executor is not None:
@@ -738,11 +751,8 @@ class Conversation:
                 if reasoning is not None:
                     kwargs['reasoning'] = reasoning
                 
-                # Normal LLM mode
-                if stream:
-                    return self._asend_stream(messages_to_send, **kwargs)
-                else:
-                    return await self._asend_nonstream(messages_to_send, **kwargs)
+                # Normal LLM mode (non-stream only, stream handled by wrapper above)
+                return await self._asend_nonstream(messages_to_send, **kwargs)
         finally:
             # Reset turn ID context
             _current_turn_id.reset(token)
@@ -1104,6 +1114,105 @@ class Conversation:
             ai_response = response  # type: ignore
         self.messages.append(ai_response)
         return ai_response
+    
+    async def _asend_stream_impl(
+        self,
+        message: Union[str, Message],
+        attachments: Optional[List[Attachment]],
+        tool_executor: Optional[ToolExecutor],
+        **kwargs
+    ) -> AsyncIterator[Union[MessageChunk, ReasoningChunk]]:
+        """
+        Internal implementation of stream mode.
+        
+        This method handles the full workflow: convert message, apply context handler,
+        then delegate to tool manager or provider streaming.
+        
+        Yields:
+            Union[MessageChunk, ReasoningChunk]: Streaming chunks
+        """
+        from .message import MessageChunk, ReasoningChunk, AIMessage
+        
+        # Convert str to HumanMessage and merge attachments if present
+        if isinstance(message, str):
+            if attachments:
+                # Create multimodal message
+                content_parts = [{"type": "text", "text": message}]
+                for att in attachments:
+                    if att.mime_type.is_image():
+                        content_parts.append({
+                            "type": "image_url",
+                            "image_url": {"url": att.source}
+                        })
+                    elif att.mime_type.is_audio():
+                        content_parts.append({
+                            "type": "input_audio",
+                            "input_audio": {
+                                "data": att.source,
+                                "format": att.mime_type.subtype
+                            }
+                        })
+                user_message = HumanMessage(content=content_parts)
+            else:
+                # Simple text message
+                user_message = HumanMessage(content=message)
+        else:
+            # User provided a Message object directly
+            user_message = message
+        
+        self.messages.append(user_message)
+        
+        # Track attachments at conversation level
+        if attachments:
+            self.attachments.extend(attachments)
+
+        # Apply context handler
+        messages_to_send = self._apply_context_handler()
+        
+        # Delegate to tool manager or provider streaming
+        if self._tool_manager:
+            # Temporarily override executor if specified
+            original_executor = None
+            if tool_executor is not None:
+                original_executor = self._tool_manager.executor
+                self._tool_manager.executor = self._get_executor(tool_executor)
+            
+            try:
+                # Has tools: use tool manager's streaming loop
+                final_messages = []
+                async for chunk, new_messages in self._tool_manager.execute_loop_stream(
+                    provider=self.provider,
+                    messages=messages_to_send,
+                    model_uri=self.model_uri
+                ):
+                    final_messages = new_messages  # Keep updating with latest
+                    yield chunk
+                
+                # Save all messages after streaming completes
+                self.messages.extend(final_messages)
+            finally:
+                # Restore original executor
+                if original_executor is not None:
+                    self._tool_manager.executor = original_executor
+        else:
+            # No tools: use provider streaming directly
+            accumulated_content = ""
+            accumulated_reasoning = ""
+            
+            async for chunk in self._asend_stream(messages_to_send, **kwargs):
+                if isinstance(chunk, MessageChunk):
+                    accumulated_content += chunk.content or ""
+                elif isinstance(chunk, ReasoningChunk):
+                    accumulated_reasoning += chunk.content or ""
+                yield chunk
+            
+            # Save final message after streaming
+            from .message import AIMessage
+            final_msg = AIMessage(
+                content=accumulated_content,
+                reasoning_content=accumulated_reasoning if accumulated_reasoning else None
+            )
+            self.messages.append(final_msg)
     
     async def _asend_with_events_impl(
         self,

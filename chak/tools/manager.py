@@ -399,15 +399,21 @@ class ToolManager:
                     stream = await asyncio.to_thread(_get_fallback_stream)
                     
                     # Yield all chunks from the fallback stream (using converter)
+                    fallback_content = ""
                     for provider_chunk in stream:
                         unified_chunk = provider.converter.from_provider_chunk(provider_chunk)
                         if unified_chunk.content:
+                            fallback_content += unified_chunk.content
                             yield MessageChunk(
                                 content=unified_chunk.content,
                                 is_final=False
                             ), new_messages
                     
-                    yield MessageChunk(content="", is_final=True), new_messages
+                    # Construct final message with accumulated fallback content
+                    final_msg = AIMessage(content=fallback_content)
+                    new_messages.append(final_msg)
+                    
+                    yield MessageChunk(content="", is_final=True, final_message=final_msg), new_messages
                     return
                 else:
                     logger.error(f"❌ [Tool] LLM call failed: {str(e)}")
@@ -509,11 +515,10 @@ class ToolManager:
                 logger.debug(f"✅ [Tool Loop] No tool calls, finishing...")
                 
                 # Add final AIMessage to new_messages
-                if accumulated_content:
-                    final_msg = AIMessage(content=accumulated_content)
-                    new_messages.append(final_msg)
+                final_msg = AIMessage(content=accumulated_content) if accumulated_content else AIMessage(content="")
+                new_messages.append(final_msg)
                 
-                yield MessageChunk(content="", is_final=True), new_messages
+                yield MessageChunk(content="", is_final=True, final_message=final_msg), new_messages
                 return
         
         # Max iteration reached
@@ -602,13 +607,19 @@ class ToolManager:
                     stream = await asyncio.to_thread(_get_fallback_stream)
                     
                     # Yield all content events from the fallback stream
+                    fallback_content = ""
                     for provider_chunk in stream:
                         # Use converter to handle different provider formats
                         chunk = provider.converter.from_provider_chunk(provider_chunk)
                         if isinstance(chunk, MessageChunk) and chunk.content:
+                            fallback_content += chunk.content
                             yield chunk
                     
-                    yield MessageChunk(content="", is_final=True)
+                    # Construct final message with accumulated content
+                    final_msg = AIMessage(content=fallback_content)
+                    current_messages.append(final_msg)
+                    
+                    yield MessageChunk(content="", is_final=True, final_message=final_msg)
                     return
                 else:
                     logger.error(f"❌ [Tool] LLM call failed: {str(e)}")
@@ -754,12 +765,11 @@ class ToolManager:
                 logger.info(f"ℹ️ [Tool] No tool calls in this iteration, LLM returned final answer")
                 logger.debug(f"✅ [Tool Loop] No tool calls, finishing...")
                 
-                # Add final AIMessage to new_messages
-                if accumulated_content:
-                    final_msg = AIMessage(content=accumulated_content)
-                    new_messages.append(final_msg)
+                # Construct final AIMessage from accumulated content
+                final_message = AIMessage(content=accumulated_content)
+                new_messages.append(final_message)
                 
-                yield MessageChunk(content="", is_final=True)
+                yield MessageChunk(content="", is_final=True, final_message=final_message)
                 yield ConversationCompleteEvent(messages=new_messages)
                 return
         
