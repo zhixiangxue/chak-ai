@@ -670,8 +670,10 @@ class Conversation:
                         returns=returns,
                         **kwargs
                     )
-                except Exception:
-                    # Structured output failed, return None
+                except Exception as e:
+                    # Structured output failed, log and return None
+                    from .utils.logger import logger
+                    logger.warning(f"Structured output failed: {type(e).__name__}: {e}")
                     return None
         
                 # Convert str to HumanMessage and merge attachments if present
@@ -994,12 +996,18 @@ class Conversation:
             "function": {"name": tool_schema["function"]["name"]}
         }
         
-        # Call LLM with forced tool calling
-        response = await asyncio.to_thread(
-            self.provider.send,
-            messages=messages_to_send,
-            **kwargs
-        )
+        # Call LLM with forced tool calling and retry logic
+        from tenacity import retry, stop_after_attempt
+        
+        @retry(stop=stop_after_attempt(3))
+        async def _call_llm():
+            return await asyncio.to_thread(
+                self.provider.send,
+                messages=messages_to_send,
+                **kwargs
+            )
+        
+        response = await _call_llm()
         
         # Extract tool call result
         # Note: provider.send returns AIMessage, not raw ChatCompletion

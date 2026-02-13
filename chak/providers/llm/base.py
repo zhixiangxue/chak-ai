@@ -16,7 +16,7 @@ class BaseProviderConfig(BaseModel):
     api_key: str
     model: str
     base_url: Optional[str] = None
-    timeout: int = 30
+    timeout: int = 120  # Increased from 30s to 120s for structured output with large prompts
     max_retries: int = 3
     headers: Dict[str, str] = Field(default_factory=dict)
 
