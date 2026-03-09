@@ -249,12 +249,12 @@ class ToolManager:
             # Step 1: Call LLM with tools
             logger.debug(f"💬 [Tool Loop] Iteration {iteration}: Calling LLM with {len(openai_tools)} tools...")
             try:
-                response = await asyncio.to_thread(
-                    provider.send,
-                    messages=current_messages,
-                    tools=openai_tools,
-                    stream=False
-                )
+                # Anthropic (and some other providers) reject tools=[] — only pass
+                # the parameter when there is at least one tool to send.
+                _send_kwargs: Dict[str, Any] = {"messages": current_messages, "stream": False}
+                if openai_tools:
+                    _send_kwargs["tools"] = openai_tools
+                response = await asyncio.to_thread(provider.send, **_send_kwargs)
             except Exception as e:
                 error_msg = str(e).lower()
                 # Check if model doesn't support function calling
@@ -378,11 +378,11 @@ class ToolManager:
             try:
                 # Get stream iterator synchronously in thread
                 def _get_stream():
-                    return provider.send(
-                        messages=current_messages,
-                        tools=openai_tools,
-                        stream=True
-                    )
+                    # Anthropic rejects tools=[] — only include when non-empty
+                    _kwargs: Dict[str, Any] = {"messages": current_messages, "stream": True}
+                    if openai_tools:
+                        _kwargs["tools"] = openai_tools
+                    return provider.send(**_kwargs)
                 
                 stream = await asyncio.to_thread(_get_stream)
             except Exception as e:
@@ -586,11 +586,11 @@ class ToolManager:
             try:
                 # Get stream iterator synchronously in thread
                 def _get_stream():
-                    return provider.send(
-                        messages=current_messages,
-                        tools=openai_tools,
-                        stream=True
-                    )
+                    # Anthropic rejects tools=[] — only include when non-empty
+                    _kwargs: Dict[str, Any] = {"messages": current_messages, "stream": True}
+                    if openai_tools:
+                        _kwargs["tools"] = openai_tools
+                    return provider.send(**_kwargs)
                 
                 stream = await asyncio.to_thread(_get_stream)
             except Exception as e:
