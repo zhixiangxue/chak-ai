@@ -996,75 +996,112 @@ class Conversation:
             "function": {"name": tool_schema["function"]["name"]}
         }
         
-        # Call LLM with forced tool calling and retry logic
-        from tenacity import retry, stop_after_attempt
-        
-        @retry(stop=stop_after_attempt(3))
-        async def _call_llm():
-            return await asyncio.to_thread(
-                self.provider.send,
-                messages=messages_to_send,
-                **kwargs
-            )
-        
-        response = await _call_llm()
-        
-        # Extract tool call result
-        # Note: provider.send returns AIMessage, not raw ChatCompletion
-        if isinstance(response, AIMessage):
-            # Direct AIMessage from provider
-            if not response.tool_calls:
-                raise RuntimeError(
-                    "LLM did not return a tool call. "
-                    "This may happen if the model doesn't support function calling."
+        # ── Instructor-style extraction loop ──────────────────────────────
+        # Each attempt may extend current_messages with error feedback so the
+        # LLM can self-correct.  Up to _MAX_STRUCTURED_OUTPUT_RETRIES tries.
+        from pydantic import ValidationError as PydanticValidationError
+
+        _MAX_RETRIES = 3
+        tool_name = tool_schema["function"]["name"]
+        current_messages = list(messages_to_send)
+        last_error: Exception = RuntimeError("No attempts were made")
+
+        for attempt in range(_MAX_RETRIES):
+            # ── Step 1: LLM call ──────────────────────────────────────────
+            try:
+                response = await asyncio.to_thread(
+                    self.provider.send,
+                    messages=current_messages,
+                    **kwargs
                 )
-            tool_call = response.tool_calls[0]
-        elif hasattr(response, 'choices') and response.choices:
-            # Raw ChatCompletion format (fallback)
-            message_obj = response.choices[0].message
-            if not hasattr(message_obj, 'tool_calls') or not message_obj.tool_calls:
-                raise RuntimeError(
-                    "LLM did not return a tool call. "
-                    "This may happen if the model doesn't support function calling."
+            except Exception as e:
+                # Non-retryable API errors (4xx): raise immediately
+                cause = getattr(e, '__cause__', None)
+                if cause and hasattr(cause, 'status_code') and 400 <= cause.status_code < 500:
+                    raise
+                last_error = e
+                if attempt < _MAX_RETRIES - 1:
+                    continue
+                raise last_error
+
+            # ── Step 2: extract tool_call ─────────────────────────────────
+            tool_call = None
+            if isinstance(response, AIMessage) and response.tool_calls:
+                tool_call = response.tool_calls[0]
+            elif hasattr(response, 'choices') and response.choices:
+                tc = getattr(response.choices[0].message, 'tool_calls', None)
+                if tc:
+                    tool_call = tc[0]
+
+            if tool_call is None:
+                last_error = RuntimeError(
+                    f"LLM did not call the '{tool_name}' tool "
+                    f"(attempt {attempt + 1}/{_MAX_RETRIES})"
                 )
-            tool_call = message_obj.tool_calls[0]
-        else:
-            raise RuntimeError("Unexpected response format from LLM")
-        
-        # Parse arguments and validate with Pydantic
-        try:
-            arguments = json.loads(tool_call.function.arguments)
-            result = returns.model_validate(arguments)
-            
-            # Unwrap RootModel if it was auto-wrapped
-            if is_wrapped:
-                result = result.root
-            
-            # Save the AI message to conversation history
-            if isinstance(response, AIMessage):
-                # Response is already AIMessage, save it directly
-                self.messages.append(response)
-            else:
-                # Fallback: create AIMessage from ChatCompletion
-                ai_message = AIMessage(
-                    content=response.choices[0].message.content or "",
-                    tool_calls=response.choices[0].message.tool_calls
+                if attempt < _MAX_RETRIES - 1:
+                    # Feed back: tell the LLM it must use the tool
+                    ai_content = response.content if isinstance(response, AIMessage) else ""
+                    current_messages = current_messages + [
+                        AIMessage(content=ai_content or ""),
+                        HumanMessage(
+                            content=(
+                                f"You must respond by calling the '{tool_name}' function "
+                                f"to provide your answer in the required structured format. "
+                                f"Please try again."
+                            )
+                        ),
+                    ]
+                continue
+
+            # ── Step 3: parse + validate ──────────────────────────────────
+            try:
+                arguments = json.loads(tool_call.function.arguments)
+                result = returns.model_validate(arguments)
+
+                # Unwrap RootModel if it was auto-wrapped
+                if is_wrapped:
+                    result = result.root
+
+                # Save the AI message to conversation history
+                if isinstance(response, AIMessage):
+                    self.messages.append(response)
+                else:
+                    ai_message = AIMessage(
+                        content=response.choices[0].message.content or "",
+                        tool_calls=response.choices[0].message.tool_calls
+                    )
+                    self.messages.append(ai_message)
+
+                # Add a virtual tool response to complete the tool calling flow
+                # This prevents LLM from expecting a tool response in the next turn
+                tool_response = ToolMessage(
+                    content="Structured data extracted successfully",
+                    tool_call_id=tool_call.id
                 )
-                self.messages.append(ai_message)
-            
-            # Add a virtual tool response to complete the tool calling flow
-            # This prevents LLM from expecting a tool response in the next turn
-            tool_response = ToolMessage(
-                content="Structured data extracted successfully",
-                tool_call_id=tool_call.id
-            )
-            self.messages.append(tool_response)
-            
-            return result
-        except json.JSONDecodeError as e:
-            raise RuntimeError(f"Failed to parse tool call arguments: {e}")
-        except Exception as e:
-            raise RuntimeError(f"Failed to validate response with Pydantic model: {e}")
+                self.messages.append(tool_response)
+
+                return result
+
+            except (json.JSONDecodeError, PydanticValidationError, ValueError) as e:
+                last_error = e
+                if attempt < _MAX_RETRIES - 1:
+                    # Feed back: give the LLM the exact validation error to fix
+                    current_messages = current_messages + [
+                        AIMessage(content=None, tool_calls=response.tool_calls)
+                        if isinstance(response, AIMessage)
+                        else AIMessage(content=""),
+                        ToolMessage(
+                            content=(
+                                f"Validation error in your response:\n{e}\n"
+                                f"Please fix the error and call '{tool_name}' again "
+                                f"with correct values."
+                            ),
+                            tool_call_id=tool_call.id,
+                        ),
+                    ]
+                continue
+
+        raise last_error
     
     def _generate_tool_schema_from_model(self, model: type) -> Dict[str, Any]:
         """
