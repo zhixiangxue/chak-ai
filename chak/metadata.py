@@ -13,11 +13,15 @@ class Usage(BaseModel):
     """Normalized token usage information for provider responses.
 
     Field names follow OpenAI's official naming convention.
+    cache_creation_input_tokens and cache_read_input_tokens are Anthropic
+    prompt-caching fields; other providers may populate them too.
     """
 
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
+    cache_creation_input_tokens: int = 0  # Tokens written to cache (Anthropic)
+    cache_read_input_tokens: int = 0      # Tokens read from cache (Anthropic)
 
 
 class Metadata(BaseModel):

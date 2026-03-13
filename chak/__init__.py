@@ -40,7 +40,7 @@ from .message import (
 # Attachment classes for multimodal support
 from .attachment import Image, Audio, Video, MimeType, PDF, DOC, Excel, TXT, Link
 # Types
-from .schemas import Reasoning
+from .schemas import Reasoning, Cache
 # Utility functions
 from .utils.uri import build, build_simple, parse
 from .utils.logger import set_log_level
@@ -109,6 +109,7 @@ __all__ = [
     
     # Types
     'Reasoning',
+    'Cache',
     
     # Exceptions
     'ChakError',

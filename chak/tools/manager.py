@@ -13,6 +13,7 @@ import asyncio
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional, Union
 
+from ..metadata import Metadata, Usage
 from ..utils.logger import logger
 
 if TYPE_CHECKING:
@@ -23,6 +24,25 @@ from .mcp.tool import MCPTool
 from .native.function import NativeFunctionTool
 from .native.object import NativeObjectTool
 from .skills.object import SkillObjectTool
+
+
+def _dict_to_metadata(meta: Optional[Dict[str, Any]]) -> Metadata:
+    """Convert a streaming chunk metadata dict to a Metadata object.
+
+    Chunk metadata is produced by provider converters as a plain dict;
+    this helper converts it to the structured Metadata type expected by
+    BaseMessage.metadata so that token usage survives into AIMessage.
+    """
+    if not meta:
+        return Metadata()
+    usage_dict = meta.get('usage')
+    usage = Usage(**usage_dict) if usage_dict else None
+    return Metadata(
+        provider=meta.get('provider', ''),
+        model=meta.get('model'),
+        finish_reason=meta.get('finish_reason'),
+        usage=usage,
+    )
 
 
 @dataclass
@@ -268,7 +288,8 @@ class ToolManager:
                         stream=False
                     )
                     final_msg = AIMessage(
-                        content=response.content if hasattr(response, 'content') else str(response)
+                        content=response.content if hasattr(response, 'content') else str(response),
+                        metadata=getattr(response, 'metadata', Metadata())
                     )
                     new_messages.append(final_msg)
                     return final_msg, new_messages
@@ -287,7 +308,8 @@ class ToolManager:
                 logger.info(f"ℹ️ [Tool] No tool calls in this iteration, LLM returned final answer")
                 logger.debug(f"✅ [Tool Loop] No tool calls, finishing...")
                 final_msg = AIMessage(
-                    content=response.content if hasattr(response, 'content') else str(response)
+                    content=response.content if hasattr(response, 'content') else str(response),
+                    metadata=getattr(response, 'metadata', Metadata())
                 )
                 new_messages.append(final_msg)
                 return final_msg, new_messages
@@ -303,7 +325,8 @@ class ToolManager:
             # Step 4: Add assistant message (with tool_calls) to conversation
             assistant_msg = AIMessage(
                 content=response.content if hasattr(response, 'content') else "",
-                tool_calls=tool_calls
+                tool_calls=tool_calls,
+                metadata=getattr(response, 'metadata', Metadata())
             )
             current_messages.append(assistant_msg)
             new_messages.append(assistant_msg)
@@ -372,9 +395,7 @@ class ToolManager:
             accumulated_content = ""
             accumulated_tool_calls = []
             finish_reason = None
-            
-            # Step 1: Call LLM with streaming
-            logger.debug(f"💬 [Tool Loop] Iteration {iteration}: Calling LLM with {len(openai_tools)} tools (streaming)...")
+            last_metadata: Optional[Dict] = None
             try:
                 # Get stream iterator synchronously in thread
                 def _get_stream():
@@ -458,6 +479,10 @@ class ToolManager:
                 # Update finish_reason if present
                 if unified_chunk.finish_reason:
                     finish_reason = unified_chunk.finish_reason
+                
+                # Track last metadata (usage arrives in the final chunk)
+                if unified_chunk.metadata:
+                    last_metadata = unified_chunk.metadata
             
             # Step 3: Check finish_reason
             logger.debug(f"📊 [Tool Loop] Iteration {iteration}: finish_reason={finish_reason}, tool_calls_count={len(accumulated_tool_calls)}")
@@ -485,10 +510,11 @@ class ToolManager:
                 tool_results = await self._execute_tools_parallel(tool_calls_objects)
                 logger.debug(f"📥 [Tool Loop] Tool results: {[r.content[:50] + '...' if len(r.content) > 50 else r.content for r in tool_results]}")
                 
-                # Add assistant message (with tool_calls)
+                # Add assistant message (with tool_calls), preserving LLM usage metadata
                 assistant_msg = AIMessage(
                     content=accumulated_content,
-                    tool_calls=tool_calls_objects
+                    tool_calls=tool_calls_objects,
+                    metadata=_dict_to_metadata(last_metadata)
                 )
                 current_messages.append(assistant_msg)
                 new_messages.append(assistant_msg)
@@ -514,8 +540,11 @@ class ToolManager:
                 logger.info(f"ℹ️ [Tool] No tool calls in this iteration, LLM returned final answer")
                 logger.debug(f"✅ [Tool Loop] No tool calls, finishing...")
                 
-                # Add final AIMessage to new_messages
-                final_msg = AIMessage(content=accumulated_content) if accumulated_content else AIMessage(content="")
+                # Add final AIMessage to new_messages, preserving LLM usage metadata
+                final_msg = AIMessage(
+                    content=accumulated_content,
+                    metadata=_dict_to_metadata(last_metadata)
+                )
                 new_messages.append(final_msg)
                 
                 yield MessageChunk(content="", is_final=True, final_message=final_msg), new_messages
@@ -580,6 +609,7 @@ class ToolManager:
             accumulated_content = ""
             accumulated_tool_calls = []
             finish_reason = None
+            last_metadata: Optional[Dict] = None
             
             # Step 1: Call LLM with streaming
             logger.debug(f"💬 [Tool Loop] Iteration {iteration}: Calling LLM with {len(openai_tools)} tools (streaming with events)...")
@@ -672,6 +702,10 @@ class ToolManager:
                 if unified_chunk.finish_reason:
                     finish_reason = unified_chunk.finish_reason
                 
+                # Track last metadata (usage arrives in the final chunk)
+                if unified_chunk.metadata:
+                    last_metadata = unified_chunk.metadata
+                
                 # Check if final
                 if unified_chunk.is_final:
                     finish_reason = finish_reason or "stop"
@@ -736,10 +770,11 @@ class ToolManager:
                             result=result.content
                         )
                 
-                # Add assistant message (with tool_calls)
+                # Add assistant message (with tool_calls), preserving LLM usage metadata
                 assistant_msg = AIMessage(
                     content=accumulated_content,
-                    tool_calls=tool_calls_objects
+                    tool_calls=tool_calls_objects,
+                    metadata=_dict_to_metadata(last_metadata)
                 )
                 current_messages.append(assistant_msg)
                 new_messages.append(assistant_msg)
@@ -765,8 +800,11 @@ class ToolManager:
                 logger.info(f"ℹ️ [Tool] No tool calls in this iteration, LLM returned final answer")
                 logger.debug(f"✅ [Tool Loop] No tool calls, finishing...")
                 
-                # Construct final AIMessage from accumulated content
-                final_message = AIMessage(content=accumulated_content)
+                # Construct final AIMessage from accumulated content, preserving LLM usage metadata
+                final_message = AIMessage(
+                    content=accumulated_content,
+                    metadata=_dict_to_metadata(last_metadata)
+                )
                 new_messages.append(final_message)
                 
                 yield MessageChunk(content="", is_final=True, final_message=final_message)

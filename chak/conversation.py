@@ -17,6 +17,31 @@ if TYPE_CHECKING:
     from .tools.manager import ToolManager, ToolApprovalHandler
 
 
+def _merge_stream_metadata(base: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str, Any]:
+    """Merge an incoming chunk metadata dict into the accumulated base.
+
+    Token counts are summed so that prompt_tokens (from message_start) and
+    completion_tokens (from message_delta) are both captured correctly even
+    though they arrive in separate content-less chunks.
+    """
+    merged = {**base, **incoming}
+    old_usage = (base.get('usage') or {})
+    new_usage = (incoming.get('usage') or {})
+    if old_usage or new_usage:
+        pt = (old_usage.get('prompt_tokens') or 0) + (new_usage.get('prompt_tokens') or 0)
+        ct = (old_usage.get('completion_tokens') or 0) + (new_usage.get('completion_tokens') or 0)
+        cc = (old_usage.get('cache_creation_input_tokens') or 0) + (new_usage.get('cache_creation_input_tokens') or 0)
+        cr = (old_usage.get('cache_read_input_tokens') or 0) + (new_usage.get('cache_read_input_tokens') or 0)
+        merged['usage'] = {
+            'prompt_tokens': pt,
+            'completion_tokens': ct,
+            'total_tokens': pt + ct,
+            'cache_creation_input_tokens': cc,
+            'cache_read_input_tokens': cr,
+        }
+    return merged
+
+
 class ToolExecutor(str, Enum):
     """Tool execution mode."""
     ASYNCIO = "asyncio"  # Use asyncio.to_thread (default, best for IO-bound)
@@ -781,11 +806,16 @@ class Conversation:
         for provider_chunk in provider_chunks:
             unified_chunk = self.provider.converter.from_provider_chunk(provider_chunk)
             
+            # Always accumulate metadata regardless of content.
+            # Anthropic sends prompt_tokens in message_start and completion_tokens
+            # in message_delta — both arrive as content-less chunks, so we must
+            # track metadata outside the content/reasoning guards.
+            if unified_chunk.metadata:
+                last_chunk_metadata = _merge_stream_metadata(last_chunk_metadata, unified_chunk.metadata)
+            
             # Handle reasoning content
             if unified_chunk.reasoning_content:
                 complete_reasoning_content += unified_chunk.reasoning_content
-                if unified_chunk.metadata:
-                    last_chunk_metadata.update(unified_chunk.metadata)
                 yield ReasoningChunk(
                     content=unified_chunk.reasoning_content,
                     is_final=False,
@@ -795,8 +825,6 @@ class Conversation:
             # Handle regular content
             if unified_chunk.content:
                 complete_content += unified_chunk.content
-                if unified_chunk.metadata:
-                    last_chunk_metadata = unified_chunk.metadata
                 yield MessageChunk(
                     content=unified_chunk.content,
                     is_final=False,
@@ -1387,11 +1415,16 @@ class Conversation:
         for provider_chunk in provider_chunks:
             unified_chunk = self.provider.converter.from_provider_chunk(provider_chunk)
             
+            # Always accumulate metadata regardless of content.
+            # Anthropic sends prompt_tokens in message_start and completion_tokens
+            # in message_delta — both arrive as content-less chunks, so we must
+            # track metadata outside the content/reasoning guards.
+            if unified_chunk.metadata:
+                last_chunk_metadata = _merge_stream_metadata(last_chunk_metadata, unified_chunk.metadata)
+            
             # Handle reasoning content
             if unified_chunk.reasoning_content:
                 complete_reasoning_content += unified_chunk.reasoning_content
-                if unified_chunk.metadata:
-                    last_chunk_metadata.update(unified_chunk.metadata)
                 yield ReasoningChunk(
                     content=unified_chunk.reasoning_content,
                     is_final=False,
@@ -1401,8 +1434,6 @@ class Conversation:
             # Handle regular content
             if unified_chunk.content:
                 complete_content += unified_chunk.content
-                if unified_chunk.metadata:
-                    last_chunk_metadata = unified_chunk.metadata
                 yield MessageChunk(
                     content=unified_chunk.content,
                     is_final=False,
@@ -1499,32 +1530,43 @@ class Conversation:
         
         Returns:
             Dictionary containing:
+            - model_uri: Full model URI (e.g. 'anthropic/claude-sonnet-4-6')
+            - provider: Provider name (e.g. 'anthropic')
+            - model: Model name extracted from URI
             - total_messages: Total number of messages
             - by_type: Message count by type
-            - total_tokens: Total tokens (displayed as xxK format)
-            - input_tokens: Input tokens
-            - output_tokens: Output tokens
+            - total_tokens: Total tokens used (prompt + completion, excludes cache reads)
+            - input_tokens: Prompt tokens (non-cached portion)
+            - output_tokens: Completion tokens
+            - cache_creation_tokens: Tokens written to prompt cache (billed at ~1.25x)
+            - cache_read_tokens: Tokens read from prompt cache (billed at ~0.1x)
         
         Example:
             >>> conv.stats()
             {
+                'model_uri': 'anthropic/claude-sonnet-4-6',
+                'provider': 'anthropic',
+                'model': 'claude-sonnet-4-6',
                 'total_messages': 10,
-                'by_type': {
-                    'user': 5,
-                    'assistant': 4,
-                    'context': 1
-                },
-                'total_tokens': 12543,
-                'input_tokens': 8234,
-                'output_tokens': 4309
+                'by_type': {'user': 5, 'assistant': 4, 'tool': 1},
+                'total_tokens': 1081,
+                'input_tokens': 764,
+                'output_tokens': 317,
+                'cache_creation_tokens': 2542,
+                'cache_read_tokens': 7626
             }
         """
         stats = {
+            'model_uri': self.model_uri,
+            'provider': self._provider_name,
+            'model': self._model_name,
             'total_messages': len(self.messages),
             'by_type': {},
             'total_tokens': 0,
             'input_tokens': 0,
-            'output_tokens': 0
+            'output_tokens': 0,
+            'cache_creation_tokens': 0,
+            'cache_read_tokens': 0,
         }
         
         # Count messages by type
@@ -1538,6 +1580,8 @@ class Conversation:
                 stats['total_tokens'] += usage.total_tokens
                 stats['input_tokens'] += usage.prompt_tokens
                 stats['output_tokens'] += usage.completion_tokens
+                stats['cache_creation_tokens'] += usage.cache_creation_input_tokens
+                stats['cache_read_tokens'] += usage.cache_read_input_tokens
         
         return stats
     
