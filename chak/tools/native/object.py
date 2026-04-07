@@ -60,25 +60,32 @@ class NativeObjectTool:
     def _discover_methods(self) -> Dict[str, NativeFunctionTool]:
         """
         Discover all public callable methods from the object.
-        
+
+        Method tool names are namespaced as ``{class_name}-{method_name}``
+        (e.g. ``calculator-add``) to avoid collisions when multiple objects
+        expose methods with the same name.
+
         Returns:
-            Dict mapping method name to NativeFunctionTool
+            Dict mapping namespaced tool name to NativeFunctionTool
         """
         methods = {}
-        
+        prefix = type(self.obj).__name__.lower()
+
         for name in dir(self.obj):
             # Skip private and magic methods
             if name.startswith('_'):
                 continue
-            
+
             # Get attribute
             attr = getattr(self.obj, name)
-            
+
             # Only include callable methods (bound methods)
             if callable(attr) and inspect.ismethod(attr):
-                # Wrap as NativeFunctionTool (reuse existing logic!)
-                methods[name] = NativeFunctionTool(attr)
-        
+                namespaced = f"{prefix}-{name}"
+                tool = NativeFunctionTool(attr)
+                tool._name = namespaced  # override bare method name
+                methods[namespaced] = tool
+
         return methods
     
     @property

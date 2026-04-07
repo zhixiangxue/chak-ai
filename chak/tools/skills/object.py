@@ -35,25 +35,31 @@ class SkillObjectTool:
     def _discover_methods(self) -> Dict[str, NativeFunctionTool]:
         """
         Discover all public callable methods from the skill object.
-        
+
+        Method tool names are namespaced as ``{skill.name}-{method_name}``
+        (e.g. ``income_calc-calc``) to avoid collisions when multiple skills
+        expose methods with the same name.
+
         Returns:
-            Dict mapping method name to NativeFunctionTool
+            Dict mapping namespaced tool name to NativeFunctionTool
         """
         methods = {}
-        
+
         for name in dir(self.skill):
             # Skip private and magic methods
             if name.startswith('_'):
                 continue
-            
+
             # Get attribute
             attr = getattr(self.skill, name)
-            
+
             # Only include callable methods (bound methods)
             if callable(attr) and inspect.ismethod(attr):
-                # Wrap as NativeFunctionTool
-                methods[name] = NativeFunctionTool(attr)
-        
+                namespaced = f"{self.skill.name}-{name}"
+                tool = NativeFunctionTool(attr)
+                tool._name = namespaced  # override bare method name
+                methods[namespaced] = tool
+
         return methods
     
     @property

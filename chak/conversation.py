@@ -14,7 +14,7 @@ from .utils.uri import parse as parse_uri
 
 if TYPE_CHECKING:
     from .tools.mcp.tool import MCPTool
-    from .tools.manager import ToolManager, ToolApprovalHandler
+    from .tools.manager import ToolManager, HITLHandler, HITLRequest
 
 
 def _merge_stream_metadata(base: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str, Any]:
@@ -69,7 +69,7 @@ class Conversation:
         context_handler: Optional[BaseContextHandler] = None,
         tools: Optional[List["MCPTool"]] = None,
         tool_executor: ToolExecutor = ToolExecutor.ASYNCIO,
-        tool_approval_handler: Optional["ToolApprovalHandler"] = None,
+        hitl_handler: Optional["HITLHandler"] = None,
         **kwargs
     ):
         """
@@ -130,7 +130,7 @@ class Conversation:
         self._tool_executor = tool_executor
         self._thread_pool: Optional[ThreadPoolExecutor] = None
         self._process_pool: Optional[ProcessPoolExecutor] = None
-        self._tool_approval_handler: Optional["ToolApprovalHandler"] = tool_approval_handler
+        self._hitl_handler: Optional["HITLHandler"] = hitl_handler
         
         # Initialize tools if provided
         if tools:
@@ -308,7 +308,7 @@ class Conversation:
         self._tool_manager = ToolManager(
             wrapped_tools,
             executor=executor,
-            approval_handler=self._tool_approval_handler,
+            hitl_handler=self._hitl_handler,
         )
     
     def _build_config_dict(self, parsed_uri: Dict, kwargs: Dict) -> Dict[str, Any]:
@@ -1084,7 +1084,28 @@ class Conversation:
             # ── Step 3: parse + validate ──────────────────────────────────
             try:
                 arguments = json.loads(tool_call.function.arguments)
-                result = returns.model_validate(arguments)
+                # Try direct validation first. Some providers (e.g. Anthropic)
+                # return nested objects as JSON-encoded strings when the schema
+                # contains $ref / oneOf. In that case, fall back to recursively
+                # decoding string values that are valid JSON objects/arrays.
+                def _decode_json_strings(obj):
+                    if isinstance(obj, dict):
+                        return {k: _decode_json_strings(v) for k, v in obj.items()}
+                    if isinstance(obj, list):
+                        return [_decode_json_strings(v) for v in obj]
+                    if isinstance(obj, str):
+                        try:
+                            parsed = json.loads(obj)
+                            if isinstance(parsed, (dict, list)):
+                                return _decode_json_strings(parsed)
+                        except (json.JSONDecodeError, ValueError):
+                            pass
+                    return obj
+                    
+                try:
+                    result = returns.model_validate(arguments)
+                except PydanticValidationError:
+                    result = returns.model_validate(_decode_json_strings(arguments))
 
                 # Unwrap RootModel if it was auto-wrapped
                 if is_wrapped:

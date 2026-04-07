@@ -150,9 +150,10 @@ class StreamEvent(BaseModel):
     事件类型：
     - MessageChunk: LLM 最终答案内容输出（包含文本、元数据、最终消息等）
     - ReasoningChunk: LLM 推理内容输出（思考过程、summary 等）
-    - ToolCallStartEvent: 工具调用开始
+    - ToolCallStartEvent: 工具调用开始（HITL 已通过，即将执行）
     - ToolCallSuccessEvent: 工具调用成功
     - ToolCallErrorEvent: 工具调用失败
+    - ToolCallCancelledEvent: 工具调用被 HITL handler 取消
     """
     timestamp: float = Field(default_factory=lambda: datetime.now().timestamp())
 
@@ -219,6 +220,26 @@ class ToolCallErrorEvent(StreamEvent):
     tool_name: str = ""
     call_id: str = ""
     error: str = ""
+
+
+class ToolCallCancelledEvent(StreamEvent):
+    """工具调用被取消事件
+
+    HITL handler 返回 None 时触发，表示本次工具调用被人类取消。
+    此事件在 ToolCallStartEvent 之前发出，即工具从未开始执行。
+
+    Attributes:
+        tool_name: 工具名称
+        call_id: 工具调用唯一标识
+        timestamp: 事件时间戳（秒）
+
+    Example:
+        match event:
+            case ToolCallCancelledEvent(tool_name=name, call_id=cid):
+                print(f"🚫 {name} 被取消")
+    """
+    tool_name: str = ""
+    call_id: str = ""
 
 
 class ConversationCompleteEvent(StreamEvent):

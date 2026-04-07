@@ -35,8 +35,10 @@ from .exceptions import (
 from .message import (
     Message, MessageChunk, ReasoningChunk,
     BaseMessage, HumanMessage, AIMessage, SystemMessage, ToolMessage,
-    ToolCallStartEvent, ToolCallSuccessEvent, ToolCallErrorEvent
+    ToolCallStartEvent, ToolCallSuccessEvent, ToolCallErrorEvent, ToolCallCancelledEvent
 )
+# HITL types
+from .tools.manager import HITLHandler, HITLRequest, HITLDecision
 # Attachment classes for multimodal support
 from .attachment import Image, Audio, Video, MimeType, PDF, DOC, Excel, TXT, Link
 # Types
@@ -95,6 +97,10 @@ __all__ = [
     'ToolCallStartEvent',
     'ToolCallSuccessEvent',
     'ToolCallErrorEvent',
+    'ToolCallCancelledEvent',
+    'HITLHandler',
+    'HITLRequest',
+    'HITLDecision',
     
     # Multimodal attachments
     'Image',

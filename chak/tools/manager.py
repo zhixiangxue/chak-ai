@@ -54,14 +54,68 @@ class ToolCallResult:
 
 
 @dataclass
-class ToolCallApproval:
-    """Tool call approval request info."""
+class HITLRequest:
+    """Human-in-the-loop handler request.
+
+    Passed to HITLHandler before a tool is executed. The handler may pause
+    execution for any duration (e.g. to interact with the user) and must
+    return an HITLDecision.
+    """
     tool_name: str
     arguments: Dict[str, Any]
     call_id: str
 
 
-ToolApprovalHandler = Callable[[ToolCallApproval], Awaitable[bool]]
+@dataclass
+class HITLDecision:
+    """Decision returned by a HITLHandler.
+
+    Use the class methods to construct — do not instantiate directly:
+
+        HITLDecision.abort()
+        HITLDecision.allow()
+        HITLDecision.allow(overrides={"key": value})
+
+    Attributes:
+        action: "abort" or "allow"
+        overrides: Dict of argument overrides to merge before tool execution.
+                   Only meaningful when action == "allow".
+    """
+    action: str
+    overrides: Dict[str, Any]
+
+    @classmethod
+    def abort(cls) -> "HITLDecision":
+        """Abort the tool call entirely. The tool will not be executed."""
+        return cls(action="abort", overrides={})
+
+    @classmethod
+    def allow(cls, overrides: Optional[Dict[str, Any]] = None) -> "HITLDecision":
+        """Allow the tool call, optionally injecting argument overrides.
+
+        Args:
+            overrides: Dict of argument key/value pairs to merge into the
+                       tool's arguments before execution. Pass None or omit
+                       to allow without modification.
+        """
+        return cls(action="allow", overrides=overrides or {})
+
+    @property
+    def is_aborted(self) -> bool:
+        """True if this decision aborts the tool call."""
+        return self.action == "abort"
+
+    @property
+    def is_allowed(self) -> bool:
+        """True if this decision allows the tool call."""
+        return self.action == "allow"
+
+
+# HITLHandler: async callable from HITLRequest -> HITLDecision.
+HITLHandler = Callable[[HITLRequest], Awaitable[HITLDecision]]
+
+# Sentinel: HITL not yet resolved, run internal handler.
+_HITL_PENDING = object()
 
 class ToolManager:
     """
@@ -101,13 +155,13 @@ class ToolManager:
         )
     """
     
-    def __init__(self, tools: List[Union[MCPTool, NativeFunctionTool, NativeObjectTool, SkillObjectTool]], max_iterations: int = 50, executor=None, approval_handler: Optional[ToolApprovalHandler] = None):
+    def __init__(self, tools: List[Union[MCPTool, NativeFunctionTool, NativeObjectTool, SkillObjectTool]], max_iterations: int = 50, executor=None, hitl_handler: Optional["HITLHandler"] = None):
         """
         Args:
             tools: 工具列表（MCPTool、NativeFunctionTool、NativeObjectTool 或 SkillObjectTool）
             max_iterations: 最大迭代次数（防止无限循环），默认 50（每个 skill 调用消耗 2-3 轮）
             executor: 执行器实例（ThreadPoolExecutor/ProcessPoolExecutor）或 None（使用 asyncio）
-            approval_handler: Optional approval handler for human-in-the-loop tool calls
+            hitl_handler: Human-in-the-loop middleware called before each tool execution
         """
         self.tools = tools
         self._tool_map = self._build_tool_map()
@@ -116,7 +170,7 @@ class ToolManager:
         self._selected_methods: List[str] = []  # Track methods selected by LLM in Stage 2
         self.max_iterations = max_iterations if max_iterations is not None else 50
         self.executor = executor
-        self.approval_handler = approval_handler
+        self.hitl_handler = hitl_handler
     
     def _build_tool_map(self) -> Dict[str, Any]:
         """
@@ -592,7 +646,7 @@ class ToolManager:
         Raises:
             Exception: Max iteration reached or other errors
         """
-        from ..message import AIMessage, ToolMessage, MessageChunk, ReasoningChunk, ToolCallStartEvent, ToolCallSuccessEvent, ToolCallErrorEvent, ConversationCompleteEvent, ChatCompletionMessageToolCall, Function
+        from ..message import AIMessage, ToolMessage, MessageChunk, ReasoningChunk, ToolCallStartEvent, ToolCallSuccessEvent, ToolCallErrorEvent, ToolCallCancelledEvent, ConversationCompleteEvent, ChatCompletionMessageToolCall, Function
         import json
         
         # Reset active skill and selected methods at the start of each conversation turn
@@ -730,46 +784,97 @@ class ToolManager:
                     for tc in accumulated_tool_calls
                 ]
                 
-                # Yield ToolCallStartEvent for each tool
+                # Step 3b: Pre-resolve HITL for all tools (before emitting any events)
+                # This ensures ToolCallStartEvent is only emitted for approved tools.
+                responses_map: Dict[str, HITLDecision] = {}
+                if self.hitl_handler is not None:
+                    hitl_tasks = []
+                    for tc in tool_calls_objects:
+                        try:
+                            tc_args = json.loads(tc.function.arguments)
+                        except json.JSONDecodeError:
+                            tc_args = {"raw": tc.function.arguments}
+                        request = HITLRequest(
+                            tool_name=tc.function.name,
+                            arguments=tc_args,
+                            call_id=tc.id,
+                        )
+                        hitl_tasks.append(self.hitl_handler(request))
+                    hitl_results = await asyncio.gather(*hitl_tasks)
+                    for tc, result in zip(tool_calls_objects, hitl_results):
+                        responses_map[tc.id] = result
+                else:
+                    # No HITL handler: all tools auto-approved with no overrides
+                    for tc in tool_calls_objects:
+                        responses_map[tc.id] = HITLDecision.allow()
+
+                # Emit events per tool: ToolCallCancelledEvent or ToolCallStartEvent
+                approved_tool_calls = []
+                cancelled_results: List[ToolCallResult] = []
                 for tc in tool_calls_objects:
                     try:
                         args_dict = json.loads(tc.function.arguments)
                     except json.JSONDecodeError:
                         args_dict = {"raw": tc.function.arguments}
-                    
-                    yield ToolCallStartEvent(
-                        tool_name=tc.function.name,
-                        call_id=tc.id,
-                        arguments=args_dict
-                    )
-                
-                # Execute tools in parallel
-                logger.debug(f"⏳ [Tool Loop] Executing {len(tool_calls_objects)} tools...")
-                tool_results = await self._execute_tools_parallel(tool_calls_objects)
+
+                    hitl_resp = responses_map[tc.id]
+                    if hitl_resp.is_aborted:
+                        # Cancelled by HITL handler
+                        logger.info(f"ℹ️ [Tool] Tool call '{tc.function.name}' cancelled by HITL handler (events mode)")
+                        yield ToolCallCancelledEvent(
+                            tool_name=tc.function.name,
+                            call_id=tc.id,
+                        )
+                        cancelled_results.append(ToolCallResult(
+                            call_id=tc.id,
+                            content=(
+                                "Tool call was cancelled by user. "
+                                "Do NOT call this tool or any other tools again. "
+                                "Answer the user's request directly based on the existing "
+                                "conversation without using tools."
+                            ),
+                            is_error=True,
+                        ))
+                    else:
+                        # Approved — emit start event with (possibly overridden) args
+                        effective_args = {**args_dict, **hitl_resp.overrides}
+                        yield ToolCallStartEvent(
+                            tool_name=tc.function.name,
+                            call_id=tc.id,
+                            arguments=effective_args,
+                        )
+                        approved_tool_calls.append(tc)
+
+                # Execute approved tools in parallel (HITL already resolved)
+                logger.debug(f"⏳ [Tool Loop] Executing {len(approved_tool_calls)} approved tool(s)...")
+                executed_results = await self._execute_tools_parallel(
+                    approved_tool_calls,
+                    overrides_map={tc.id: responses_map[tc.id].overrides for tc in approved_tool_calls},
+                )
+                tool_results = cancelled_results + executed_results
                 logger.debug(f"📥 [Tool Loop] Tool results: {[r.content[:50] + '...' if len(r.content) > 50 else r.content for r in tool_results]}")
-                
-                # Yield ToolCallSuccessEvent or ToolCallErrorEvent for each result
-                for result in tool_results:
-                    # Find tool name by call_id
-                    tool_name = "unknown"
-                    for tc in tool_calls_objects:
+
+                # Yield ToolCallSuccessEvent or ToolCallErrorEvent for executed tools only
+                for result in executed_results:
+                    tool_name_for_event = "unknown"
+                    for tc in approved_tool_calls:
                         if tc.id == result.call_id:
-                            tool_name = tc.function.name
+                            tool_name_for_event = tc.function.name
                             break
-                    
+
                     if result.is_error:
                         yield ToolCallErrorEvent(
-                            tool_name=tool_name,
+                            tool_name=tool_name_for_event,
                             call_id=result.call_id,
-                            error=result.content
+                            error=result.content,
                         )
                     else:
                         yield ToolCallSuccessEvent(
-                            tool_name=tool_name,
+                            tool_name=tool_name_for_event,
                             call_id=result.call_id,
-                            result=result.content
+                            result=result.content,
                         )
-                
+
                 # Add assistant message (with tool_calls), preserving LLM usage metadata
                 assistant_msg = AIMessage(
                     content=accumulated_content,
@@ -817,23 +922,28 @@ class ToolManager:
             "The conversation may be stuck in a loop."
         )
     
-    async def _execute_tools_parallel(self, tool_calls: List[Any]) -> List[ToolCallResult]:
+    async def _execute_tools_parallel(self, tool_calls: List[Any], overrides_map: Optional[Dict[str, Optional[Dict[str, Any]]]] = None) -> List[ToolCallResult]:
         """
         并行执行多个工具调用
-        
+
         Args:
             tool_calls: 工具调用列表
-        
+            overrides_map: Optional pre-resolved HITL results keyed by call_id.
+                           If provided, _execute_single_tool skips its internal HITL.
+
         Returns:
             工具结果列表
         """
         tasks = [
-            self._execute_single_tool(call)
+            self._execute_single_tool(
+                call,
+                pre_hitl_overrides=overrides_map.get(call.id, _HITL_PENDING) if overrides_map is not None else _HITL_PENDING,
+            )
             for call in tool_calls
         ]
         return await asyncio.gather(*tasks)
-    
-    async def _execute_single_tool(self, tool_call: Any) -> ToolCallResult:
+
+    async def _execute_single_tool(self, tool_call: Any, pre_hitl_overrides: Any = _HITL_PENDING) -> ToolCallResult:
         """
         执行单个工具调用
         
@@ -866,35 +976,42 @@ class ToolManager:
                     is_error=True
                 )
         
-        # 审批钩子：支持 human-in-the-loop 工具调用
-        if self.approval_handler is not None:
-            approval = ToolCallApproval(
-                tool_name=tool_name,
-                arguments=arguments if isinstance(arguments, dict) else {},
-                call_id=call_id,
-            )
-            try:
-                allowed = await self.approval_handler(approval)
-            except Exception as e:
-                logger.error(f"❌ [Tool] Approval handler failed for tool '{tool_name}': {e}")
-                return ToolCallResult(
+        # HITL interception
+        if pre_hitl_overrides is _HITL_PENDING:
+            # Not pre-resolved: run internal handler (execute_loop / execute_loop_stream paths)
+            if self.hitl_handler is not None:
+                request = HITLRequest(
+                    tool_name=tool_name,
+                    arguments=arguments if isinstance(arguments, dict) else {},
                     call_id=call_id,
-                    content=f"Error: approval handler failed: {e}",
-                    is_error=True,
                 )
-
-            if not allowed:
-                logger.info(f"ℹ️ [Tool] Tool call '{tool_name}' was rejected by approval handler")
-                return ToolCallResult(
-                    call_id=call_id,
-                    content=(
-                        "Tool call was rejected by user. "
-                        "Do NOT call this tool or any other tools again. "
-                        "Answer the user's request directly based on the existing "
-                        "conversation without using tools."
-                    ),
-                    is_error=True,
-                )
+                try:
+                    response = await self.hitl_handler(request)
+                except Exception as e:
+                    logger.error(f"❌ [Tool] HITL handler failed for tool '{tool_name}': {e}")
+                    return ToolCallResult(
+                        call_id=call_id,
+                        content=f"Error: HITL handler failed: {e}",
+                        is_error=True,
+                    )
+                if response.is_aborted:
+                    logger.info(f"ℹ️ [Tool] Tool call '{tool_name}' cancelled by HITL handler")
+                    return ToolCallResult(
+                        call_id=call_id,
+                        content=(
+                            "Tool call was cancelled by user. "
+                            "Do NOT call this tool or any other tools again. "
+                            "Answer the user's request directly based on the existing "
+                            "conversation without using tools."
+                        ),
+                        is_error=True,
+                    )
+                if response.overrides:
+                    arguments = {**arguments, **response.overrides}
+        else:
+            # Pre-resolved by execute_loop_with_events: apply overrides if any
+            if pre_hitl_overrides:
+                arguments = {**arguments, **pre_hitl_overrides}
         
         # Check if this is a skill entry call
         if tool_name in self._skill_map:
