@@ -12,11 +12,13 @@ from typing import Callable, List, Union
 from . import mcp
 from . import native
 from . import skills
+from . import exec
 
 # 导出常用类
 from .mcp import Server, MCPTool
 from .native import NativeFunctionTool, NativeObjectTool
-from .skills import SkillBase, SkillObjectTool
+from .skills import SkillBase, SkillObjectTool, ClaudeSkill
+from .exec import Bash, Python
 from .manager import ToolManager
 
 __all__ = [
@@ -29,6 +31,9 @@ __all__ = [
     "NativeObjectTool",
     "SkillBase",
     "SkillObjectTool",
+    "ClaudeSkill",
+    "Bash",
+    "Python",
     "ToolManager",
     "wrap_tools",
 ]
@@ -91,7 +96,7 @@ def wrap_tools(tools: List[Union[MCPTool, NativeFunctionTool, NativeObjectTool, 
     """
     wrapped = []
     for tool in tools:
-        if isinstance(tool, (MCPTool, NativeFunctionTool, NativeObjectTool, SkillObjectTool)):
+        if isinstance(tool, (MCPTool, NativeFunctionTool, NativeObjectTool, SkillObjectTool, ClaudeSkill, Bash, Python)):
             # 已经是工具对象，直接使用
             wrapped.append(tool)
         elif isinstance(tool, SkillBase):

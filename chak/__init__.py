@@ -16,7 +16,7 @@ Example:
 >>> conv = chak.Conversation('deepseek@https://custom.api.com:deepseek-chat', api_key='xxx')
 """
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 
 # Context handlers
 from .context.handlers import (

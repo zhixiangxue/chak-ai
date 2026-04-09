@@ -24,12 +24,16 @@ chak is not another liteLLM, one-api, or OpenRouter, but a client library that a
 
 ## 🌵 What's New
 
+- **2026-04-08 | v0.3.1** - Human-in-the-Loop upgrade & built-in execution tools:
+  - **Human-in-the-Loop upgrade** (⚠️ Breaking change): Replaced `tool_approval_handler` (bool) with `hitl_handler` (`HITLDecision`) — three outcomes: `abort`, `allow`, `allow(overrides={...})`. See [Human-in-the-Loop](#tool-calling-hitl).
+  - **Built-in execution tools**: `Bash` (shell) and `Python` (code interpreter) for agentic workflows.
+  - **ClaudeSkill**: Native integration for Anthropic's community skill packs with 3-layer progressive disclosure. See [Anthropic Agent Skills](#claude-skill).
 - **2026-02-02 | v0.3.0** - Major update:
   - **Skill-based progressive disclosure** for tool calling - prevent overwhelming LLMs with too many tools. See [Skill-based Tools](#skill-based-tools-new-in-0-3-0).
   - **Turn ID tracking & message filtering** - fine-grained conversation history management. See examples [examples/turn_id_tracking.py](examples/turn_id_tracking.py) and [examples/message_filtering_demo.py](examples/message_filtering_demo.py).
   - **Reasoning support** - compatible with OpenAI gpt-5/o1/o3 and Bailian QwQ models. See examples [examples/chat_reasoning.py](examples/chat_reasoning.py).
   - **Context handler refactoring** - replaced strategies with handlers for better clarity (⚠️ Breaking change). See [Pluggable Context Management](#context-handler).
-- **2026-01-29 | v0.2.7** - Added human-in-the-loop tool approval via `tool_approval_handler`, with CLI and browser/WebSocket support. See [Human-in-the-loop Approval](#tool-calling-human-approval) in [Tool Calling](#tool-calling).
+- **2026-01-29 | v0.2.7** - Added human-in-the-loop tool approval via `tool_approval_handler`, with CLI and browser/WebSocket support. See [Human-in-the-loop Approval](#tool-calling-hitl) in [Tool Calling](#tool-calling).
 - **2026-01-12 | v0.2.6** - Added event stream support for real-time tool call observability. Use `event=True` to observe tool execution in your UI. See [Tool Call Observability](#tool-call-observability)
 - **2026-01-09 | v0.2.5** - Added configurable tool executor for CPU-intensive tasks. Use `tool_executor` parameter to control execution mode. See [Tool Calling](#tool-calling)
 - **2026-01-07 | v0.2.3** - Conversation now supports structured outputs via `returns` parameter. See [Structured Output](#structured-output)
@@ -295,7 +299,7 @@ print(resp.content)
 | `context_handler` | `BaseContextHandler` | Context management handler (FIFO, LRU, Summarization) |
 | `tools` | `List` | Tools for function calling (functions, objects, skills, MCP) |
 | `tool_executor` | `ToolExecutor` | Execution mode: `ASYNCIO` (IO-bound), `THREAD` (sync), `PROCESS` (CPU-bound) |
-| `tool_approval_handler` | `Callable` | Human-in-the-loop approval for tool calls |
+| `hitl_handler` | `HITLHandler` | Human-in-the-loop intercept before each tool call; returns `HITLDecision` (`abort` / `allow` / `allow` with argument overrides) |
 
 **Send methods (`send` / `asend`):**
 
@@ -506,6 +510,40 @@ User: "Read /tmp/test.txt and convert to uppercase"
 - Simple skill: [examples/tool_calling_skills_simple.py](examples/tool_calling_skills_simple.py)
 - Large-scale skill (50 methods): [examples/tool_calling_skills_large_scale.py](examples/tool_calling_skills_large_scale.py)
 
+<a id="claude-skill"></a>
+
+### Anthropic Agent Skills (ClaudeSkill)
+
+**Run Anthropic's community skill packs without any glue code.** `ClaudeSkill` integrates [Anthropic Agent Skills](https://github.com/anthropics/skills) — each skill is a directory with a `SKILL.md` documentation file and supporting scripts. Optionally combine with the built-in `Bash` and `Python` tools to let the LLM execute shell commands or inline code on the fly.
+
+```python
+from chak.tools.exec import Bash, Python
+from chak.tools.skills import ClaudeSkill
+
+skill = ClaudeSkill("./skills/pdf")   # any Anthropic skill directory
+bash = Bash()                          # built-in shell tool
+python = Python()                      # built-in code interpreter
+
+conv = chak.Conversation(
+    "openai/gpt-4o",
+    api_key="YOUR_KEY",
+    tools=[skill, bash, python],
+)
+
+await conv.asend("Convert report.pdf to images and save to ./images")
+```
+
+**Built-in execution tools:**
+
+| Tool | Class | Description |
+|------|-------|-------------|
+| Shell | `Bash` | Run any shell command, like install packages, execute scripts. |
+| Code Interpreter | `Python` | Write and run inline Python code without creating a persistent script file. |
+
+> ⚠️ **Security**: `Bash` and `Python` execute with host-process permissions. A warning is printed on instantiation. Use `hitl_handler` or a sandboxed interpreter for production deployments.
+
+See full example: [examples/tool_calling_claude_skill.py](examples/tool_calling_claude_skill.py)
+
 ### Pass Functions
 
 Just pass regular Python functions:
@@ -711,41 +749,51 @@ conv = Conversation(
 )
 ```
 
-<a id="tool-calling-human-approval"></a>
-### Human-in-the-loop Approval
-Require manual approval before executing tools, and optionally auto-approve safe read-only tools via `tool_approval_handler`:
+<a id="tool-calling-hitl"></a>
+### Human-in-the-Loop (HITL)
+
+> **Upgrade note**: This replaces the old `tool_approval_handler` (which returned a plain `bool`) from v0.2.7. The new `hitl_handler` hook gives you full control — not just approve/reject, but also inspect arguments, rewrite them, or inject custom logic before any tool executes. Migrate by replacing `async def handler(approval) -> bool` with `async def handler(request: HITLRequest) -> HITLDecision`.
+
+Intercept every tool call before execution using `hitl_handler`. The handler receives an `HITLRequest` and must return an `HITLDecision`:
 
 ```python
-from chak.tools.manager import ToolCallApproval
+import chak
+from chak.tools.manager import HITLDecision, HITLRequest
 
-async def my_approval_handler(approval: ToolCallApproval) -> bool:
-    """Auto-approve safe tools, prompt for others."""
-    
-    # Whitelist: auto-approve read-only tools without prompting
-    SAFE_TOOLS = {"search_web", "get_current_time", "read_file"}
-    
-    if approval.tool_name in SAFE_TOOLS:
-        print(f"✓ Auto-approved safe tool: {approval.tool_name}")
-        return True
-    
-    # For other tools, require manual approval
-    print(f"⚠️  Tool '{approval.tool_name}' requires approval")
-    print(f"   Arguments: {approval.arguments}")
-    answer = input("   Allow? (y/n): ").strip().lower()
-    return answer == "y"
+async def my_hitl_handler(request: HITLRequest) -> HITLDecision:
+    print(f"Tool: {request.tool_name}, Args: {request.arguments}")
+    answer = input("Allow? (y=yes / n=abort / e=edit args): ").strip().lower()
+
+    if answer == "n":
+        return HITLDecision.abort()                            # Cancel the tool call
+
+    if answer == "e":
+        key = input("Argument key to override: ").strip()
+        value = input(f"New value for '{key}': ").strip()
+        return HITLDecision.allow(overrides={key: value})     # Rewrite argument silently
+
+    return HITLDecision.allow()                               # Proceed unchanged
 
 
-# Assume search_web, get_current_time, delete_file are tools you provided
 conv = chak.Conversation(
     model_uri="openai/gpt-4o",
-    model_uri="openai/gpt-4o",
     api_key="YOUR_KEY",
-    tools=[search_web, get_current_time, delete_file],  # Mix safe and dangerous tools
-    tool_approval_handler=my_approval_handler,
+    tools=[...],
+    hitl_handler=my_hitl_handler,
 )
 
-response = await conv.asend("What time is it now?")
+await conv.asend("...")
 ```
+
+Three decision outcomes:
+
+| Decision | Method | Effect |
+|---|---|---|
+| Allow | `HITLDecision.allow()` | Tool executes with original arguments |
+| Allow + override | `HITLDecision.allow(overrides={"arg": value})` | Arguments silently rewritten before execution |
+| Abort | `HITLDecision.abort()` | Tool cancelled; LLM receives a cancellation notice and `ToolCallCancelledEvent` is emitted |
+
+See full example: [examples/tool_calling_hitl_demo.py](examples/tool_calling_hitl_demo.py)
 
 
 

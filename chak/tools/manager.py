@@ -24,6 +24,7 @@ from .mcp.tool import MCPTool
 from .native.function import NativeFunctionTool
 from .native.object import NativeObjectTool
 from .skills.object import SkillObjectTool
+from .skills.claude import ClaudeSkill
 
 
 def _dict_to_metadata(meta: Optional[Dict[str, Any]]) -> Metadata:
@@ -155,7 +156,7 @@ class ToolManager:
         )
     """
     
-    def __init__(self, tools: List[Union[MCPTool, NativeFunctionTool, NativeObjectTool, SkillObjectTool]], max_iterations: int = 50, executor=None, hitl_handler: Optional["HITLHandler"] = None):
+    def __init__(self, tools: List[Union[MCPTool, NativeFunctionTool, NativeObjectTool, SkillObjectTool, ClaudeSkill]], max_iterations: int = 50, executor=None, hitl_handler: Optional["HITLHandler"] = None):
         """
         Args:
             tools: 工具列表（MCPTool、NativeFunctionTool、NativeObjectTool 或 SkillObjectTool）
@@ -192,6 +193,11 @@ class ToolManager:
                 # Expand object methods
                 for method_name, method_tool in tool._method_tools.items():
                     tool_map[method_name] = method_tool
+            elif isinstance(tool, ClaudeSkill):
+                # Register both the skill and its companion file reader
+                tool_map[tool.name] = tool
+                file_reader = tool.get_file_reader()
+                tool_map[file_reader.name] = file_reader
             else:
                 # MCPTool or NativeFunctionTool
                 tool_map[tool.name] = tool
@@ -243,6 +249,9 @@ class ToolManager:
                 elif isinstance(tool, SkillObjectTool):
                     # Skip other skills when one is active
                     continue
+                elif isinstance(tool, ClaudeSkill):
+                    openai_tools.append(tool.to_openai_tool())
+                    openai_tools.append(tool.get_file_reader().to_openai_tool())
                 else:
                     openai_tools.append(tool.to_openai_tool())
         elif self._active_skill:
@@ -257,6 +266,9 @@ class ToolManager:
                 elif isinstance(tool, SkillObjectTool):
                     # Skip other skills when one is active
                     continue
+                elif isinstance(tool, ClaudeSkill):
+                    openai_tools.append(tool.to_openai_tool())
+                    openai_tools.append(tool.get_file_reader().to_openai_tool())
                 else:
                     openai_tools.append(tool.to_openai_tool())
         else:
@@ -272,6 +284,9 @@ class ToolManager:
                 elif isinstance(tool, SkillObjectTool):
                     # SkillObjectTool already handled above
                     continue
+                elif isinstance(tool, ClaudeSkill):
+                    openai_tools.append(tool.to_openai_tool())
+                    openai_tools.append(tool.get_file_reader().to_openai_tool())
                 else:
                     openai_tools.append(tool.to_openai_tool())
         

@@ -8,6 +8,7 @@ This module provides:
 from typing import Any
 
 from .object import SkillObjectTool
+from .claude import ClaudeSkill
 
 
 class SkillBase:
@@ -28,3 +29,6 @@ class SkillBase:
             cls.name = cls.__name__
         if not hasattr(cls, "description"):
             cls.description = (cls.__doc__ or cls.__name__).strip().split("\n")[0]
+
+
+__all__ = ["SkillBase", "SkillObjectTool", "ClaudeSkill"]
