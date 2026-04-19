@@ -780,17 +780,41 @@ class Conversation:
                             # Most LLMs refuse a tool_choice-forced call when the
                             # conversation already ends on an AI turn, causing all 3
                             # retry attempts to return plain text instead of a tool call.
-                            # A short bridge HumanMessage restores the expected
+                            # A bridge HumanMessage restores the expected
                             # human-turn → assistant-tool-call pattern without
                             # polluting self.messages (the bridge lives only in the
                             # local copy inside _run_extraction_loop).
+                            #
+                            # Crucially, we quote the LLM's own last response verbatim
+                            # so it understands the task is pure reformatting, not
+                            # new reasoning.  This prevents "complete answer" refusals
+                            # where the model declines to call the tool because it
+                            # believes it already finished.
                             extraction_messages = list(self._apply_context_handler())
-                            extraction_messages.append(HumanMessage(
-                                content=(
+                            last_ai_content = next(
+                                (
+                                    msg.content
+                                    for msg in reversed(extraction_messages)
+                                    if getattr(msg, 'role', None) == 'assistant'
+                                    and isinstance(msg.content, str)
+                                    and msg.content.strip()
+                                ),
+                                "",
+                            )
+                            if last_ai_content:
+                                bridge_content = (
+                                    "Based on the following content you just provided, "
+                                    "please call the required function to structure it "
+                                    "into the requested format. "
+                                    "Do not add or remove information — only restructure:\n\n"
+                                    f'\'\'\'\n{last_ai_content}\n\'\'\''
+                                )
+                            else:
+                                bridge_content = (
                                     "Based on your analysis above, please call the required "
                                     "function to provide the structured output."
                                 )
-                            ))
+                            extraction_messages.append(HumanMessage(content=bridge_content))
                             return await self._run_extraction_loop(extraction_messages, returns, **kwargs)
                         except Exception as e:
                             from .utils.logger import logger
