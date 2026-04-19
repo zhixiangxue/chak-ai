@@ -775,8 +775,22 @@ class Conversation:
                         # conversation history.
                         try:
                             await self._asend_nonstream_with_tools(messages_to_send, **kwargs)
-                            # Re-apply context handler so extraction sees updated history
-                            extraction_messages = self._apply_context_handler()
+                            # Re-apply context handler so extraction sees updated history.
+                            # The tool loop always ends with an AIMessage (final answer).
+                            # Most LLMs refuse a tool_choice-forced call when the
+                            # conversation already ends on an AI turn, causing all 3
+                            # retry attempts to return plain text instead of a tool call.
+                            # A short bridge HumanMessage restores the expected
+                            # human-turn → assistant-tool-call pattern without
+                            # polluting self.messages (the bridge lives only in the
+                            # local copy inside _run_extraction_loop).
+                            extraction_messages = list(self._apply_context_handler())
+                            extraction_messages.append(HumanMessage(
+                                content=(
+                                    "Based on your analysis above, please call the required "
+                                    "function to provide the structured output."
+                                )
+                            ))
                             return await self._run_extraction_loop(extraction_messages, returns, **kwargs)
                         except Exception as e:
                             from .utils.logger import logger
