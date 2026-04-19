@@ -685,9 +685,10 @@ class Conversation:
             # Merge timeout into kwargs if specified
             if timeout is not None:
                 kwargs['timeout'] = timeout
-            
-            # Handle structured output (returns parameter)
-            if returns is not None:
+
+            # Structured output without tools: fast path, message pre-processing
+            # is handled inside _asend_with_structured_output.
+            if returns is not None and not self._tool_manager:
                 try:
                     return await self._asend_with_structured_output(
                         message=message,
@@ -700,8 +701,8 @@ class Conversation:
                     from .utils.logger import logger
                     logger.warning(f"Structured output failed: {type(e).__name__}: {e}")
                     return None
-        
-                # Convert str to HumanMessage and merge attachments if present
+
+            # Convert str to HumanMessage and merge attachments if present
             if isinstance(message, str):
                 if attachments:
                     # Create multimodal message
@@ -748,9 +749,9 @@ class Conversation:
             else:
                 # User provided a Message object directly
                 user_message = message
-            
+
             self.messages.append(user_message)
-            
+
             # Track attachments at conversation level
             if attachments:
                 self.attachments.extend(attachments)
@@ -765,10 +766,25 @@ class Conversation:
                 if tool_executor is not None:
                     original_executor = self._tool_manager.executor
                     self._tool_manager.executor = self._get_executor(tool_executor)
-                
+
                 try:
-                    # MCP tools mode (non-stream only, stream handled by wrapper above)
-                    return await self._asend_nonstream_with_tools(messages_to_send, **kwargs)
+                    if returns is not None:
+                        # Two-phase flow: run the tool-calling loop first so that
+                        # ClaudeSkill (and any other tools) can activate normally,
+                        # then run a schema-forced extraction pass on the resulting
+                        # conversation history.
+                        try:
+                            await self._asend_nonstream_with_tools(messages_to_send, **kwargs)
+                            # Re-apply context handler so extraction sees updated history
+                            extraction_messages = self._apply_context_handler()
+                            return await self._run_extraction_loop(extraction_messages, returns, **kwargs)
+                        except Exception as e:
+                            from .utils.logger import logger
+                            logger.warning(f"Structured output failed: {type(e).__name__}: {e}")
+                            return None
+                    else:
+                        # Normal tool-calling mode
+                        return await self._asend_nonstream_with_tools(messages_to_send, **kwargs)
                 finally:
                     # Restore original executor
                     if original_executor is not None:
@@ -777,7 +793,7 @@ class Conversation:
                 # Add reasoning to kwargs if provided
                 if reasoning is not None:
                     kwargs['reasoning'] = reasoning
-                
+
                 # Normal LLM mode (non-stream only, stream handled by wrapper above)
                 return await self._asend_nonstream(messages_to_send, **kwargs)
         finally:
@@ -900,70 +916,221 @@ class Conversation:
         self.messages.extend(new_messages)
         return final_message
     
+    async def _run_extraction_loop(
+        self,
+        current_messages: List[Message],
+        returns: type,
+        **kwargs
+    ) -> Any:
+        """
+        Run the structured output extraction loop against an existing message list.
+
+        Expects self.messages to already contain the user message (and any
+        tool-calling round-trips if applicable).  On success, appends the
+        extraction AIMessage and a virtual ToolMessage to self.messages.
+
+        Args:
+            current_messages: Messages to send to the LLM for extraction.
+            returns: Pydantic BaseModel class or generic type (List/Dict).
+            **kwargs: Additional LLM parameters.
+
+        Returns:
+            Instance of the Pydantic model (or List/Dict of instances).
+        """
+        from pydantic import BaseModel, RootModel, ValidationError as PydanticValidationError
+        from typing import get_origin, get_args
+        import json
+
+        # Resolve generic wrappers (List[Model], Dict[str, Model])
+        origin = get_origin(returns)
+        is_wrapped = False
+        original_returns = returns
+
+        if origin is list:
+            args = get_args(returns)
+            if not args or not (isinstance(args[0], type) and issubclass(args[0], BaseModel)):
+                raise TypeError(
+                    f"List type must contain a Pydantic BaseModel, "
+                    f"got List[{args[0] if args else 'Unknown'}]"
+                )
+            returns = RootModel[original_returns]
+            is_wrapped = True
+        elif origin is dict:
+            args = get_args(returns)
+            if len(args) != 2 or args[0] != str or not (isinstance(args[1], type) and issubclass(args[1], BaseModel)):
+                raise TypeError(
+                    f"Dict type must be Dict[str, BaseModel], "
+                    f"got Dict[{args[0] if len(args) > 0 else 'Unknown'}, "
+                    f"{args[1] if len(args) > 1 else 'Unknown'}]"
+                )
+            returns = RootModel[original_returns]
+            is_wrapped = True
+        elif not (isinstance(returns, type) and issubclass(returns, BaseModel)):
+            raise TypeError(
+                f"returns must be a Pydantic BaseModel, List[BaseModel], or "
+                f"Dict[str, BaseModel], got {type(returns)}"
+            )
+
+        # Generate tool schema and force its usage
+        tool_schema = self._generate_tool_schema_from_model(returns)
+        extraction_kwargs = dict(kwargs)
+        extraction_kwargs['tools'] = [tool_schema]
+        extraction_kwargs['tool_choice'] = {
+            "type": "function",
+            "function": {"name": tool_schema["function"]["name"]}
+        }
+
+        # ── Instructor-style extraction loop ──────────────────────────────
+        # Each attempt may extend messages with error feedback so the LLM
+        # can self-correct.  Up to _MAX_RETRIES tries.
+        _MAX_RETRIES = 3
+        tool_name = tool_schema["function"]["name"]
+        messages = list(current_messages)
+        last_error: Exception = RuntimeError("No attempts were made")
+
+        for attempt in range(_MAX_RETRIES):
+            # ── Step 1: LLM call ──────────────────────────────────────────
+            try:
+                response = await asyncio.to_thread(
+                    self.provider.send,
+                    messages=messages,
+                    **extraction_kwargs
+                )
+            except Exception as e:
+                # Non-retryable API errors (4xx): raise immediately
+                cause = getattr(e, '__cause__', None)
+                if cause and hasattr(cause, 'status_code') and 400 <= cause.status_code < 500:
+                    raise
+                last_error = e
+                if attempt < _MAX_RETRIES - 1:
+                    continue
+                raise last_error
+
+            # ── Step 2: extract tool_call ─────────────────────────────────
+            tool_call = None
+            if isinstance(response, AIMessage) and response.tool_calls:
+                tool_call = response.tool_calls[0]
+            elif hasattr(response, 'choices') and response.choices:
+                tc = getattr(response.choices[0].message, 'tool_calls', None)
+                if tc:
+                    tool_call = tc[0]
+
+            if tool_call is None:
+                last_error = RuntimeError(
+                    f"LLM did not call the '{tool_name}' tool "
+                    f"(attempt {attempt + 1}/{_MAX_RETRIES})"
+                )
+                if attempt < _MAX_RETRIES - 1:
+                    ai_content = response.content if isinstance(response, AIMessage) else ""
+                    messages = messages + [
+                        AIMessage(content=ai_content or ""),
+                        HumanMessage(
+                            content=(
+                                f"You must respond by calling the '{tool_name}' function "
+                                f"to provide your answer in the required structured format. "
+                                f"Please try again."
+                            )
+                        ),
+                    ]
+                continue
+
+            # ── Step 3: parse + validate ──────────────────────────────────
+            try:
+                arguments = json.loads(tool_call.function.arguments)
+                # Try direct validation first. Some providers (e.g. Anthropic)
+                # return nested objects as JSON-encoded strings when the schema
+                # contains $ref / oneOf. In that case, fall back to recursively
+                # decoding string values that are valid JSON objects/arrays.
+                def _decode_json_strings(obj):
+                    if isinstance(obj, dict):
+                        return {k: _decode_json_strings(v) for k, v in obj.items()}
+                    if isinstance(obj, list):
+                        return [_decode_json_strings(v) for v in obj]
+                    if isinstance(obj, str):
+                        try:
+                            parsed = json.loads(obj)
+                            if isinstance(parsed, (dict, list)):
+                                return _decode_json_strings(parsed)
+                        except (json.JSONDecodeError, ValueError):
+                            pass
+                    return obj
+
+                try:
+                    result = returns.model_validate(arguments)
+                except PydanticValidationError:
+                    result = returns.model_validate(_decode_json_strings(arguments))
+
+                # Unwrap RootModel if it was auto-wrapped
+                if is_wrapped:
+                    result = result.root
+
+                # Save the extraction messages to conversation history
+                if isinstance(response, AIMessage):
+                    self.messages.append(response)
+                else:
+                    ai_message = AIMessage(
+                        content=response.choices[0].message.content or "",
+                        tool_calls=response.choices[0].message.tool_calls
+                    )
+                    self.messages.append(ai_message)
+
+                # Add a virtual tool response to complete the tool calling flow
+                # This prevents LLM from expecting a tool response in the next turn
+                tool_response = ToolMessage(
+                    content="Structured data extracted successfully",
+                    tool_call_id=tool_call.id
+                )
+                self.messages.append(tool_response)
+
+                return result
+
+            except (json.JSONDecodeError, PydanticValidationError, ValueError) as e:
+                last_error = e
+                if attempt < _MAX_RETRIES - 1:
+                    messages = messages + [
+                        AIMessage(content=None, tool_calls=response.tool_calls)
+                        if isinstance(response, AIMessage)
+                        else AIMessage(content=""),
+                        ToolMessage(
+                            content=(
+                                f"Validation error in your response:\n{e}\n"
+                                f"Please fix the error and call '{tool_name}' again "
+                                f"with correct values."
+                            ),
+                            tool_call_id=tool_call.id,
+                        ),
+                    ]
+                continue
+
+        raise last_error
+
     async def _asend_with_structured_output(
-        self, 
+        self,
         message: Union[str, Message],
         attachments: Optional[List[Attachment]],
         returns: type,
         **kwargs
     ) -> Any:
         """
-        Handle structured output by converting Pydantic model to tool calling.
-        This method:
-        1. Creates a virtual tool from the Pydantic model schema
-        2. Forces LLM to call this tool
-        3. Parses and validates the result
-        4. Returns the Pydantic model instance
-        
+        Handle structured output (no tools configured).
+
+        Prepares the user message, applies context handling, then delegates
+        the schema-forced extraction to _run_extraction_loop.
+
         Supports:
         - BaseModel: returns=MyModel
         - List[BaseModel]: returns=List[MyModel]
         - Dict[str, BaseModel]: returns=Dict[str, MyModel]
-        
+
         Args:
             message: User message
             attachments: Optional attachments
             returns: Pydantic BaseModel class or generic type (List/Dict)
             **kwargs: Additional LLM parameters
-            
+
         Returns:
             Instance of the Pydantic model (or List/Dict of instances)
         """
-        from pydantic import BaseModel, RootModel
-        from typing import get_origin, get_args
-        import json
-        
-        # Check if returns is a generic type (List/Dict)
-        origin = get_origin(returns)
-        is_wrapped = False
-        original_returns = returns
-        
-        if origin is list:
-            # List[BaseModel] -> wrap with RootModel
-            args = get_args(returns)
-            if not args or not (isinstance(args[0], type) and issubclass(args[0], BaseModel)):
-                raise TypeError(
-                    f"List type must contain a Pydantic BaseModel, got List[{args[0] if args else 'Unknown'}]"
-                )
-            # Create RootModel wrapper
-            returns = RootModel[original_returns]
-            is_wrapped = True
-        elif origin is dict:
-            # Dict[str, BaseModel] -> wrap with RootModel
-            args = get_args(returns)
-            if len(args) != 2 or args[0] != str or not (isinstance(args[1], type) and issubclass(args[1], BaseModel)):
-                raise TypeError(
-                    f"Dict type must be Dict[str, BaseModel], got Dict[{args[0] if len(args) > 0 else 'Unknown'}, {args[1] if len(args) > 1 else 'Unknown'}]"
-                )
-            # Create RootModel wrapper
-            returns = RootModel[original_returns]
-            is_wrapped = True
-        elif not (isinstance(returns, type) and issubclass(returns, BaseModel)):
-            # Not a BaseModel and not a supported generic type
-            raise TypeError(
-                f"returns must be a Pydantic BaseModel, List[BaseModel], or Dict[str, BaseModel], got {type(returns)}"
-            )
-        
         # Convert str to HumanMessage (same logic as regular asend)
         if isinstance(message, str):
             if attachments:
@@ -1005,152 +1172,16 @@ class Conversation:
                 user_message = HumanMessage(content=message)
         else:
             user_message = message
-        
+
         self.messages.append(user_message)
-        
+
         if attachments:
             self.attachments.extend(attachments)
-        
+
         # Apply context handler
         messages_to_send = self._apply_context_handler()
-        
-        # Generate tool schema from Pydantic model
-        tool_schema = self._generate_tool_schema_from_model(returns)
-        
-        # Add tool to kwargs and force its usage
-        kwargs['tools'] = [tool_schema]
-        kwargs['tool_choice'] = {
-            "type": "function",
-            "function": {"name": tool_schema["function"]["name"]}
-        }
-        
-        # ── Instructor-style extraction loop ──────────────────────────────
-        # Each attempt may extend current_messages with error feedback so the
-        # LLM can self-correct.  Up to _MAX_STRUCTURED_OUTPUT_RETRIES tries.
-        from pydantic import ValidationError as PydanticValidationError
 
-        _MAX_RETRIES = 3
-        tool_name = tool_schema["function"]["name"]
-        current_messages = list(messages_to_send)
-        last_error: Exception = RuntimeError("No attempts were made")
-
-        for attempt in range(_MAX_RETRIES):
-            # ── Step 1: LLM call ──────────────────────────────────────────
-            try:
-                response = await asyncio.to_thread(
-                    self.provider.send,
-                    messages=current_messages,
-                    **kwargs
-                )
-            except Exception as e:
-                # Non-retryable API errors (4xx): raise immediately
-                cause = getattr(e, '__cause__', None)
-                if cause and hasattr(cause, 'status_code') and 400 <= cause.status_code < 500:
-                    raise
-                last_error = e
-                if attempt < _MAX_RETRIES - 1:
-                    continue
-                raise last_error
-
-            # ── Step 2: extract tool_call ─────────────────────────────────
-            tool_call = None
-            if isinstance(response, AIMessage) and response.tool_calls:
-                tool_call = response.tool_calls[0]
-            elif hasattr(response, 'choices') and response.choices:
-                tc = getattr(response.choices[0].message, 'tool_calls', None)
-                if tc:
-                    tool_call = tc[0]
-
-            if tool_call is None:
-                last_error = RuntimeError(
-                    f"LLM did not call the '{tool_name}' tool "
-                    f"(attempt {attempt + 1}/{_MAX_RETRIES})"
-                )
-                if attempt < _MAX_RETRIES - 1:
-                    # Feed back: tell the LLM it must use the tool
-                    ai_content = response.content if isinstance(response, AIMessage) else ""
-                    current_messages = current_messages + [
-                        AIMessage(content=ai_content or ""),
-                        HumanMessage(
-                            content=(
-                                f"You must respond by calling the '{tool_name}' function "
-                                f"to provide your answer in the required structured format. "
-                                f"Please try again."
-                            )
-                        ),
-                    ]
-                continue
-
-            # ── Step 3: parse + validate ──────────────────────────────────
-            try:
-                arguments = json.loads(tool_call.function.arguments)
-                # Try direct validation first. Some providers (e.g. Anthropic)
-                # return nested objects as JSON-encoded strings when the schema
-                # contains $ref / oneOf. In that case, fall back to recursively
-                # decoding string values that are valid JSON objects/arrays.
-                def _decode_json_strings(obj):
-                    if isinstance(obj, dict):
-                        return {k: _decode_json_strings(v) for k, v in obj.items()}
-                    if isinstance(obj, list):
-                        return [_decode_json_strings(v) for v in obj]
-                    if isinstance(obj, str):
-                        try:
-                            parsed = json.loads(obj)
-                            if isinstance(parsed, (dict, list)):
-                                return _decode_json_strings(parsed)
-                        except (json.JSONDecodeError, ValueError):
-                            pass
-                    return obj
-                    
-                try:
-                    result = returns.model_validate(arguments)
-                except PydanticValidationError:
-                    result = returns.model_validate(_decode_json_strings(arguments))
-
-                # Unwrap RootModel if it was auto-wrapped
-                if is_wrapped:
-                    result = result.root
-
-                # Save the AI message to conversation history
-                if isinstance(response, AIMessage):
-                    self.messages.append(response)
-                else:
-                    ai_message = AIMessage(
-                        content=response.choices[0].message.content or "",
-                        tool_calls=response.choices[0].message.tool_calls
-                    )
-                    self.messages.append(ai_message)
-
-                # Add a virtual tool response to complete the tool calling flow
-                # This prevents LLM from expecting a tool response in the next turn
-                tool_response = ToolMessage(
-                    content="Structured data extracted successfully",
-                    tool_call_id=tool_call.id
-                )
-                self.messages.append(tool_response)
-
-                return result
-
-            except (json.JSONDecodeError, PydanticValidationError, ValueError) as e:
-                last_error = e
-                if attempt < _MAX_RETRIES - 1:
-                    # Feed back: give the LLM the exact validation error to fix
-                    current_messages = current_messages + [
-                        AIMessage(content=None, tool_calls=response.tool_calls)
-                        if isinstance(response, AIMessage)
-                        else AIMessage(content=""),
-                        ToolMessage(
-                            content=(
-                                f"Validation error in your response:\n{e}\n"
-                                f"Please fix the error and call '{tool_name}' again "
-                                f"with correct values."
-                            ),
-                            tool_call_id=tool_call.id,
-                        ),
-                    ]
-                continue
-
-        raise last_error
+        return await self._run_extraction_loop(messages_to_send, returns, **kwargs)
     
     def _generate_tool_schema_from_model(self, model: type) -> Dict[str, Any]:
         """
