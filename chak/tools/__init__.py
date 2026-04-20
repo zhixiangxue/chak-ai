@@ -21,6 +21,19 @@ from .skills import SkillBase, SkillObjectTool, ClaudeSkill
 from .exec import Bash, Python
 from .manager import ToolManager
 
+# Type alias for any supported tool — use this instead of repeating the full union.
+ToolLike = Union[
+    MCPTool,
+    NativeFunctionTool,
+    NativeObjectTool,
+    SkillObjectTool,
+    ClaudeSkill,
+    Bash,
+    Python,
+    Callable,
+    object,
+]
+
 __all__ = [
     "mcp",
     "native",
@@ -35,11 +48,12 @@ __all__ = [
     "Bash",
     "Python",
     "ToolManager",
+    "ToolLike",
     "wrap_tools",
 ]
 
 
-def wrap_tools(tools: List[Union[MCPTool, NativeFunctionTool, NativeObjectTool, SkillObjectTool, Callable, object]]) -> List:
+def wrap_tools(tools: List[ToolLike]) -> List:
     """
     自动包装工具列表
     

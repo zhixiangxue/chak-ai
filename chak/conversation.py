@@ -1893,6 +1893,27 @@ class Conversation:
             self._process_pool.shutdown(wait=True)
             self._process_pool = None
 
+    def dump(self) -> List[dict]:
+        """Serialize conversation messages to a JSON-serializable list of dicts."""
+        return [m.model_dump(mode="json") for m in self.messages]
+
+    def load(self, data: List[dict]) -> None:
+        """Restore conversation messages from a serialized list of dicts."""
+        _ROLE_MAP = {
+            "user": HumanMessage,
+            "assistant": AIMessage,
+            "system": SystemMessage,
+            "tool": ToolMessage,
+        }
+        messages = []
+        for m in data:
+            role = m.get("role")
+            cls = _ROLE_MAP.get(role)
+            if cls is None:
+                raise ValueError(f"Unknown message role '{role}'")
+            messages.append(cls.model_validate(m))
+        self.messages = messages
+
     def __enter__(self):
         return self
 
