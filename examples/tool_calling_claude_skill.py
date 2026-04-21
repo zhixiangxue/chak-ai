@@ -20,7 +20,7 @@ from pathlib import Path
 import dotenv
 
 import chak
-from chak.tools.exec import Bash, Python
+from chak.tools.std import Bash, Python
 from chak.tools.skills import ClaudeSkill
 
 dotenv.load_dotenv()

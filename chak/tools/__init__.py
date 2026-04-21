@@ -1,9 +1,11 @@
 """
 chak.tools - 工具集成模块
 
-支持两种工具类型：
-- MCP 工具：通过 MCP 协议调用的工具  
-- 原生工具：普通 Python 函数
+支持的工具类型：
+- MCP 工具：通过 MCP 协议调用的工具
+- 原生工具：普通 Python 函数或对象
+- Skill 工具：Claude Agent Skills
+- std 内置工具：chak 标准库（Bash、Python、FileSystem、Web、Search、Http）
 """
 
 from typing import Callable, List, Union
@@ -12,13 +14,13 @@ from typing import Callable, List, Union
 from . import mcp
 from . import native
 from . import skills
-from . import exec
+from . import std
 
 # 导出常用类
 from .mcp import Server, MCPTool
 from .native import NativeFunctionTool, NativeObjectTool
 from .skills import SkillBase, SkillObjectTool, ClaudeSkill
-from .exec import Bash, Python
+from .std import Bash, Python, FileSystem, Web, Search, Http
 from .manager import ToolManager
 
 # Type alias for any supported tool — use this instead of repeating the full union.
@@ -47,6 +49,10 @@ __all__ = [
     "ClaudeSkill",
     "Bash",
     "Python",
+    "FileSystem",
+    "Web",
+    "Search",
+    "Http",
     "ToolManager",
     "ToolLike",
     "wrap_tools",

@@ -51,6 +51,13 @@ documents = [
     "aiohttp>=3.9.0",
     "requests>=2.31.0",
 ]
+web = [
+    "beautifulsoup4>=4.12.0",        # HTML parsing (Web all layers)
+    "readability-lxml>=0.8.1",       # HTML content extraction (Web Layer 3)
+    "firecrawl-py>=1.0.0",           # Firecrawl API client (Web Layer 1, needs API key)
+    "tavily-python>=0.3.0",          # Tavily AI search client (Search Layer 1, needs API key)
+    "ddgs>=0.1.0",                   # DuckDuckGo backend (Search Layer 3, renamed from duckduckgo-search)
+]
 all = [
     "fastapi>=0.104.0",
     "uvicorn>=0.24.0",
@@ -62,6 +69,11 @@ all = [
     "aiofiles>=23.0.0",
     "aiohttp>=3.9.0",
     "requests>=2.31.0",
+    "beautifulsoup4>=4.12.0",
+    "readability-lxml>=0.8.1",
+    "firecrawl-py>=1.0.0",
+    "tavily-python>=0.3.0",
+    "ddgs>=0.1.0",
 ]
 
 [project.urls]
