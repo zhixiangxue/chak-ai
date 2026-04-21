@@ -140,6 +140,8 @@ class Bash:
                 shell=True,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=self._timeout,
             )
             output = result.stdout
