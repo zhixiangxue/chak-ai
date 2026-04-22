@@ -967,7 +967,8 @@ class ToolManager:
                 # Construct final AIMessage from accumulated content, preserving LLM usage metadata
                 final_message = AIMessage(
                     content=accumulated_content,
-                    metadata=_dict_to_metadata(last_metadata)
+                    metadata=_dict_to_metadata(last_metadata),
+                    attachments=all_attachments,
                 )
                 new_messages.append(final_message)
                 
