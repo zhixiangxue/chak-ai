@@ -10,8 +10,42 @@ ToolManager 类：管理 LLM + 工具调用循环
 """
 
 import asyncio
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional, Union
+
+# Matches the full HTTPS URL embedded inside an attachment:// reference emitted by tools.
+_ATTACHMENT_RE = re.compile(r"attachment://(https?://\S+)")
+
+# Extension → Attachment subclass mapping for resolving tool-produced attachment URLs.
+from ..attachment.base import Attachment as _Attachment
+from ..attachment import PDF as _PDF, DOC as _DOC, Excel as _Excel, CSV as _CSV, TXT as _TXT, Image as _Image
+
+_EXT_TO_TYPE: Dict[str, type] = {
+    ".pdf":  _PDF,
+    ".docx": _DOC,
+    ".doc":  _DOC,
+    ".xlsx": _Excel,
+    ".xls":  _Excel,
+    ".csv":  _CSV,
+    ".md":   _TXT,
+    ".txt":  _TXT,
+    ".png":  _Image,
+    ".jpg":  _Image,
+    ".jpeg": _Image,
+    ".gif":  _Image,
+    ".webp": _Image,
+}
+
+
+def _url_to_attachment(url: str) -> _Attachment:
+    """Resolve a tool-output HTTPS URL to a typed Attachment subclass (no reader — output only)."""
+    ext = Path(url.split("?")[0]).suffix.lower()
+    cls = _EXT_TO_TYPE.get(ext)
+    if cls is None:
+        return _Attachment(source=url)
+    return cls(source=url)
 
 from ..metadata import Metadata, Usage
 from ..utils.logger import logger
@@ -52,6 +86,9 @@ class ToolCallResult:
     call_id: str
     content: str
     is_error: bool
+    # Attachment objects extracted from the tool output (output-type, no reader).
+    # These travel out-of-band from the LLM context so the frontend can render downloads.
+    attachments: List[_Attachment] = field(default_factory=list)
 
 
 @dataclass
@@ -330,7 +367,8 @@ class ToolManager:
         
         current_messages = messages.copy()
         new_messages = []  # Track all new messages added during this loop
-        
+        all_attachments: List[_Attachment] = []  # Accumulate Attachment objects across all tool calls
+
         # Convert tools to OpenAI format
         openai_tools = self._get_openai_tools()
         
@@ -358,7 +396,8 @@ class ToolManager:
                     )
                     final_msg = AIMessage(
                         content=response.content if hasattr(response, 'content') else str(response),
-                        metadata=getattr(response, 'metadata', Metadata())
+                        metadata=getattr(response, 'metadata', Metadata()),
+                        attachments=all_attachments,
                     )
                     new_messages.append(final_msg)
                     return final_msg, new_messages
@@ -378,7 +417,8 @@ class ToolManager:
                 logger.debug(f"✅ [Tool Loop] No tool calls, finishing...")
                 final_msg = AIMessage(
                     content=response.content if hasattr(response, 'content') else str(response),
-                    metadata=getattr(response, 'metadata', Metadata())
+                    metadata=getattr(response, 'metadata', Metadata()),
+                    attachments=all_attachments,
                 )
                 new_messages.append(final_msg)
                 return final_msg, new_messages
@@ -400,8 +440,9 @@ class ToolManager:
             current_messages.append(assistant_msg)
             new_messages.append(assistant_msg)
             
-            # Step 5: Add tool results to conversation
+            # Step 5: Add tool results to conversation; accumulate attachment URLs.
             for result in tool_results:
+                all_attachments.extend(result.attachments)
                 tool_msg = ToolMessage(
                     content=result.content,
                     tool_call_id=result.call_id
@@ -670,6 +711,7 @@ class ToolManager:
         
         current_messages = messages.copy()
         new_messages = []  # Track all messages created during this turn
+        all_attachments: List[_Attachment] = []  # Accumulate Attachment objects across all tool calls
         
         # Convert tools to OpenAI format (same as execute_loop)
         openai_tools = self._get_openai_tools()
@@ -884,10 +926,12 @@ class ToolManager:
                             error=result.content,
                         )
                     else:
+                        all_attachments.extend(result.attachments)
                         yield ToolCallSuccessEvent(
                             tool_name=tool_name_for_event,
                             call_id=result.call_id,
                             result=result.content,
+                            attachments=result.attachments,
                         )
 
                 # Add assistant message (with tool_calls), preserving LLM usage metadata
@@ -927,7 +971,7 @@ class ToolManager:
                 )
                 new_messages.append(final_message)
                 
-                yield MessageChunk(content="", is_final=True, final_message=final_message)
+                yield MessageChunk(content="", is_final=True, final_message=final_message, attachments=all_attachments)
                 yield ConversationCompleteEvent(messages=new_messages)
                 return
         
@@ -1096,7 +1140,7 @@ class ToolManager:
             logger.debug(f"⚙️  [Tool] Executing tool: {tool_name}...")
             result = await tool.call(arguments, executor=self.executor)
         
-            # 提取结果内容
+            # Extract result content
             if hasattr(result, 'content'):
                 content = str(result.content)
             elif isinstance(result, dict):
@@ -1104,14 +1148,24 @@ class ToolManager:
                 content = json.dumps(result, ensure_ascii=False)
             else:
                 content = str(result)
-        
+
+            # Extract attachment:// URLs from the tool output before the content
+            # is fed to the LLM.  The real URLs are preserved as typed Attachment objects
+            # and travel out-of-band to the caller via ToolCallSuccessEvent / MessageChunk.
+            # The LLM still sees the full content so its response reads naturally; the
+            # frontend relies on the attachments field, not on parsing the LLM text.
+            attachments: List[_Attachment] = []
+            for m in _ATTACHMENT_RE.finditer(content):
+                attachments.append(_url_to_attachment(m.group(1)))
+
             logger.info(f"✅ [Tool] Tool '{tool_name}' succeeded")
             logger.debug(f"📦 [Tool] Result: {content[:200]}..." if len(content) > 200 else f"📦 [Tool] Result: {content}")
-        
+
             return ToolCallResult(
                 call_id=call_id,
                 content=content,
-                is_error=False
+                is_error=False,
+                attachments=attachments,
             )
         except Exception as e:
             logger.error(f"❌ [Tool] Tool '{tool_name}' failed: {str(e)}")

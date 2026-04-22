@@ -36,7 +36,7 @@ class BaseMessage(BaseModel):
     reasoning_content: Optional[str] = None
     tool_calls: Optional[List[ChatCompletionMessageToolCall]] = None
     refusal: Optional[str] = None
-    attachments: List[Attachment] = Field(default_factory=list)  # Original attachments associated with this message
+    attachments: List[Attachment] = Field(default_factory=list)  # File attachments: user-uploaded inputs (HumanMessage) or tool-produced outputs (AIMessage)
     metadata: Metadata = Field(default_factory=Metadata)  # Metadata (provider, model, usage, etc.)
     custom: Dict[str, Any] = Field(default_factory=dict)  # Custom data for application-specific use
     timestamp: datetime = Field(default_factory=datetime.now)  # 消息创建时间
@@ -91,10 +91,16 @@ class MessageChunk(BaseModel):
     This chunk represents user-visible assistant output.
     """
 
+    class Config:
+        arbitrary_types_allowed = True
+
     content: str = ""
     is_final: bool = False
     metadata: Optional[Dict[str, Any]] = None
     final_message: Optional['Message'] = None  # When is_final=True, contains the complete final message
+    # When is_final=True, carries all Attachment objects produced by tools during this turn.
+    # These travel out-of-band from the LLM text so the frontend can render them as downloads.
+    attachments: List[Attachment] = Field(default_factory=list)
 
 
 class ReasoningChunk(BaseModel):
@@ -189,6 +195,7 @@ class ToolCallSuccessEvent(StreamEvent):
         tool_name: 工具名称
         call_id: 工具调用唯一标识（与 ToolCallStartEvent 的 call_id 对应）
         result: 工具执行结果（字符串格式）
+        attachments: 工具输出中包含的 Attachment 对象列表（output 型，携带 source URL 和 mime_type）
         timestamp: 事件时间戳（秒）
     
     Example:
@@ -196,9 +203,14 @@ class ToolCallSuccessEvent(StreamEvent):
             case ToolCallSuccessEvent(tool_name=name, call_id=cid, result=res, timestamp=ts):
                 print(f"✅ {name} 成功: {res}")
     """
+
+    class Config:
+        arbitrary_types_allowed = True
+
     tool_name: str = ""
     call_id: str = ""
     result: str = ""
+    attachments: List[Attachment] = Field(default_factory=list)
 
 
 class ToolCallErrorEvent(StreamEvent):

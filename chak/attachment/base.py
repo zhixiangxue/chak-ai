@@ -185,6 +185,19 @@ class Attachment:
     def is_loaded(self) -> bool:
         """Check if content has been loaded"""
         return self._cached_result is not None
+
+    @property
+    def link(self) -> str:
+        """Canonical attachment link string for frontend rendering.
+
+        Format: [attachment://<source>]
+
+        Example:
+            >>> att = Attachment(source="https://s3.amazonaws.com/bucket/file.pdf")
+            >>> att.link
+            '[attachment://https://s3.amazonaws.com/bucket/file.pdf]'
+        """
+        return f"[attachment://{self.source}]"
         
     def _validate_mime_type(self, expected_prefix: str):
         """Validate MIME type matches expected media type"""
