@@ -24,6 +24,8 @@ chak is not another liteLLM, one-api, or OpenRouter, but a client library that a
 
 ## 🌵 What's New
 
+- **2026-04-22 | v0.3.2** - Built-in standard tools:
+  - **Built-in standard tools**: 7 atomic-level tools now ship with chak — `Bash`, `Python`, `FileSystem`, `Web`, `Search`, `Http`, `Pdf`. Drop them directly into `tools=[]` to give any agent baseline capabilities. See [Built-in Standard Tools](#built-in-standard-tools).
 - **2026-04-08 | v0.3.1** - Human-in-the-Loop upgrade & built-in execution tools:
   - **Human-in-the-Loop upgrade** (⚠️ Breaking change): Replaced `tool_approval_handler` (bool) with `hitl_handler` (`HITLDecision`) — three outcomes: `abort`, `allow`, `allow(overrides={...})`. See [Human-in-the-Loop](#tool-calling-hitl).
   - **Built-in execution tools**: `Bash` (shell) and `Python` (code interpreter) for agentic workflows.
@@ -517,7 +519,7 @@ User: "Read /tmp/test.txt and convert to uppercase"
 **Run Anthropic's community skill packs without any glue code.** `ClaudeSkill` integrates [Anthropic Agent Skills](https://github.com/anthropics/skills) — each skill is a directory with a `SKILL.md` documentation file and supporting scripts. Optionally combine with the built-in `Bash` and `Python` tools to let the LLM execute shell commands or inline code on the fly.
 
 ```python
-from chak.tools.exec import Bash, Python
+from chak.tools.std import Bash, Python
 from chak.tools.skills import ClaudeSkill
 
 skill = ClaudeSkill("./skills/pdf")   # any Anthropic skill directory
@@ -533,16 +535,39 @@ conv = chak.Conversation(
 await conv.asend("Convert report.pdf to images and save to ./images")
 ```
 
-**Built-in execution tools:**
-
-| Tool | Class | Description |
-|------|-------|-------------|
-| Shell | `Bash` | Run any shell command, like install packages, execute scripts. |
-| Code Interpreter | `Python` | Write and run inline Python code without creating a persistent script file. |
-
-> ⚠️ **Security**: `Bash` and `Python` execute with host-process permissions. A warning is printed on instantiation. Use `hitl_handler` or a sandboxed interpreter for production deployments.
-
 See full example: [examples/tool_calling_claude_skill.py](examples/tool_calling_claude_skill.py)
+
+<a id="built-in-standard-tools"></a>
+
+### Built-in Standard Tools
+
+chak ships 7 atomic tools that cover the most common agent needs out of the box. Import and pass them directly — no wrapping, no configuration required.
+
+```python
+from chak.tools.std import Bash, Python, FileSystem, Web, Search, Http, Pdf
+
+conv = chak.Conversation(
+    "openai/gpt-4o",
+    api_key="YOUR_KEY",
+    tools=[Bash(), FileSystem(), Web(), Search(), Http(), Pdf()],
+)
+
+response = await conv.asend("Search for the latest Python release, then save a summary to ./notes.txt")
+```
+
+| Tool | Class | What it does |
+|------|-------|--------------|
+| Shell | `Bash` | Run any shell command. Cross-platform (PowerShell on Windows, bash on Unix). |
+| Code Interpreter | `Python` | Write and run Python code snippets in the active venv. |
+| File System | `FileSystem` | Read, write, edit, list, search, and delete files and directories. |
+| Web | `Web` | Fetch and parse web pages into clean text (Firecrawl → Jina → httpx fallback). |
+| Search | `Search` | Search the web and return structured results (Tavily → Brave → DuckDuckGo fallback). |
+| HTTP Client | `Http` | Full HTTP client — GET, POST, PUT, PATCH, DELETE with headers and body. |
+| PDF | `Pdf` | Extract text and tables from PDF files (local path or URL). |
+
+These tools are intentionally minimal and composable. Combine them freely or mix with your own custom tools.
+
+> ⚠️ **Security**: `Bash` and `Python` execute with host-process permissions. For production deployments, use `hitl_handler` for human approval, or run inside a sandboxed environment. `Bash` supports `deny_patterns`, `sensitive_files`, and `working_dir` parameters for fine-grained access control.
 
 ### Pass Functions
 
