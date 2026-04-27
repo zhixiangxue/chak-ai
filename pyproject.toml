@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "chakpy"
-version = "0.3.3"
+version = "0.3.4"
 description = "A simple, yet elegant, LLM API routing library"
 readme = "README.md"
 authors = [
@@ -30,9 +30,6 @@ dependencies = [
     "pydantic>=2.0.0",
     "dashscope>=1.20.0",
     "httpx>=0.24.0",
-    "pymupdf4llm>=0.0.17",
-    "pymupdf-layout>=1.27.0",
-    "markdown>=3.4.0",
     "boto3>=1.26.0",
     "tiktoken>=0.5.0",
     "loguru>=0.7.0",
@@ -62,6 +59,21 @@ web = [
     "tavily-python>=0.3.0",          # Tavily AI search client (Search Layer 1, needs API key)
     "ddgs>=0.1.0",                   # DuckDuckGo backend (Search Layer 3, renamed from duckduckgo-search)
 ]
+tools = [
+    # Pdf tool
+    "pymupdf4llm>=0.0.17",
+    "pymupdf-layout>=1.27.0",
+    "markdown>=3.4.0",
+    # Web tool
+    "beautifulsoup4>=4.12.0",
+    "readability-lxml>=0.8.1",
+    "firecrawl-py>=1.0.0",
+    # Search tool
+    "tavily-python>=0.3.0",
+    "ddgs>=0.1.0",
+    # Sandbox tool
+    "e2b>=2.0.0",
+]
 all = [
     "fastapi>=0.104.0",
     "uvicorn>=0.24.0",
@@ -81,6 +93,7 @@ all = [
     "pymupdf4llm>=0.0.17",
     "pymupdf-layout>=1.27.0",
     "markdown>=3.4.0",
+    "e2b>=2.0.0",
 ]
 
 [project.urls]

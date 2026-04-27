@@ -24,6 +24,8 @@ chak is not another liteLLM, one-api, or OpenRouter, but a client library that a
 
 ## 🌵 What's New
 
+- **2026-04-27 | v0.3.4** - e2b Sandbox:
+  - **Sandbox tool**: New `Sandbox` built-in tool — run code in an isolated e2b cloud VM. See [Built-in Standard Tools](#built-in-standard-tools).
 - **2026-04-22 | v0.3.2** - Built-in standard tools:
   - **Built-in standard tools**: 7 atomic-level tools now ship with chak — `Bash`, `Python`, `FileSystem`, `Web`, `Search`, `Http`, `Pdf`. Drop them directly into `tools=[]` to give any agent baseline capabilities. See [Built-in Standard Tools](#built-in-standard-tools).
 - **2026-04-08 | v0.3.1** - Human-in-the-Loop upgrade & built-in execution tools:
@@ -268,12 +270,22 @@ OpenAI, Google Gemini, Azure OpenAI, Anthropic Claude, Alibaba Bailian, Baidu We
 # Basic installation (SDK only)
 pip install chakpy
 
+# With built-in standard tools (Pdf, Web, Search, Sandbox)
+pip install chakpy[tools]
+
 # With server support
 pip install chakpy[server]
 
 # Install all optional dependencies
 pip install chakpy[all]
 ```
+
+| Extra | What it installs |
+|-------|------------------|
+| `tools` | pymupdf4llm, beautifulsoup4, readability-lxml, ddgs, e2b (and optional API clients for Firecrawl/Tavily) |
+| `server` | fastapi, uvicorn, websockets, pyyaml |
+| `web` | beautifulsoup4, readability-lxml, firecrawl-py, tavily-python, ddgs |
+| `all` | everything above |
 
 ### Chat with global models in a few lines
 
@@ -541,10 +553,12 @@ See full example: [examples/tool_calling_claude_skill.py](examples/tool_calling_
 
 ### Built-in Standard Tools
 
-chak ships 7 atomic tools that cover the most common agent needs out of the box. Import and pass them directly — no wrapping, no configuration required.
+chak ships 8 atomic tools that cover the most common agent needs out of the box. Import and pass them directly — no wrapping, no configuration required.
+
+> Tools with optional dependencies require `pip install chakpy[tools]` (or install individual packages as needed — each tool prints an actionable `pip install` message if a dependency is missing).
 
 ```python
-from chak.tools.std import Bash, Python, FileSystem, Web, Search, Http, Pdf
+from chak.tools.std import Bash, Python, FileSystem, Web, Search, Http, Pdf, Sandbox
 
 conv = chak.Conversation(
     "openai/gpt-4o",
@@ -555,17 +569,20 @@ conv = chak.Conversation(
 response = await conv.asend("Search for the latest Python release, then save a summary to ./notes.txt")
 ```
 
-| Tool | Class | What it does |
-|------|-------|--------------|
-| Shell | `Bash` | Run any shell command. Cross-platform (PowerShell on Windows, bash on Unix). |
-| Code Interpreter | `Python` | Write and run Python code snippets in the active venv. |
-| File System | `FileSystem` | Read, write, edit, list, search, and delete files and directories. |
-| Web | `Web` | Fetch and parse web pages into clean text (Firecrawl → Jina → httpx fallback). |
-| Search | `Search` | Search the web and return structured results (Tavily → Brave → DuckDuckGo fallback). |
-| HTTP Client | `Http` | Full HTTP client — GET, POST, PUT, PATCH, DELETE with headers and body. |
-| PDF | `Pdf` | Extract text and tables from PDF files (local path or URL). |
+| Tool | Class | What it does | Optional deps |
+|------|-------|--------------|---------------|
+| Shell | `Bash` | Run any shell command. Cross-platform (PowerShell on Windows, bash on Unix). | — |
+| Code Interpreter | `Python` | Write and run Python code snippets in the active venv. | — |
+| File System | `FileSystem` | Read, write, edit, list, search, and delete files and directories. | — |
+| HTTP Client | `Http` | Full HTTP client — GET, POST, PUT, PATCH, DELETE with headers and body. | — |
+| Web | `Web` | Fetch and parse web pages into clean text (Firecrawl → Jina → httpx fallback). | `firecrawl-py` (Layer 1, needs API key), `beautifulsoup4`, `readability-lxml` |
+| Search | `Search` | Search the web and return structured results (Tavily → Brave → DuckDuckGo fallback). | `ddgs`, `tavily-python` |
+| PDF | `Pdf` | Extract text and tables from PDF files (local path or URL). | `pymupdf4llm` |
+| Sandbox | `Sandbox` | Run multi-file code projects in an isolated e2b cloud sandbox. Supports any language reachable from bash. | `e2b`, `E2B_API_KEY` |
 
 These tools are intentionally minimal and composable. Combine them freely or mix with your own custom tools.
+
+See [`examples/tool_calling_std.py`](examples/tool_calling_std.py) for a runnable demo of every tool, including an `all` mode that runs them all in sequence.
 
 > ⚠️ **Security**: `Bash` and `Python` execute with host-process permissions. For production deployments, use `hitl_handler` for human approval, or run inside a sandboxed environment. `Bash` supports `deny_patterns`, `sensitive_files`, and `working_dir` parameters for fine-grained access control.
 

@@ -128,25 +128,40 @@ class Search:
                 return "Error: query must not be empty"
 
             n = int(max_results) if max_results is not None else self._max_results
+            failures: list[str] = []
 
             # Layer 1: Tavily (AI-optimized, best for agent use)
             if self._tavily_key:
                 results = await asyncio.to_thread(self._search_tavily, query, n)
                 if results:
                     return self._format(results)
+                failures.append("Tavily: failed (check API key or network)")
+            else:
+                failures.append("Tavily: skipped (no tavily_key provided)")
 
             # Layer 2: Brave Search (paid, high quality)
             if self._brave_key:
                 results = await self._search_brave(query, n)
                 if results:
                     return self._format(results)
+                failures.append("Brave: failed (check API key or network)")
+            else:
+                failures.append("Brave: skipped (no brave_key provided)")
 
             # Layer 3: DuckDuckGo (free, no key)
-            results = await self._search_ddgs(query, n)
+            results, ddgs_err = await self._search_ddgs(query, n)
             if results:
                 return self._format(results)
+            failures.append(f"DuckDuckGo: {ddgs_err}")
 
-            return f"Error: all search backends failed for query: {query!r}"
+            detail = "; ".join(failures)
+            return (
+                f"Error: all search backends failed for query: {query!r}. "
+                f"Reasons: {detail}. "
+                f"To fix: install at least one backend — "
+                f"`pip install ddgs` (free, no key needed) or "
+                f"`pip install tavily-python` (requires TAVILY_API_KEY)."
+            )
 
         except Exception as e:
             return f"Error searching for {query!r}: {e}"
@@ -213,8 +228,15 @@ class Search:
             ))
         return results or None
 
-    async def _search_ddgs(self, query: str, n: int) -> Optional[List[SearchResult]]:
-        """Query DuckDuckGo via duckduckgo-search (ddgs) library."""
+    async def _search_ddgs(
+        self, query: str, n: int
+    ) -> tuple[Optional[List[SearchResult]], str]:
+        """Query DuckDuckGo via duckduckgo-search (ddgs) library.
+
+        Returns:
+            (results, error_msg) — results is None on failure;
+            error_msg describes the failure reason.
+        """
         try:
             from ddgs import DDGS
 
@@ -230,9 +252,9 @@ class Search:
 
             items = await asyncio.to_thread(_run)
         except ImportError:
-            return None  # duckduckgo-search not installed
-        except Exception:
-            return None
+            return None, "package not installed — run `pip install ddgs`"
+        except Exception as e:
+            return None, f"runtime error: {e}"
 
         results = []
         for item in items[:n]:
@@ -241,7 +263,7 @@ class Search:
                 url=item.get("href", item.get("url", "")),
                 snippet=item.get("body", ""),
             ))
-        return results or None
+        return (results or None), "no results returned"
 
     def __repr__(self) -> str:
         tv = "yes" if self._tavily_key else "no"

@@ -16,7 +16,11 @@ Example:
 >>> conv = chak.Conversation('deepseek@https://custom.api.com:deepseek-chat', api_key='xxx')
 """
 
-__version__ = "0.3.3"
+try:
+    from importlib.metadata import version, PackageNotFoundError
+    __version__ = version("chakpy")
+except PackageNotFoundError:
+    __version__ = "0.0.0.dev"
 
 # Context handlers
 from .context.handlers import (
