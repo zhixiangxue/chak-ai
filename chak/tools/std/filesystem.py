@@ -17,6 +17,8 @@ Security:
 
 import difflib
 import mimetypes
+import re
+import shutil
 from pathlib import Path
 from typing import List, Optional
 
@@ -114,7 +116,7 @@ def _not_found_msg(old_text: str, content: str, path: str) -> str:
 # ---------------------------------------------------------------------------
 
 class FileSystem:
-    """Atomic filesystem tool: read, write, edit, tree, list, delete.
+    """Atomic filesystem tool: read, write, edit, move, find, grep, tree, list, delete.
 
     Register with NativeObjectTool to expose all methods as individual
     LLM-callable tools:
@@ -497,6 +499,171 @@ class FileSystem:
             return f"Error: {e}"
         except Exception as e:
             return f"Error listing directory: {e}"
+
+    # ------------------------------------------------------------------
+    # move
+    # ------------------------------------------------------------------
+
+    def move(self, src: str, dst: str) -> str:
+        """Move or rename a file or directory.
+
+        Works across directories and drives. If dst is an existing directory,
+        src is moved inside it. Otherwise src is renamed to dst.
+        Use this for both ``mv`` and ``rename`` operations.
+
+        Args:
+            src: Source path (absolute or relative to workdir).
+            dst: Destination path (absolute or relative to workdir).
+
+        Returns:
+            Success message or error string.
+        """
+        try:
+            sp = self._resolve(src)
+            dp = self._resolve(dst)
+            if not sp.exists():
+                return f"Error: Source not found: {src}"
+            dp.parent.mkdir(parents=True, exist_ok=True)
+            result = shutil.move(str(sp), str(dp))
+            return f"Moved {sp} -> {result}"
+        except PermissionError as e:
+            return f"Error: {e}"
+        except Exception as e:
+            return f"Error moving: {e}"
+
+    # ------------------------------------------------------------------
+    # find
+    # ------------------------------------------------------------------
+
+    def find(
+        self,
+        path: str,
+        pattern: str = "*",
+        file_type: str = "any",
+        max_results: int = 100,
+    ) -> str:
+        """Find files or directories matching a glob pattern.
+
+        Searches recursively. Noise directories (.git, node_modules,
+        __pycache__, .venv, etc.) are automatically skipped.
+        Use this whenever you need to locate files by name or extension.
+
+        Args:
+            path:        Root directory to search from.
+            pattern:     Glob pattern, e.g. ``"*.py"``, ``"test_*.py"``,
+                         ``"**/*.json"`` (default ``"*"`` matches everything).
+            file_type:   ``"file"``, ``"dir"``, or ``"any"`` (default ``"any"``).
+            max_results: Maximum number of matches to return (default 100).
+
+        Returns:
+            Newline-separated list of matching relative paths, or error string.
+        """
+        try:
+            dp = self._resolve(path)
+            if not dp.exists():
+                return f"Error: Directory not found: {path}"
+            if not dp.is_dir():
+                return f"Error: Not a directory: {path}"
+
+            matches: list[str] = []
+            for p in sorted(dp.rglob(pattern)):
+                if any(part in _IGNORE_DIRS for part in p.parts):
+                    continue
+                if file_type == "file" and not p.is_file():
+                    continue
+                if file_type == "dir" and not p.is_dir():
+                    continue
+                matches.append(str(p.relative_to(dp)))
+                if len(matches) >= max_results:
+                    break
+
+            if not matches:
+                return f"No matches for pattern '{pattern}' in {path}"
+            result = "\n".join(matches)
+            if len(matches) >= max_results:
+                result += f"\n\n(showing first {max_results} matches — there may be more)"
+            return result
+
+        except PermissionError as e:
+            return f"Error: {e}"
+        except Exception as e:
+            return f"Error finding files: {e}"
+
+    # ------------------------------------------------------------------
+    # grep
+    # ------------------------------------------------------------------
+
+    def grep(
+        self,
+        path: str,
+        pattern: str,
+        file_pattern: str = "*",
+        case_sensitive: bool = True,
+        max_results: int = 50,
+    ) -> str:
+        """Search for a regex or literal string pattern inside files.
+
+        Scans text files recursively. Noise directories are skipped.
+        Binary files are silently skipped. Use this to find where a symbol,
+        function, or string is used across a codebase.
+
+        Args:
+            path:           Root directory to search in.
+            pattern:        Regex or literal string to search for.
+            file_pattern:   Glob pattern to filter which files to scan,
+                            e.g. ``"*.py"``, ``"*.{js,ts}"`` (default ``"*"``).
+            case_sensitive: Case-sensitive match (default True).
+            max_results:    Maximum number of matching lines to return
+                            (default 50).
+
+        Returns:
+            Matching lines in ``file:line_num: content`` format, or error string.
+        """
+        try:
+            dp = self._resolve(path)
+            if not dp.exists():
+                return f"Error: Directory not found: {path}"
+            if not dp.is_dir():
+                return f"Error: Not a directory: {path}"
+
+            flags = 0 if case_sensitive else re.IGNORECASE
+            try:
+                compiled = re.compile(pattern, flags)
+            except re.error as e:
+                return f"Error: Invalid regex pattern: {e}"
+
+            results: list[str] = []
+            for fp in sorted(dp.rglob(file_pattern)):
+                if not fp.is_file():
+                    continue
+                if any(part in _IGNORE_DIRS for part in fp.parts):
+                    continue
+                if fp.suffix not in _TEXT_EXTENSIONS:
+                    continue
+                try:
+                    text = fp.read_text(encoding="utf-8", errors="ignore")
+                except Exception:
+                    continue
+                rel = str(fp.relative_to(dp))
+                for lineno, line in enumerate(text.splitlines(), 1):
+                    if compiled.search(line):
+                        results.append(f"{rel}:{lineno}: {line.rstrip()}")
+                        if len(results) >= max_results:
+                            break
+                if len(results) >= max_results:
+                    break
+
+            if not results:
+                return f"No matches for '{pattern}' in {path}"
+            result = "\n".join(results)
+            if len(results) >= max_results:
+                result += f"\n\n(showing first {max_results} matches — there may be more)"
+            return result
+
+        except PermissionError as e:
+            return f"Error: {e}"
+        except Exception as e:
+            return f"Error searching files: {e}"
 
     # ------------------------------------------------------------------
     # delete_file

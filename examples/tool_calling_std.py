@@ -1,7 +1,7 @@
 """
 Built-in Standard Tools (std) — Demo
 
-Demonstrates all 8 chak built-in tools in one file.
+Demonstrates all 10 chak built-in tools in one file.
 Each tool has a dedicated demo function; pick one via the command-line argument.
 
 Tools:
@@ -13,6 +13,8 @@ Tools:
     web         - Fetch and extract readable content from web pages
     pdf         - Extract text/tables from PDF files (local path or URL)
     sandbox     - Run multi-file code projects in an isolated e2b cloud sandbox
+    sql         - Query and modify SQLite / PostgreSQL / MySQL databases
+    excel       - Read and write .xlsx and .csv spreadsheets
 
 Usage:
     python examples/tool_calling_std.py bash
@@ -23,6 +25,8 @@ Usage:
     python examples/tool_calling_std.py web
     python examples/tool_calling_std.py pdf
     python examples/tool_calling_std.py sandbox
+    python examples/tool_calling_std.py sql
+    python examples/tool_calling_std.py excel
     python examples/tool_calling_std.py all
 
 Prerequisites:
@@ -43,7 +47,7 @@ import dotenv
 dotenv.load_dotenv()
 
 import chak
-from chak.tools.std import Bash, Python, FileSystem, Http, Search, Web, Pdf, Sandbox
+from chak.tools.std import Bash, Python, FileSystem, Http, Search, Web, Pdf, Sandbox, SQL, Excel
 
 # Default model — swap to any chak-supported provider/model string.
 _MODEL = "anthropic/claude-sonnet-4-6"
@@ -227,6 +231,100 @@ async def demo_sandbox():
 
 
 # ---------------------------------------------------------------------------
+# sql
+# ---------------------------------------------------------------------------
+
+async def demo_sql():
+    """Query a SQLite database — zero extra dependencies.
+
+    Creates a temporary in-memory SQLite DB, populates it, then asks the LLM
+    to explore and analyse it via the SQL tool.
+    """
+    import sqlite3, tempfile, os as _os
+    db_path = _os.path.join(tempfile.gettempdir(), "chak_sql_demo.db")
+    conn = sqlite3.connect(db_path)
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS orders (
+            id INTEGER PRIMARY KEY,
+            customer TEXT,
+            product  TEXT,
+            amount   REAL,
+            status   TEXT,
+            created  TEXT
+        );
+        DELETE FROM orders;
+        INSERT INTO orders VALUES
+            (1,  'Alice',   'Widget A', 29.99, 'completed', '2026-04-01'),
+            (2,  'Bob',     'Widget B', 49.99, 'failed',    '2026-04-03'),
+            (3,  'Alice',   'Widget C', 19.99, 'completed', '2026-04-05'),
+            (4,  'Carol',   'Widget A', 29.99, 'pending',   '2026-04-10'),
+            (5,  'Bob',     'Widget D', 99.99, 'completed', '2026-04-12'),
+            (6,  'Dave',    'Widget B', 49.99, 'failed',    '2026-04-15'),
+            (7,  'Alice',   'Widget D', 99.99, 'completed', '2026-04-18'),
+            (8,  'Carol',   'Widget C', 19.99, 'failed',    '2026-04-20');
+    """)
+    conn.commit()
+    conn.close()
+    print(f"Demo DB: {db_path}\n")
+
+    db_uri = f"sqlite:///{db_path}"
+    conv = chak.Conversation(_MODEL, api_key=_API_KEY, tools=[SQL()])
+    response = await conv.asend(
+        f"Analyse the orders database at {db_uri}:\n"
+        "1. List all tables and their schema.\n"
+        "2. How many orders are there per status?\n"
+        "3. Who is the top customer by total spend (completed orders only)?\n"
+        "4. Show all failed orders with their details."
+    )
+    print(response.content)
+
+
+# ---------------------------------------------------------------------------
+# excel
+# ---------------------------------------------------------------------------
+
+async def demo_excel():
+    """Read and write a .xlsx spreadsheet via the Excel tool.
+
+    Creates a temporary workbook, asks the LLM to analyse it and produce
+    a summary sheet, then saves the result.
+    Requires: pip install openpyxl
+    """
+    import openpyxl, tempfile, os as _os
+    xlsx_path = _os.path.join(tempfile.gettempdir(), "chak_excel_demo.xlsx")
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Sales"
+    ws.append(["Month", "Product", "Units", "Revenue"])
+    rows = [
+        ["Jan", "Widget A", 120, 3588.0],
+        ["Jan", "Widget B",  85, 4249.15],
+        ["Feb", "Widget A", 134, 4006.66],
+        ["Feb", "Widget B",  91, 4549.09],
+        ["Mar", "Widget A",  98, 2930.02],
+        ["Mar", "Widget B", 110, 5499.90],
+        ["Apr", "Widget A", 145, 4335.55],
+        ["Apr", "Widget B",  73, 3649.27],
+    ]
+    for r in rows:
+        ws.append(r)
+    wb.save(xlsx_path)
+    print(f"Demo XLSX: {xlsx_path}\n")
+
+    conv = chak.Conversation(_MODEL, api_key=_API_KEY, tools=[Excel()])
+    response = await conv.asend(
+        f"Analyse the spreadsheet at {xlsx_path}:\n"
+        "1. List all sheets and read the data.\n"
+        "2. Calculate total revenue and units sold per product across all months.\n"
+        "3. Which month had the highest total revenue?\n"
+        "4. Write a new sheet called 'Summary' to the same file with:\n"
+        "   - A header row: Product, Total Units, Total Revenue\n"
+        "   - One row per product with the aggregated totals."
+    )
+    print(response.content)
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -239,6 +337,8 @@ _DEMOS = {
     "web": demo_web,
     "pdf": demo_pdf,
     "sandbox": demo_sandbox,
+    "sql": demo_sql,
+    "excel": demo_excel,
 }
 
 

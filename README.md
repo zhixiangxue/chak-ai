@@ -24,6 +24,10 @@ chak is not another liteLLM, one-api, or OpenRouter, but a client library that a
 
 ## 🌵 What's New
 
+- **2026-04-28 | v0.3.5** - SQL & Excel tools:
+  - **SQL tool**: Query and modify SQLite / PostgreSQL / MySQL databases. Zero extra deps for SQLite.
+  - **Excel tool**: Read and write `.xlsx` and `.csv` spreadsheets. Requires `pip install chakpy[tools]`.
+  - **FileSystem enhancements**: New `move`, `find`, `grep` methods for full file management.
 - **2026-04-27 | v0.3.4** - e2b Sandbox:
   - **Sandbox tool**: New `Sandbox` built-in tool — run code in an isolated e2b cloud VM. See [Built-in Standard Tools](#built-in-standard-tools).
 - **2026-04-22 | v0.3.2** - Built-in standard tools:
@@ -553,17 +557,17 @@ See full example: [examples/tool_calling_claude_skill.py](examples/tool_calling_
 
 ### Built-in Standard Tools
 
-chak ships 8 atomic tools that cover the most common agent needs out of the box. Import and pass them directly — no wrapping, no configuration required.
+chak ships 10 atomic tools that cover the most common agent needs out of the box. Import and pass them directly — no wrapping, no configuration required.
 
 > Tools with optional dependencies require `pip install chakpy[tools]` (or install individual packages as needed — each tool prints an actionable `pip install` message if a dependency is missing).
 
 ```python
-from chak.tools.std import Bash, Python, FileSystem, Web, Search, Http, Pdf, Sandbox
+from chak.tools.std import Bash, Python, FileSystem, Web, Search, Http, Pdf, Sandbox, SQL, Excel
 
 conv = chak.Conversation(
     "openai/gpt-4o",
     api_key="YOUR_KEY",
-    tools=[Bash(), FileSystem(), Web(), Search(), Http(), Pdf()],
+    tools=[Bash(), FileSystem(), Web(), Search(), Http(), Pdf(), SQL(), Excel()],
 )
 
 response = await conv.asend("Search for the latest Python release, then save a summary to ./notes.txt")
@@ -573,12 +577,14 @@ response = await conv.asend("Search for the latest Python release, then save a s
 |------|-------|--------------|---------------|
 | Shell | `Bash` | Run any shell command. Cross-platform (PowerShell on Windows, bash on Unix). | — |
 | Code Interpreter | `Python` | Write and run Python code snippets in the active venv. | — |
-| File System | `FileSystem` | Read, write, edit, list, search, and delete files and directories. | — |
+| File System | `FileSystem` | Read, write, edit, move, find, grep, list, and delete files and directories. | — |
 | HTTP Client | `Http` | Full HTTP client — GET, POST, PUT, PATCH, DELETE with headers and body. | — |
 | Web | `Web` | Fetch and parse web pages into clean text (Firecrawl → Jina → httpx fallback). | `firecrawl-py` (Layer 1, needs API key), `beautifulsoup4`, `readability-lxml` |
 | Search | `Search` | Search the web and return structured results (Tavily → Brave → DuckDuckGo fallback). | `ddgs`, `tavily-python` |
 | PDF | `Pdf` | Extract text and tables from PDF files (local path or URL). | `pymupdf4llm` |
 | Sandbox | `Sandbox` | Run multi-file code projects in an isolated e2b cloud sandbox. Supports any language reachable from bash. | `e2b`, `E2B_API_KEY` |
+| SQL | `SQL` | Query and modify SQLite / PostgreSQL / MySQL databases. Pass the DB URI per call — works with any number of databases in one conversation. SQLite needs no extra deps. | `psycopg2-binary` (PostgreSQL), `pymysql` (MySQL) |
+| Excel | `Excel` | Read and write `.xlsx` and `.csv` spreadsheets — `sheets()`, `read()`, `write()`. | `openpyxl` |
 
 These tools are intentionally minimal and composable. Combine them freely or mix with your own custom tools.
 

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "chakpy"
-version = "0.3.4"
+version = "0.3.5"
 description = "A simple, yet elegant, LLM API routing library"
 readme = "README.md"
 authors = [
@@ -73,6 +73,11 @@ tools = [
     "ddgs>=0.1.0",
     # Sandbox tool
     "e2b>=2.0.0",
+    # Excel tool
+    "openpyxl>=3.1.0",
+    # SQL tool (PostgreSQL / MySQL — optional, SQLite is built-in)
+    # "psycopg2-binary>=2.9.0",   # PostgreSQL
+    # "pymysql>=1.1.0",           # MySQL
 ]
 all = [
     "fastapi>=0.104.0",
