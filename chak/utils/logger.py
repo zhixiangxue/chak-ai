@@ -27,6 +27,15 @@ from loguru import logger as _logger
 # 移除 loguru 的默认 handler
 _logger.remove()
 
+# On Windows with a non-UTF-8 console (e.g. GBK/CP936), emoji in log messages
+# cause UnicodeEncodeError when loguru writes to sys.stdout.  Reconfiguring the
+# stream with errors='replace' silences the crash without touching colorize.
+if sys.platform == "win32" and hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(errors="replace")
+    except Exception:
+        pass
+
 # ===== 配置参数（从环境变量读取） =====
 LOG_LEVEL = os.getenv("CHAK_LOG_LEVEL", "INFO").upper()
 LOG_TO_FILE = os.getenv("CHAK_LOG_TO_FILE", "false").lower() == "true"
