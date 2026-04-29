@@ -847,6 +847,44 @@ See full example: [examples/tool_calling_hitl_demo.py](examples/tool_calling_hit
 
 ---
 
+## Build an Agent in 3 Lines
+
+Drop in tools, describe your task — chak drives the multi-step loop automatically.
+
+```python
+import chak
+from chak.tools.std import Python, FileSystem
+
+conv = chak.Conversation(
+    "anthropic/claude-sonnet-4-6",
+    api_key="...",
+    tools=[Python(), FileSystem()],
+)
+
+await conv.asend(
+    "Analyse sales.csv: top 10 products by revenue. Write a Markdown report to report.md"
+)
+# The LLM writes the code, runs it, reads any errors, fixes them,
+# and saves the file — all on its own. You write zero orchestration code.
+```
+
+chak handles everything in between:
+1. LLM decides which tool to call and with what arguments
+2. chak executes it and feeds the result back into context
+3. Repeat until the task is done
+
+**Five real-world agent demos in [`examples/agents/`](examples/agents/):**
+
+| Demo | Tools | What the agent does autonomously |
+|------|-------|----------------------------------|
+| [Data Analyst](examples/agents/data_analyst.py) | Python + FileSystem | Loads a CSV, runs pandas analysis across 6 dimensions, writes a Markdown report |
+| [BI Monthly Report](examples/agents/bi_monthly_report.py) | Python + SQL + FileSystem | Ingests CSV into SQLite, runs 10 BI queries (MoM/YoY, regional, discount impact), writes a structured report |
+| [File Organizer](examples/agents/file_organizer.py) | FileSystem + Bash | Scans a messy folder, classifies every file into 9 categories, moves them, writes an audit report |
+| [Competitive Research](examples/agents/competitive_research.py) | Web + Search + FileSystem | Fetches 5 competitor pricing pages, extracts structured data, produces a side-by-side intelligence report |
+| [GitHub Runner](examples/agents/github_runner.py) | Bash + FileSystem | Clones a repo, reads the docs, sets up a venv, writes and runs a working demo — zero human input |
+
+---
+
 <a id="structured-output"></a>
 
 ## 🌙 Structured Output

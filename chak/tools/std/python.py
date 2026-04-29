@@ -151,6 +151,8 @@ class Python:
                 [self._python, tmp_path],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=self._timeout,
             )
             output = result.stdout

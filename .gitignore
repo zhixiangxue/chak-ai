@@ -208,6 +208,10 @@ __marimo__/
 
 # Playground - test and sample files
 playground/
+
+# Agent demo generated outputs & downloaded data (auto-created at runtime)
+examples/agents/data/
+examples/agents/output/
 .idea/
 .qoder/
 tmp/
