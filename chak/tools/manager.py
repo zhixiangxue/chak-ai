@@ -432,9 +432,12 @@ class ToolManager:
             logger.debug(f"📥 [Tool Loop] Tool results: {[r.content[:50] + '...' if len(r.content) > 50 else r.content for r in tool_results]}")
             
             # Step 4: Add assistant message (with tool_calls) to conversation
+            # Preserve reasoning_content so providers like DeepSeek (thinking mode)
+            # can pass it back in the next round as required by their API.
             assistant_msg = AIMessage(
                 content=response.content if hasattr(response, 'content') else "",
                 tool_calls=tool_calls,
+                reasoning_content=getattr(response, 'reasoning_content', None),
                 metadata=getattr(response, 'metadata', Metadata())
             )
             current_messages.append(assistant_msg)
@@ -503,6 +506,7 @@ class ToolManager:
         
         for iteration in range(self.max_iterations):
             accumulated_content = ""
+            accumulated_reasoning_content = ""
             accumulated_tool_calls = []
             finish_reason = None
             last_metadata: Optional[Dict] = None
@@ -555,6 +559,10 @@ class ToolManager:
                 # Convert provider chunk to unified format
                 unified_chunk = provider.converter.from_provider_chunk(provider_chunk)
                 
+                # Accumulate reasoning_content (required by DeepSeek thinking mode on next round)
+                if unified_chunk.reasoning_content:
+                    accumulated_reasoning_content += unified_chunk.reasoning_content
+
                 # Handle regular content
                 if unified_chunk.content:
                     accumulated_content += unified_chunk.content
@@ -621,9 +629,12 @@ class ToolManager:
                 logger.debug(f"📥 [Tool Loop] Tool results: {[r.content[:50] + '...' if len(r.content) > 50 else r.content for r in tool_results]}")
                 
                 # Add assistant message (with tool_calls), preserving LLM usage metadata
+                # Also preserve reasoning_content for providers like DeepSeek (thinking mode)
+                # that require it to be passed back in the next round.
                 assistant_msg = AIMessage(
                     content=accumulated_content,
                     tool_calls=tool_calls_objects,
+                    reasoning_content=accumulated_reasoning_content or None,
                     metadata=_dict_to_metadata(last_metadata)
                 )
                 current_messages.append(assistant_msg)
@@ -718,6 +729,7 @@ class ToolManager:
         
         for iteration in range(self.max_iterations):
             accumulated_content = ""
+            accumulated_reasoning_content = ""
             accumulated_tool_calls = []
             finish_reason = None
             last_metadata: Optional[Dict] = None
@@ -773,6 +785,8 @@ class ToolManager:
                 
                 # Handle reasoning content
                 if unified_chunk.reasoning_content:
+                    # Accumulate for pass-back (DeepSeek thinking mode requirement)
+                    accumulated_reasoning_content += unified_chunk.reasoning_content
                     yield ReasoningChunk(
                         content=unified_chunk.reasoning_content,
                         is_final=False,
@@ -935,9 +949,12 @@ class ToolManager:
                         )
 
                 # Add assistant message (with tool_calls), preserving LLM usage metadata
+                # Also preserve reasoning_content for providers like DeepSeek (thinking mode)
+                # that require it to be passed back in the next round.
                 assistant_msg = AIMessage(
                     content=accumulated_content,
                     tool_calls=tool_calls_objects,
+                    reasoning_content=accumulated_reasoning_content or None,
                     metadata=_dict_to_metadata(last_metadata)
                 )
                 current_messages.append(assistant_msg)

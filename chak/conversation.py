@@ -446,8 +446,8 @@ class Conversation:
             # Check if tools are configured
             if self._raw_tools:
                 raise RuntimeError(
-                    "MCP tools require async execution. "
-                    "Please use: await conv.asend(message)"
+                    "Tool calling requires async execution. "
+                    "Please use asyncio.run(conv.asend(message)) or await conv.asend(message) in async context."
                 )
             
             # Check if structured output is requested
