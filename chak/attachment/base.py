@@ -6,7 +6,7 @@ from typing import Optional, Callable, Union, Dict, Any, Awaitable
 import asyncio
 import os
 from pathlib import Path
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ContentType(str, Enum):
@@ -93,8 +93,7 @@ class AttachmentContent(BaseModel):
     content: str = Field(description="Extracted text content")
     meta: Dict[str, Any] = Field(default_factory=dict, description="Metadata")
     
-    class Config:
-        extra = "allow"
+    model_config = ConfigDict(extra="allow")
 
 
 def detect_content_type(content: str) -> ContentType:

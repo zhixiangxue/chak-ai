@@ -3,7 +3,7 @@ from typing import Dict, Any, Optional, List, Iterator, Union
 
 import httpx
 import openai
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from ... import __version__
 from ...exceptions import ProviderError
@@ -20,8 +20,7 @@ class BaseProviderConfig(BaseModel):
     max_retries: int = 3
     headers: Dict[str, str] = Field(default_factory=dict)
 
-    class Config:
-        extra = "allow"  # 允许额外字段（如temperature等）
+    model_config = ConfigDict(extra="allow")  # Allow extra fields (e.g. temperature)
 
     @field_validator('api_key')
     @classmethod

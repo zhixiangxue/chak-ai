@@ -3,7 +3,7 @@ from datetime import datetime
 from typing import Literal, Optional, List, Union, Dict, Any, TYPE_CHECKING
 from contextvars import ContextVar
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 # Always import Attachment for runtime (Pydantic needs it)
 from .attachment import Attachment
@@ -42,9 +42,8 @@ class BaseMessage(BaseModel):
     timestamp: datetime = Field(default_factory=datetime.now)  # 消息创建时间
     turn_id: Optional[str] = Field(default_factory=lambda: _current_turn_id.get())  # Turn ID from context
     
-    class Config:
-        arbitrary_types_allowed = True  # Allow non-Pydantic types like Attachment
-    
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     def is_multimodal(self) -> bool:
         """Check if this message contains multimodal content
         
@@ -91,8 +90,7 @@ class MessageChunk(BaseModel):
     This chunk represents user-visible assistant output.
     """
 
-    class Config:
-        arbitrary_types_allowed = True
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     content: str = ""
     is_final: bool = False
@@ -204,8 +202,7 @@ class ToolCallSuccessEvent(StreamEvent):
                 print(f"✅ {name} 成功: {res}")
     """
 
-    class Config:
-        arbitrary_types_allowed = True
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     tool_name: str = ""
     call_id: str = ""
