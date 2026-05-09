@@ -73,7 +73,7 @@ class Bash:
         sensitive_files: list[str] | None = None,
         working_dir: str | None = None,
     ):
-        """
+        r"""
         Args:
             timeout: Maximum seconds to wait for a command before raising a
                      timeout error.  Defaults to 60.
