@@ -47,6 +47,39 @@ def _url_to_attachment(url: str) -> _Attachment:
         return _Attachment(source=url)
     return cls(source=url)
 
+
+# Phrases that strongly indicate the model genuinely does NOT support function
+# calling.  Each phrase must appear as a contiguous lower-case substring of the
+# provider error message.  The previous heuristic matched the bare word
+# ``invalid`` which also fires on generic Anthropic ``invalid_request_error``
+# responses (e.g. malformed content blocks), masking the real failure as a
+# spurious "doesn't support function calling" warning.  Keep this list narrow.
+_NO_TOOL_SUPPORT_PHRASES = (
+    "does not support tool",
+    "does not support tools",
+    "does not support function",
+    "doesn't support tool",
+    "doesn't support tools",
+    "doesn't support function",
+    "function calling is not supported",
+    "tool calling is not supported",
+    "tools are not supported",
+    "tool_choice is not supported",
+    "tool_use is not supported",
+    "function_call is not supported",
+    "no tool support",
+    "tools parameter is not supported",
+)
+
+
+def _is_no_tool_support_error(error: Exception) -> bool:
+    """Return True only when the provider error clearly indicates the model
+    cannot accept tool definitions, so the tool loop can safely retry without
+    tools.  Conservative on purpose: any unknown 4xx/5xx is re-raised.
+    """
+    msg = str(error).lower()
+    return any(phrase in msg for phrase in _NO_TOOL_SUPPORT_PHRASES)
+
 from ..metadata import Metadata, Usage
 from ..utils.logger import logger
 
@@ -385,7 +418,7 @@ class ToolManager:
             except Exception as e:
                 error_msg = str(e).lower()
                 # Check if model doesn't support function calling
-                if any(keyword in error_msg for keyword in ['tool', 'function', 'not support', 'invalid']):
+                if _is_no_tool_support_error(e):
                     logger.warning(f"⚠️ [Tool] Model doesn't support function calling, gracefully degrading...")
                     logger.debug(f"📝 [Tool Loop] Error message: {str(e)}")
                     # Graceful degradation: call without tools and return
@@ -522,7 +555,7 @@ class ToolManager:
                 stream = await asyncio.to_thread(_get_stream)
             except Exception as e:
                 error_msg = str(e).lower()
-                if any(keyword in error_msg for keyword in ['tool', 'function', 'not support', 'invalid']):
+                if _is_no_tool_support_error(e):
                     logger.warning(f"⚠️ [Tool] Model doesn't support function calling, gracefully degrading to streaming mode...")
                     logger.debug(f"📝 [Tool Loop] Error message: {str(e)}")
                     # Graceful degradation: streaming without tools
@@ -748,7 +781,7 @@ class ToolManager:
                 stream = await asyncio.to_thread(_get_stream)
             except Exception as e:
                 error_msg = str(e).lower()
-                if any(keyword in error_msg for keyword in ['tool', 'function', 'not support', 'invalid']):
+                if _is_no_tool_support_error(e):
                     logger.warning(f"⚠️ [Tool] Model doesn't support function calling, gracefully degrading to event streaming mode...")
                     logger.debug(f"📝 [Tool Loop] Error message: {str(e)}")
                     # Graceful degradation: streaming without tools

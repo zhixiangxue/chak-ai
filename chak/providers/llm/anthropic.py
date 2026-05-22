@@ -112,7 +112,7 @@ class AnthropicMessageConverter(BaseMessageConverter):
 
             elif msg.role == "assistant":
                 content_blocks: List[Dict[str, Any]] = []
-                if msg.content:
+                if msg.content and msg.content.strip():
                     content_blocks.append({"type": "text", "text": msg.content})
                 if msg.tool_calls:
                     for tc in msg.tool_calls:
@@ -127,18 +127,26 @@ class AnthropicMessageConverter(BaseMessageConverter):
                             "input": input_dict,
                         })
                 if not content_blocks:
-                    content_blocks = [{"type": "text", "text": ""}]
+                    # Anthropic rejects empty AND whitespace-only text blocks
+                    # ("text content blocks must be non-empty" / "must contain
+                    # non-whitespace text").  Use a non-whitespace placeholder
+                    # so an upstream empty assistant turn (e.g. produced after
+                    # a tool error or a refusal) does not crash the next
+                    # request.  Verified against the Anthropic API.
+                    content_blocks = [{"type": "text", "text": "(no response)"}]
                 provider_messages.append({"role": "assistant", "content": content_blocks})
                 i += 1
 
             elif msg.role == "user":
                 content = msg.content
                 if isinstance(content, str):
-                    blocks: List[Dict[str, Any]] = [{"type": "text", "text": content}]
+                    # Same constraint as the assistant branch: non-whitespace required.
+                    text = content if content.strip() else "(empty message)"
+                    blocks: List[Dict[str, Any]] = [{"type": "text", "text": text}]
                 elif isinstance(content, list):
                     blocks = self._convert_multimodal(content)
                 else:
-                    blocks = [{"type": "text", "text": ""}]
+                    blocks = [{"type": "text", "text": "(empty message)"}]
                 provider_messages.append({"role": "user", "content": blocks})
                 i += 1
 
@@ -153,7 +161,12 @@ class AnthropicMessageConverter(BaseMessageConverter):
         for part in content_parts:
             part_type = part.get("type", "")
             if part_type == "text":
-                blocks.append({"type": "text", "text": part.get("text", "")})
+                text = part.get("text", "")
+                # Skip empty text parts to avoid Anthropic's
+                # "text content blocks must be non-empty" 400 error.
+                if not text or not text.strip():
+                    continue
+                blocks.append({"type": "text", "text": text})
             elif part_type == "image_url":
                 url = part.get("image_url", {}).get("url", "")
                 if url.startswith("data:"):
@@ -172,7 +185,7 @@ class AnthropicMessageConverter(BaseMessageConverter):
                         "type": "image",
                         "source": {"type": "url", "url": url},
                     })
-        return blocks or [{"type": "text", "text": ""}]
+        return blocks or [{"type": "text", "text": "(empty message)"}]
 
     # ------------------------------------------------------------------ #
     # from_provider_response (non-streaming)                               #
