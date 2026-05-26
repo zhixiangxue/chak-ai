@@ -218,6 +218,24 @@ class Conversation:
             return self._thread_pool
         else:  # ASYNCIO or invalid (default to asyncio)
             return None
+
+    def _purge_turn(self, turn_id: str, att_snap: int) -> None:
+        """Drop every message produced in *turn_id* and rewind attachments.
+
+        Called from the outermost ``except`` of every send/asend entry point
+        so a half-finished turn (provider 4xx/5xx, transient network error,
+        tool failure, etc.) leaves ``self.messages`` / ``self.attachments``
+        byte-identical to the state before the call.  This is what lets an
+        upper-layer retry simply re-invoke ``conv.asend(text)`` without
+        duplicating the user message or accumulating partial tool-loop
+        messages.
+        """
+        if turn_id is not None:
+            self.messages[:] = [
+                m for m in self.messages if getattr(m, "turn_id", None) != turn_id
+            ]
+        if len(self.attachments) > att_snap:
+            del self.attachments[att_snap:]
     
     def get_tools(self) -> List:
         """
@@ -441,6 +459,9 @@ class Conversation:
         # Set turn ID for this entire send operation
         turn_id = str(uuid.uuid4())
         token = _current_turn_id.set(turn_id)
+        # Snapshot attachments length so we can rewind on failure (messages
+        # are tagged with turn_id and purged separately).
+        att_snap = len(self.attachments)
         
         try:
             # Check if tools are configured
@@ -535,9 +556,21 @@ class Conversation:
 
             # Normal LLM call (no tools)
             if stream:
-                return self._send_stream(messages_to_send, **kwargs)
+                # Wrap so iteration-time errors also rollback the turn.
+                def _stream_wrap():
+                    try:
+                        yield from self._send_stream(messages_to_send, **kwargs)
+                    except BaseException:
+                        self._purge_turn(turn_id, att_snap)
+                        raise
+                return _stream_wrap()
             else:
                 return self._send_nonstream(messages_to_send, **kwargs)
+        except BaseException:
+            # All-or-nothing: drop everything this turn produced so the caller
+            # can safely retry the same conv.send(text) call.
+            self._purge_turn(turn_id, att_snap)
+            raise
         finally:
             # Reset turn ID context
             _current_turn_id.reset(token)
@@ -641,6 +674,9 @@ class Conversation:
         # Set turn ID for this entire asend operation
         turn_id = str(uuid.uuid4())
         token = _current_turn_id.set(turn_id)
+        # Snapshot attachments length so we can rewind on failure (messages
+        # are tagged with turn_id and purged separately).
+        att_snap = len(self.attachments)
         
         # Check if event stream mode is requested FIRST (before try block)
         # This must be handled separately because it returns an async generator
@@ -660,6 +696,9 @@ class Conversation:
                         **kwargs
                     ):
                         yield evt
+                except BaseException:
+                    self._purge_turn(turn_id, att_snap)
+                    raise
                 finally:
                     _current_turn_id.reset(token)
             
@@ -676,6 +715,9 @@ class Conversation:
                         **kwargs
                     ):
                         yield chunk
+                except BaseException:
+                    self._purge_turn(turn_id, att_snap)
+                    raise
                 finally:
                     _current_turn_id.reset(token)
             
@@ -697,9 +739,12 @@ class Conversation:
                         **kwargs
                     )
                 except Exception as e:
-                    # Structured output failed, log and return None
+                    # Structured output failed, log and return None.
+                    # Purge so the caller's retry doesn't see a stale
+                    # user_message accumulating each attempt.
                     from .utils.logger import logger
                     logger.warning(f"Structured output failed: {type(e).__name__}: {e}")
+                    self._purge_turn(turn_id, att_snap)
                     return None
 
             # Convert str to HumanMessage and merge attachments if present
@@ -819,6 +864,9 @@ class Conversation:
                         except Exception as e:
                             from .utils.logger import logger
                             logger.warning(f"Structured output failed: {type(e).__name__}: {e}")
+                            # Purge so the caller's retry doesn't see partial
+                            # tool-loop messages accumulating each attempt.
+                            self._purge_turn(turn_id, att_snap)
                             return None
                     else:
                         # Normal tool-calling mode
@@ -834,6 +882,11 @@ class Conversation:
 
                 # Normal LLM mode (non-stream only, stream handled by wrapper above)
                 return await self._asend_nonstream(messages_to_send, **kwargs)
+        except BaseException:
+            # All-or-nothing: drop everything this turn produced so the caller
+            # can safely retry the same conv.asend(text) call.
+            self._purge_turn(turn_id, att_snap)
+            raise
         finally:
             # Reset turn ID context
             _current_turn_id.reset(token)
