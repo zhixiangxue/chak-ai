@@ -237,8 +237,12 @@ class ToolManager:
         self.tools = tools
         self._tool_map = self._build_tool_map()
         self._skill_map = self._build_skill_map()
-        self._active_skill: Optional[SkillObjectTool] = None  # Track currently active skill instance
-        self._selected_methods: List[str] = []  # Track methods selected by LLM in Stage 2
+        # Multiple skills can be active concurrently (LLM may activate them in
+        # one parallel tool_calls batch). Keep per-skill state and a reverse
+        # index so Stage 3 method dispatch never collides between skills.
+        self._active_skills: Dict[str, SkillObjectTool] = {}
+        self._selected_methods: Dict[str, List[str]] = {}  # skill_name -> selected methods
+        self._method_to_skill: Dict[str, SkillObjectTool] = {}  # method_name -> skill (Stage 3 dispatch)
         self.max_iterations = max_iterations if max_iterations is not None else 50
         self.executor = executor
         self.hitl_handler = hitl_handler
@@ -292,74 +296,68 @@ class ToolManager:
     def _get_openai_tools(self) -> List[Dict[str, Any]]:
         """
         Get current stage OpenAI tool list.
-        
-        Stage 1: Skill entry tools (no method param) + regular tools
-        Stage 2: Skill entry tools (with method param enum) + regular tools
-        Stage 3: Only selected methods as individual tools + regular tools
-        
+
+        Multiple skills may sit in different stages simultaneously because the
+        LLM can activate / select methods on several skills inside one parallel
+        tool_calls batch. Per-skill state is tracked separately.
+
+        Stage 1: Skill not yet activated -> bare entry tool (no method param)
+        Stage 2: Skill activated but no methods selected -> entry tool with method enum
+        Stage 3: Skill has selected methods -> expose those methods as individual tools
+
         Returns:
             OpenAI tool definition list
         """
-        openai_tools = []
-        
-        if self._active_skill and self._selected_methods:
-            # Stage 3: Expose only selected methods as individual tools
-            logger.info(f"3️⃣ [Skill Stage 3] Exposing {len(self._selected_methods)} selected method(s): {', '.join(self._selected_methods)}")
-            for method_name in self._selected_methods:
+        openai_tools: List[Dict[str, Any]] = []
+
+        # Stage 3 contributions per active skill that has selected methods
+        for skill_name, skill in self._active_skills.items():
+            methods = self._selected_methods.get(skill_name, [])
+            if not methods:
+                continue
+            logger.info(
+                f"3️⃣ [Skill Stage 3] Skill '{skill_name}' exposing {len(methods)} "
+                f"selected method(s): {', '.join(methods)}"
+            )
+            for method_name in methods:
                 try:
-                    method_tool = self._active_skill.get_method_tool(method_name)
+                    method_tool = skill.get_method_tool(method_name)
                     openai_tools.append(method_tool.to_openai_tool())
                 except ValueError:
-                    logger.warning(f"⚠️ [Skill] Selected method '{method_name}' not found, skipping")
-            
-            # Also include regular tools (non-skill tools)
-            for tool in self.tools:
-                if isinstance(tool, NativeObjectTool):
-                    openai_tools.extend(tool.to_openai_tools())
-                elif isinstance(tool, SkillObjectTool):
-                    # Skip other skills when one is active
-                    continue
-                elif isinstance(tool, ClaudeSkill):
-                    openai_tools.append(tool.to_openai_tool())
-                    openai_tools.append(tool.get_file_reader().to_openai_tool())
-                else:
-                    openai_tools.append(tool.to_openai_tool())
-        elif self._active_skill:
-            # Stage 2: Skill is active but no methods selected yet, expose skill entry with method enum
-            logger.info(f"2️⃣ [Skill Stage 2] Exposing skill '{self._active_skill.name}' with method selection (enum)")
-            openai_tools.append(self._active_skill.to_skill_entry_tool(include_method_param=True))
-            
-            # Also include regular tools
-            for tool in self.tools:
-                if isinstance(tool, NativeObjectTool):
-                    openai_tools.extend(tool.to_openai_tools())
-                elif isinstance(tool, SkillObjectTool):
-                    # Skip other skills when one is active
-                    continue
-                elif isinstance(tool, ClaudeSkill):
-                    openai_tools.append(tool.to_openai_tool())
-                    openai_tools.append(tool.get_file_reader().to_openai_tool())
-                else:
-                    openai_tools.append(tool.to_openai_tool())
-        else:
-            # Stage 1: No skill active, expose skill entry tools (no method param) + regular tools
-            if self._skill_map:
-                logger.info(f"1️⃣ [Skill Stage 1] Exposing {len(self._skill_map)} skill(s) to LLM")
-            for skill_tool in self._skill_map.values():
-                openai_tools.append(skill_tool.to_skill_entry_tool(include_method_param=False))
-            
-            for tool in self.tools:
-                if isinstance(tool, NativeObjectTool):
-                    openai_tools.extend(tool.to_openai_tools())
-                elif isinstance(tool, SkillObjectTool):
-                    # SkillObjectTool already handled above
-                    continue
-                elif isinstance(tool, ClaudeSkill):
-                    openai_tools.append(tool.to_openai_tool())
-                    openai_tools.append(tool.get_file_reader().to_openai_tool())
-                else:
-                    openai_tools.append(tool.to_openai_tool())
-        
+                    logger.warning(
+                        f"⚠️ [Skill] Selected method '{method_name}' not found on '{skill_name}', skipping"
+                    )
+
+        # Stage 2 contributions: skills active but without any selected methods yet
+        for skill_name, skill in self._active_skills.items():
+            if self._selected_methods.get(skill_name):
+                continue
+            logger.info(
+                f"2️⃣ [Skill Stage 2] Exposing skill '{skill_name}' with method selection (enum)"
+            )
+            openai_tools.append(skill.to_skill_entry_tool(include_method_param=True))
+
+        # Stage 1 contributions: skills that have not been activated yet
+        if not self._active_skills and self._skill_map:
+            logger.info(f"1️⃣ [Skill Stage 1] Exposing {len(self._skill_map)} skill(s) to LLM")
+        for skill_name, skill_tool in self._skill_map.items():
+            if skill_name in self._active_skills:
+                continue
+            openai_tools.append(skill_tool.to_skill_entry_tool(include_method_param=False))
+
+        # Always include regular (non-skill) tools
+        for tool in self.tools:
+            if isinstance(tool, NativeObjectTool):
+                openai_tools.extend(tool.to_openai_tools())
+            elif isinstance(tool, SkillObjectTool):
+                # Skill entries already handled above
+                continue
+            elif isinstance(tool, ClaudeSkill):
+                openai_tools.append(tool.to_openai_tool())
+                openai_tools.append(tool.get_file_reader().to_openai_tool())
+            else:
+                openai_tools.append(tool.to_openai_tool())
+
         logger.debug(f"📊 [Tool List] Returning {len(openai_tools)} tool(s)")
         return openai_tools
     
@@ -394,9 +392,10 @@ class ToolManager:
         """
         from ..message import AIMessage, ToolMessage
         
-        # Reset active skill and selected methods at the start of each conversation turn
-        self._active_skill = None
-        self._selected_methods = []
+        # Reset active skills and selected methods at the start of each conversation turn
+        self._active_skills = {}
+        self._selected_methods = {}
+        self._method_to_skill = {}
         
         current_messages = messages.copy()
         new_messages = []  # Track all new messages added during this loop
@@ -486,11 +485,11 @@ class ToolManager:
                 current_messages.append(tool_msg)
                 new_messages.append(tool_msg)
             
-            # Step 6: Update tool list for next iteration if skill was activated
-            if self._active_skill:
+            # Step 6: Update tool list for next iteration if any skill was activated
+            if self._active_skills:
                 # Skill has been activated, next iteration will use skill's internal tools
                 openai_tools = self._get_openai_tools()
-                logger.debug(f"🌟 [Skill] Updated tool list for activated skill: {self._active_skill.name}")
+                logger.debug(f"🌟 [Skill] Updated tool list for active skill(s): {list(self._active_skills.keys())}")
             
             logger.debug(f"🔁 [Tool Loop] Loop continues to iteration {iteration + 1}...")
             # Step 6: Loop back to step 1 (LLM will see tool results and decide next action)
@@ -527,9 +526,10 @@ class ToolManager:
         """
         from ..message import AIMessage, ToolMessage, MessageChunk
         
-        # Reset active skill and selected methods at the start of each conversation turn
-        self._active_skill = None
-        self._selected_methods = []
+        # Reset active skills and selected methods at the start of each conversation turn
+        self._active_skills = {}
+        self._selected_methods = {}
+        self._method_to_skill = {}
         
         current_messages = messages.copy()
         new_messages = []  # Track all new messages added during this loop
@@ -682,10 +682,10 @@ class ToolManager:
                     current_messages.append(tool_msg)
                     new_messages.append(tool_msg)
                 
-                # Update tool list for next iteration if skill was activated
-                if self._active_skill:
+                # Update tool list for next iteration if any skill was activated
+                if self._active_skills:
                     openai_tools = self._get_openai_tools()
-                    logger.debug(f"🌟 [Skill] Updated tool list for activated skill: {self._active_skill.name}")
+                    logger.debug(f"🌟 [Skill] Updated tool list for active skill(s): {list(self._active_skills.keys())}")
                 
                 logger.debug(f"🔁 [Tool Loop] Loop continues to iteration {iteration + 1}...")
                 # Loop continues (next iteration will call LLM with tool results)
@@ -749,9 +749,10 @@ class ToolManager:
         from ..message import AIMessage, ToolMessage, MessageChunk, ReasoningChunk, ToolCallStartEvent, ToolCallSuccessEvent, ToolCallErrorEvent, ToolCallCancelledEvent, ConversationCompleteEvent, ChatCompletionMessageToolCall, Function
         import json
         
-        # Reset active skill and selected methods at the start of each conversation turn
-        self._active_skill = None
-        self._selected_methods = []
+        # Reset active skills and selected methods at the start of each conversation turn
+        self._active_skills = {}
+        self._selected_methods = {}
+        self._method_to_skill = {}
         
         current_messages = messages.copy()
         new_messages = []  # Track all messages created during this turn
@@ -1002,10 +1003,10 @@ class ToolManager:
                     current_messages.append(tool_msg)
                     new_messages.append(tool_msg)
                 
-                # Update tool list for next iteration if skill was activated
-                if self._active_skill:
+                # Update tool list for next iteration if any skill was activated
+                if self._active_skills:
                     openai_tools = self._get_openai_tools()
-                    logger.debug(f"🌟 [Skill] Updated tool list for activated skill: {self._active_skill.name}")
+                    logger.debug(f"🌟 [Skill] Updated tool list for active skill(s): {list(self._active_skills.keys())}")
                 
                 logger.debug(f"🔁 [Tool Loop] Loop continues to iteration {iteration + 1}...")
                 # Loop continues (next iteration will call LLM with tool results)
@@ -1127,16 +1128,19 @@ class ToolManager:
         if tool_name in self._skill_map:
             skill_tool = self._skill_map[tool_name]
             method_name = arguments.get('method', None)
-            
+
             if method_name:
-                # Stage 2: LLM selected a method, record it and prepare Stage 3
+                # Stage 2: LLM selected a method, record it (per-skill) and prepare Stage 3.
+                # Per-skill state is required because multiple skills may be activated
+                # concurrently in a single parallel tool_calls batch.
                 logger.info(f"2️⃣ [Skill Stage 2] Method '{method_name}' selected for skill '{tool_name}'")
-                self._active_skill = skill_tool
-                
-                # Add to selected methods list (avoid duplicates)
-                if method_name not in self._selected_methods:
-                    self._selected_methods.append(method_name)
-                
+                self._active_skills[tool_name] = skill_tool
+                methods = self._selected_methods.setdefault(tool_name, [])
+                if method_name not in methods:
+                    methods.append(method_name)
+                # Maintain reverse index for O(1) Stage 3 dispatch
+                self._method_to_skill[method_name] = skill_tool
+
                 # Return confirmation to LLM
                 return ToolCallResult(
                     call_id=call_id,
@@ -1146,36 +1150,39 @@ class ToolManager:
             else:
                 # Stage 1: Activate skill and return method summary
                 logger.info(f"1️⃣ [Skill Stage 1] Activating skill '{tool_name}', returning method summary")
-                self._active_skill = skill_tool
-                
+                self._active_skills[tool_name] = skill_tool
+                self._selected_methods.setdefault(tool_name, [])
+
                 # Generate method summary
                 instruction = arguments.get('instruction', None)
                 method_summary = skill_tool.generate_method_summary(instruction)
-                
+
                 logger.debug(f"📋 [Skill] Generated summary for {len(skill_tool.method_names)} methods")
-                
+
                 # Return method summary to LLM
                 return ToolCallResult(
                     call_id=call_id,
                     content=method_summary,
                     is_error=False
                 )
-        
-        # Stage 3: If a skill is active and methods selected, look up from selected methods
-        if self._active_skill and self._selected_methods:
-            if tool_name in self._selected_methods:
-                try:
-                    method_tool = self._active_skill.get_method_tool(tool_name)
-                    tool = method_tool
-                    logger.info(f"3️⃣ [Skill Stage 3] Calling selected method '{tool_name}'")
-                except ValueError:
-                    # Method not found, fall back to regular tool_map
-                    tool = self._tool_map.get(tool_name)
-            else:
-                # Not a selected method, check regular tools
+
+        # Stage 3: Look up the method through the per-skill reverse index first.
+        # Falls back to scanning active skills, then to the regular tool_map.
+        skill_for_method = self._method_to_skill.get(tool_name)
+        if skill_for_method is None:
+            for skill in self._active_skills.values():
+                if tool_name in skill.method_names:
+                    skill_for_method = skill
+                    break
+
+        if skill_for_method is not None:
+            try:
+                tool = skill_for_method.get_method_tool(tool_name)
+                logger.info(f"3️⃣ [Skill Stage 3] Calling selected method '{tool_name}' on skill '{skill_for_method.name}'")
+            except ValueError:
                 tool = self._tool_map.get(tool_name)
         else:
-            # No active skill, use regular tool_map
+            # No active skill owns this name, use regular tool_map
             tool = self._tool_map.get(tool_name)
         
         if not tool:
