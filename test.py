@@ -41,7 +41,7 @@ def ensure_pytest_available() -> bool:
 def main() -> int:
     root = Path(__file__).resolve().parent
     if not (root / "chak").is_dir():
-        print("Error: sh.py must be run from the chak-ai project root.")
+        print("Error: test.py must be run from the chak-ai project root.")
         return 2
 
     load_dotenv_if_available(root)
