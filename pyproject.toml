@@ -79,6 +79,10 @@ tools = [
     # "psycopg2-binary>=2.9.0",   # PostgreSQL
     # "pymysql>=1.1.0",           # MySQL
 ]
+test = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+]
 all = [
     "fastapi>=0.104.0",
     "uvicorn>=0.24.0",
@@ -112,3 +116,20 @@ where = ["."]
 
 [tool.setuptools.package-data]
 chak = ["server/playground.html"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "unit: offline tests without network or LLM calls",
+    "live: real LLM provider tests",
+    "slow: slow tests",
+    "tools: tool calling tests",
+    "streaming: streaming response tests",
+    "structured: structured output tests",
+    "skill: skill and ClaudeSkill tests",
+    "deepseek: DeepSeek live provider tests",
+    "qwen: Qwen/Bailian live provider tests",
+    "openai: OpenAI live provider tests",
+    "claude: Claude/Anthropic live provider tests",
+]
+asyncio_mode = "auto"

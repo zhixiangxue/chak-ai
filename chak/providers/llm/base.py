@@ -18,6 +18,7 @@ class BaseProviderConfig(BaseModel):
     base_url: Optional[str] = None
     timeout: int = 120  # Increased from 30s to 120s for structured output with large prompts
     max_retries: int = 3
+    provider_name: Optional[str] = None
     headers: Dict[str, str] = Field(default_factory=dict)
 
     model_config = ConfigDict(extra="allow")  # Allow extra fields (e.g. temperature)
@@ -87,13 +88,32 @@ class Provider(ABC):
             provider_messages = self.converter.to_provider_format(messages)
 
             if stream:
-                return self._send_stream(provider_messages, **kwargs)
+                return self._wrap_stream_errors(self._send_stream(provider_messages, **kwargs))
             else:
                 response = self._send_complete(provider_messages, **kwargs)
                 return self.converter.from_provider_response(response)
 
         except Exception as e:
-            raise ProviderError(f"{self.__class__.__name__} error: {e}") from e
+            raise self._provider_error(e) from e
+
+    def _provider_error(self, error: BaseException) -> ProviderError:
+        provider_name = getattr(self.config, "provider_name", self.__class__.__name__)
+        model = getattr(self.config, "model", None)
+        base_url = getattr(self.config, "base_url", None)
+        return ProviderError.from_exception(
+            error,
+            provider=provider_name,
+            model=model,
+            base_url=base_url,
+            message=f"{self.__class__.__name__} error: {error}",
+        )
+
+    def _wrap_stream_errors(self, stream: Iterator[Any]) -> Iterator[Any]:
+        try:
+            for chunk in stream:
+                yield chunk
+        except Exception as e:
+            raise self._provider_error(e) from e
 
     @abstractmethod
     def _send_complete(self, messages: Any, **kwargs) -> Any:

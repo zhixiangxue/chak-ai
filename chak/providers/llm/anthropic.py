@@ -10,7 +10,7 @@ Uses the official Anthropic SDK for full feature support including:
 Official documentation: https://docs.anthropic.com/
 
 Supported models:
-- Claude 4: claude-opus-4-5, claude-sonnet-4-5
+- Claude 4: claude-haiku-4-5
 - Claude 3.7: claude-3-7-sonnet-20250219
 - Claude 3.5: claude-3-5-sonnet-20241022, claude-3-5-haiku-20241022
 - Claude 3: claude-3-opus-20240229, claude-3-haiku-20240307
@@ -22,7 +22,6 @@ import anthropic
 from pydantic import field_validator
 
 from .base import Provider, BaseProviderConfig, BaseMessageConverter
-from ...exceptions import ProviderError
 from ...message import (
     Message, AIMessage, UnifiedStreamChunk,
     ToolCallDelta, ChatCompletionMessageToolCall, Function,
@@ -471,14 +470,14 @@ class AnthropicProvider(Provider):
         try:
             provider_data = self.converter.to_provider_format(messages)
             if stream:
-                return self._send_stream(provider_data, **kwargs)
+                return self._wrap_stream_errors(self._send_stream(provider_data, **kwargs))
             else:
                 response = self._send_complete(provider_data, **kwargs)
                 return self.converter.from_provider_response(response)
         except anthropic.APIError as e:
-            raise ProviderError(f"AnthropicProvider error: {e}") from e
+            raise self._provider_error(e) from e
         except Exception as e:
-            raise ProviderError(f"AnthropicProvider error: {e}") from e
+            raise self._provider_error(e) from e
 
     def _send_complete(self, provider_data: Dict[str, Any], **kwargs) -> Any:
         """Send a non-streaming request to the Anthropic Messages API."""

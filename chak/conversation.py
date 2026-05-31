@@ -6,8 +6,9 @@ from typing import TYPE_CHECKING, List, Dict, Any, Iterator, Union, Optional, As
 
 from .attachment import Attachment
 from .context.handlers import BaseContextHandler, NoopContextHandler
-from .message import Message, MessageChunk, ReasoningChunk, HumanMessage, AIMessage, SystemMessage, ToolMessage, _current_turn_id
+from .message import Message, MessageChunk, ReasoningChunk, FailoverChunk, HumanMessage, AIMessage, SystemMessage, ToolMessage, _current_turn_id
 from .providers import create_provider
+from .providers.llm.resilient import ResilientProvider
 from .providers.types import ProviderCategory
 from .schemas import Reasoning
 from .utils.uri import parse as parse_uri
@@ -144,22 +145,57 @@ class Conversation:
         # Initialize context handler
         self.context_handler = context_handler or NoopContextHandler()
 
-        # 1. Parse URI to dict
-        parsed = parse_uri(model_uri)
+        fallback_models = kwargs.pop('fallback_models', None)
 
-        # 2. Build config dict (URI params + kwargs + model)
-        config_dict = self._build_config_dict(parsed, kwargs)
+        primary_parsed = parse_uri(model_uri)
 
-        # 3. Create provider with LLM category
-        self.provider = create_provider(
-            parsed['provider'],
-            config_dict,
-            category=self.PROVIDER_CATEGORY
-        )
+        if fallback_models:
+            primary_config = self._build_config_dict(primary_parsed, kwargs, api_key=api_key)
+            primary_config['provider_name'] = primary_parsed['provider']
+            primary_provider = create_provider(
+                primary_parsed['provider'],
+                primary_config,
+                category=self.PROVIDER_CATEGORY
+            )
+            fallback_providers = []
+            for fallback in fallback_models:
+                if not isinstance(fallback, dict):
+                    raise TypeError("fallback model spec must be a dict")
+
+                fallback_spec = dict(fallback)
+                fallback_model_uri = fallback_spec.pop('model_uri', None)
+                if not fallback_model_uri:
+                    raise ValueError("fallback model spec requires 'model_uri'")
+                fallback_api_key = fallback_spec.pop('api_key', self.api_key)
+                nested_kwargs = fallback_spec.pop('kwargs', None)
+                fallback_kwargs: Dict[str, Any] = {}
+                if nested_kwargs is not None:
+                    if not isinstance(nested_kwargs, dict):
+                        raise TypeError("fallback model 'kwargs' must be a dict")
+                    fallback_kwargs.update(nested_kwargs)
+                fallback_kwargs.update(fallback_spec)
+
+                fallback_parsed = parse_uri(fallback_model_uri)
+                fallback_config = self._build_config_dict(fallback_parsed, fallback_kwargs, api_key=fallback_api_key)
+                fallback_config['provider_name'] = fallback_parsed['provider']
+                fallback_provider = create_provider(
+                    fallback_parsed['provider'],
+                    fallback_config,
+                    category=self.PROVIDER_CATEGORY
+                )
+                fallback_providers.append(fallback_provider)
+            self.provider = ResilientProvider(primary_provider, fallback_providers)
+        else:
+            config_dict = self._build_config_dict(primary_parsed, kwargs)
+            self.provider = create_provider(
+                primary_parsed['provider'],
+                config_dict,
+                category=self.PROVIDER_CATEGORY
+            )
         
         # Store provider name and model name for easy access
-        self._provider_name = parsed['provider']
-        self._model_name = parsed['model']
+        self._provider_name = primary_parsed['provider']
+        self._model_name = primary_parsed['model']
 
     def _normalize_system_message(self, system_prompt: Optional[str]) -> Optional[SystemMessage]:
         """
@@ -329,12 +365,12 @@ class Conversation:
             hitl_handler=self._hitl_handler,
         )
     
-    def _build_config_dict(self, parsed_uri: Dict, kwargs: Dict) -> Dict[str, Any]:
+    def _build_config_dict(self, parsed_uri: Dict, kwargs: Dict, api_key: Optional[str] = None) -> Dict[str, Any]:
         """Build configuration dictionary from URI and kwargs."""
         config_dict = {}
 
         # Core config from URI
-        config_dict['api_key'] = self.api_key
+        config_dict['api_key'] = api_key or self.api_key
         config_dict['model'] = parsed_uri['model']
 
         # Add base_url from URI if present
@@ -484,14 +520,14 @@ class Conversation:
             
             # Check if in async context
             try:
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    raise RuntimeError(
-                        "Cannot use sync send() in async context. "
-                        "Please use: await conv.asend(message)"
-                    )
+                asyncio.get_running_loop()
             except RuntimeError:
                 pass
+            else:
+                raise RuntimeError(
+                    "Cannot use sync send() in async context. "
+                    "Please use: await conv.asend(message)"
+                )
             
             # Convert str to HumanMessage and merge attachments if present
             if isinstance(message, str):
@@ -891,7 +927,7 @@ class Conversation:
             # Reset turn ID context
             _current_turn_id.reset(token)
     
-    async def _asend_stream(self, messages: List[Message], **kwargs) -> AsyncIterator[Union[MessageChunk, ReasoningChunk]]:
+    async def _asend_stream(self, messages: List[Message], **kwargs) -> AsyncIterator[Union[MessageChunk, ReasoningChunk, FailoverChunk]]:
         """Handle async streaming response with support for both answer and reasoning chunks."""
         # Get provider chunks (sync iterator)
         def _get_sync_chunks():
@@ -911,6 +947,14 @@ class Conversation:
         last_chunk_metadata = {}
         
         for provider_chunk in provider_chunks:
+            if isinstance(provider_chunk, FailoverChunk):
+                complete_content = ""
+                complete_reasoning_content = ""
+                last_chunk_was_final = False
+                last_chunk_metadata = {}
+                yield provider_chunk
+                continue
+
             unified_chunk = self.provider.converter.from_provider_chunk(provider_chunk)
             
             # Always accumulate metadata regardless of content.
@@ -1088,9 +1132,8 @@ class Conversation:
                     **extraction_kwargs
                 )
             except Exception as e:
-                # Non-retryable API errors (4xx): raise immediately
-                cause = getattr(e, '__cause__', None)
-                if cause and hasattr(cause, 'status_code') and 400 <= cause.status_code < 500:
+                status_code = getattr(e, "status_code", None)
+                if status_code is not None and 400 <= status_code < 500:
                     raise
                 last_error = e
                 if attempt < _MAX_RETRIES - 1:
@@ -1540,7 +1583,7 @@ class Conversation:
         self.messages.append(ai_response)
         return ai_response
     
-    def _send_stream(self, messages: List[Message], **kwargs) -> Iterator[Union[MessageChunk, ReasoningChunk]]:
+    def _send_stream(self, messages: List[Message], **kwargs) -> Iterator[Union[MessageChunk, ReasoningChunk, FailoverChunk]]:
         """Handle streaming response with support for both answer and reasoning chunks."""
         # Get provider chunks (model is already in provider config)
         provider_chunks = self.provider.send(
@@ -1556,6 +1599,14 @@ class Conversation:
         last_chunk_metadata = {}
         
         for provider_chunk in provider_chunks:
+            if isinstance(provider_chunk, FailoverChunk):
+                complete_content = ""
+                complete_reasoning_content = ""
+                last_chunk_was_final = False
+                last_chunk_metadata = {}
+                yield provider_chunk
+                continue
+
             unified_chunk = self.provider.converter.from_provider_chunk(provider_chunk)
             
             # Always accumulate metadata regardless of content.

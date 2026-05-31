@@ -112,6 +112,15 @@ class ReasoningChunk(BaseModel):
     metadata: Optional[Dict[str, Any]] = None
 
 
+class FailoverChunk(BaseModel):
+    """Signals that the current streaming provider failed and output will restart."""
+
+    failed_provider: str
+    next_provider: Optional[str] = None
+    error: str
+    is_final: bool = False
+
+
 class ToolCallDelta(BaseModel):
     """Represents an incremental update to a tool call.
     

@@ -37,7 +37,7 @@ from .exceptions import (
     ConversationNotFoundError, ContextError
 )
 from .message import (
-    Message, MessageChunk, ReasoningChunk,
+    Message, MessageChunk, ReasoningChunk, FailoverChunk,
     BaseMessage, HumanMessage, AIMessage, SystemMessage, ToolMessage,
     ToolCallStartEvent, ToolCallSuccessEvent, ToolCallErrorEvent, ToolCallCancelledEvent
 )
@@ -93,6 +93,7 @@ __all__ = [
     'Message',
     'MessageChunk',
     'ReasoningChunk',
+    'FailoverChunk',
     'BaseMessage',
     'HumanMessage',
     'AIMessage',

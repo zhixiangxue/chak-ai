@@ -73,26 +73,23 @@ class FIFOContextHandler(BaseContextHandler):
     def _find_preserve_start(self, conversation_messages: List[Message]) -> int:
         """
         Find the start index of messages to preserve based on keep_recent_turns.
-        
-        Logic: Find the (keep_recent_turns + 1)th HumanMessage from the end.
-        
+
+        Logic: Find the Nth HumanMessage from the end.
+
         Args:
             conversation_messages: Conversation messages (excluding system)
-            
+
         Returns:
             Start index in conversation_messages, or 0 if no truncation needed
         """
         if not conversation_messages:
             return 0
-        
-        # Find HumanMessage positions from end to start
+
         human_indices = []
         for i in range(len(conversation_messages) - 1, -1, -1):
             if isinstance(conversation_messages[i], HumanMessage):
                 human_indices.append(i)
-                # Found the (keep_recent_turns + 1)th HumanMessage
-                if len(human_indices) == self.keep_recent_turns + 1:
-                    return human_indices[-1]  # Return the earliest one
-        
-        # Not enough turns to truncate
+                if len(human_indices) == self.keep_recent_turns:
+                    return human_indices[-1]
+
         return 0

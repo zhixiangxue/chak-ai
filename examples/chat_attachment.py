@@ -27,7 +27,7 @@ PDF_URL = (
 
 def _make_conv() -> chak.Conversation:
     if key := os.getenv("ANTHROPIC_API_KEY"):
-        return chak.Conversation("anthropic/claude-sonnet-4-5", api_key=key)
+        return chak.Conversation("anthropic/claude-haiku-4-5", api_key=key)
     if key := os.getenv("OPENAI_API_KEY"):
         return chak.Conversation("openai/gpt-4o", api_key=key)
     raise EnvironmentError("Set ANTHROPIC_API_KEY or OPENAI_API_KEY")
