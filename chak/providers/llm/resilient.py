@@ -2,7 +2,7 @@ from typing import Any, Dict, Iterator, List, Optional
 
 from ...exceptions import ProviderError
 from ...message import FailoverChunk, Message, UnifiedStreamChunk
-from ...metadata import Metadata
+from ...metadata import Metadata, ProviderTrace, FailureRecord
 from .base import BaseMessageConverter, Provider
 
 
@@ -83,8 +83,8 @@ class ResilientProvider(Provider):
                 next_provider = self.providers[index + 1]
                 if user_visible_yielded:
                     yield FailoverChunk(
-                        failed_provider=self._provider_name(provider),
-                        next_provider=self._provider_name(next_provider),
+                        failed_provider=provider.provider_name,
+                        next_provider=next_provider.provider_name,
                         error=str(error),
                     )
 
@@ -97,10 +97,10 @@ class ResilientProvider(Provider):
         metadata = getattr(message, "metadata", None)
         if isinstance(metadata, Metadata):
             if not metadata.provider:
-                metadata.provider = self._provider_name(provider)
+                metadata.provider = provider.provider_name
             if metadata.model is None:
-                metadata.model = self._model_name(provider)
-            metadata.extra.update(self._failover_metadata(provider, failures))
+                metadata.model = provider.model_name
+            metadata.provider_trace = self._build_provider_trace(provider, failures)
         elif isinstance(metadata, dict):
             metadata.update(self._annotate_metadata_dict(metadata, provider, failures))
 
@@ -111,27 +111,29 @@ class ResilientProvider(Provider):
         failures: List[Dict[str, Any]],
     ) -> Dict[str, Any]:
         annotated = dict(metadata or {})
-        annotated.setdefault("provider", self._provider_name(provider))
-        annotated.setdefault("model", self._model_name(provider))
-        annotated.update(self._failover_metadata(provider, failures))
+        annotated.setdefault("provider", provider.provider_name)
+        annotated.setdefault("model", provider.model_name)
+        trace = self._build_provider_trace(provider, failures)
+        annotated["provider_trace"] = trace.model_dump()
         return annotated
 
-    def _failover_metadata(self, provider: Provider, failures: List[Dict[str, Any]]) -> Dict[str, Any]:
-        return {
-            "primary_provider": self._provider_name(self.primary_provider),
-            "fallback_used": bool(failures),
-            "failover_attempts": len(failures),
-            "failed_providers": list(failures),
-            "resolved_provider": self._provider_name(provider),
-            "resolved_model": self._model_name(provider),
-        }
+    def _build_provider_trace(self, provider: Provider, failures: List[Dict[str, Any]]) -> ProviderTrace:
+        return ProviderTrace(
+            primary_provider=self.primary_provider.provider_name,
+            primary_model=self.primary_provider.model_name,
+            fallback_used=bool(failures),
+            failover_attempts=len(failures),
+            failed_providers=[FailureRecord(**f) for f in failures],
+            resolved_provider=provider.provider_name,
+            resolved_model=provider.model_name,
+        )
 
     @staticmethod
     def _failure_record(provider: Provider, attempt_index: int, error: Exception) -> Dict[str, Any]:
         record = {
             "attempt_index": attempt_index,
-            "provider": ResilientProvider._provider_name(provider),
-            "model": ResilientProvider._model_name(provider),
+            "provider": provider.provider_name,
+            "model": provider.model_name,
             "base_url": ResilientProvider._base_url(provider),
             "error": str(error),
         }
@@ -139,14 +141,6 @@ class ResilientProvider(Provider):
             record["status_code"] = error.status_code
             record["error_type"] = error.error_type
         return record
-
-    @staticmethod
-    def _provider_name(provider: Provider) -> str:
-        return str(getattr(provider.config, "provider_name", provider.__class__.__name__))
-
-    @staticmethod
-    def _model_name(provider: Provider) -> str:
-        return str(getattr(provider.config, "model", ""))
 
     @staticmethod
     def _base_url(provider: Provider) -> str:

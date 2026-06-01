@@ -80,7 +80,7 @@ def _is_no_tool_support_error(error: Exception) -> bool:
     msg = str(error).lower()
     return any(phrase in msg for phrase in _NO_TOOL_SUPPORT_PHRASES)
 
-from ..metadata import Metadata, Usage
+from ..metadata import Metadata, Usage, ProviderTrace
 from ..utils.logger import logger
 
 if TYPE_CHECKING:
@@ -105,11 +105,30 @@ def _dict_to_metadata(meta: Optional[Dict[str, Any]]) -> Metadata:
         return Metadata()
     usage_dict = meta.get('usage')
     usage = Usage(**usage_dict) if usage_dict else None
+
+    # Reconstruct ProviderTrace from dict (set by ResilientProvider or converters)
+    trace_dict = meta.get('provider_trace')
+    provider_trace: Optional[ProviderTrace] = None
+    if isinstance(trace_dict, dict):
+        provider_trace = ProviderTrace(**trace_dict)
+    elif meta.get('provider'):
+        # Non-resilient streaming: build a default trace from available fields
+        provider_trace = ProviderTrace(
+            primary_provider=meta.get('provider', ''),
+            primary_model=meta.get('model', '') or '',
+            fallback_used=False,
+            failover_attempts=0,
+            failed_providers=[],
+            resolved_provider=meta.get('provider', ''),
+            resolved_model=meta.get('model', '') or '',
+        )
+
     return Metadata(
         provider=meta.get('provider', ''),
         model=meta.get('model'),
         finish_reason=meta.get('finish_reason'),
         usage=usage,
+        provider_trace=provider_trace,
     )
 
 

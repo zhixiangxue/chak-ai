@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, List, Dict, Any, Iterator, Union, Optional, As
 from .attachment import Attachment
 from .context.handlers import BaseContextHandler, NoopContextHandler
 from .message import Message, MessageChunk, ReasoningChunk, FailoverChunk, HumanMessage, AIMessage, SystemMessage, ToolMessage, _current_turn_id
+from .metadata import ProviderTrace
 from .providers import create_provider
 from .providers.llm.resilient import ResilientProvider
 from .providers.types import ProviderCategory
@@ -187,6 +188,7 @@ class Conversation:
             self.provider = ResilientProvider(primary_provider, fallback_providers)
         else:
             config_dict = self._build_config_dict(primary_parsed, kwargs)
+            config_dict['provider_name'] = primary_parsed['provider']
             self.provider = create_provider(
                 primary_parsed['provider'],
                 config_dict,
@@ -286,6 +288,28 @@ class Conversation:
             >>> print(tools)  # [<function my_func>, <MyClass object>]
         """
         return self._raw_tools.copy()
+
+    def get_provider_traces(self) -> List[ProviderTrace]:
+        """Collect all non-empty provider traces from messages in this conversation.
+
+        Returns:
+            List of ProviderTrace objects, one per message that has a trace.
+            Empty list if no messages have provider traces.
+
+        Example:
+            >>> traces = conv.get_provider_traces()
+            >>> for t in traces:
+            ...     if t.fallback_used:
+            ...         print(f"Failover: {t.primary_provider} -> {t.resolved_provider}")
+        """
+        traces: List[ProviderTrace] = []
+        for msg in self.messages:
+            metadata = getattr(msg, "metadata", None)
+            if metadata is not None:
+                trace = getattr(metadata, "provider_trace", None)
+                if trace is not None:
+                    traces.append(trace)
+        return traces
     
     def add_tools(self, tools: List) -> None:
         """

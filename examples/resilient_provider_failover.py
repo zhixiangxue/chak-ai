@@ -56,7 +56,7 @@ conv = chak.Conversation(
             "timeout": 2,
         },
         {
-            "model_uri": "deepseek/deepseek-chat",
+            "model_uri": "deepseek/deepseek-v4-flash",
             "api_key": deepseek_api_key,
             "timeout": 30,
         },
@@ -69,7 +69,7 @@ print("=" * 70)
 
 response = conv.send("Explain LLM provider failover in one sentence.")
 print(f"Response: {response.content}")
-print(f"Metadata: {response.metadata.extra}")
+print(f"Trace: {response.metadata.provider_trace}")
 
 print("\n" + "=" * 70)
 print("Streaming failover example")
@@ -88,3 +88,19 @@ for chunk in stream:  # type: ignore
         print(chunk.content, end="", flush=True)  # type: ignore
 
 print("\n")
+
+print("=" * 70)
+print("Provider trace summary (via Conversation.get_provider_traces)")
+print("=" * 70)
+
+traces = conv.get_provider_traces()
+for i, trace in enumerate(traces):
+    print(f"\nMessage {i + 1}:")
+    print(f"  Primary:   {trace.primary_provider}/{trace.primary_model}")
+    print(f"  Fallback:  {trace.fallback_used}")
+    print(f"  Attempts:  {trace.failover_attempts}")
+    print(f"  Resolved:  {trace.resolved_provider}/{trace.resolved_model}")
+    if trace.failed_providers:
+        print(f"  Failures:")
+        for f in trace.failed_providers:
+            print(f"    [{f.attempt_index}] {f.provider}/{f.model}: {f.error_type} ({f.error})")

@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from ... import __version__
 from ...exceptions import ProviderError
 from ...message import Message, MessageChunk, ReasoningChunk, AIMessage, ChatCompletionMessageToolCall, Function, UnifiedStreamChunk
-from ...metadata import Metadata, Usage
+from ...metadata import Metadata, Usage, ProviderTrace
 
 
 class BaseProviderConfig(BaseModel):
@@ -77,6 +77,16 @@ class Provider(ABC):
         """Initialize the provider-specific client."""
         pass
 
+    @property
+    def provider_name(self) -> str:
+        """Canonical provider name from config, falling back to class name."""
+        return str(getattr(self.config, "provider_name", None) or self.__class__.__name__)
+
+    @property
+    def model_name(self) -> str:
+        """Model name from config."""
+        return str(getattr(self.config, "model", "") or "")
+
     def send(
             self,
             messages: List[Message],
@@ -91,20 +101,42 @@ class Provider(ABC):
                 return self._wrap_stream_errors(self._send_stream(provider_messages, **kwargs))
             else:
                 response = self._send_complete(provider_messages, **kwargs)
-                return self.converter.from_provider_response(response)
+                result = self.converter.from_provider_response(response)
+                self._ensure_provider_trace(result)
+                return result
 
         except Exception as e:
             raise self._provider_error(e) from e
 
+    def _ensure_provider_trace(self, message: Any) -> None:
+        """Set a default ProviderTrace on the message metadata if not already set.
+
+        Non-resilient providers produce messages without a trace; this ensures
+        every message has one so developers never need to check for None.
+        ResilientProvider sets its own trace via _annotate_message, so this
+        no-ops when a trace is already present.
+        """
+        metadata = getattr(message, "metadata", None)
+        if not isinstance(metadata, Metadata):
+            return
+        if metadata.provider_trace is not None:
+            return  # Already set by ResilientProvider
+        metadata.provider_trace = ProviderTrace(
+            primary_provider=self.provider_name,
+            primary_model=self.model_name,
+            fallback_used=False,
+            failover_attempts=0,
+            failed_providers=[],
+            resolved_provider=self.provider_name,
+            resolved_model=self.model_name,
+        )
+
     def _provider_error(self, error: BaseException) -> ProviderError:
-        provider_name = getattr(self.config, "provider_name", self.__class__.__name__)
-        model = getattr(self.config, "model", None)
-        base_url = getattr(self.config, "base_url", None)
         return ProviderError.from_exception(
             error,
-            provider=provider_name,
-            model=model,
-            base_url=base_url,
+            provider=self.provider_name,
+            model=self.config.model,
+            base_url=getattr(self.config, "base_url", None),
             message=f"{self.__class__.__name__} error: {error}",
         )
 
