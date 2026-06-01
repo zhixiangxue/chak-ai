@@ -5,16 +5,18 @@ Uses DashScope SDK for native integration with Alibaba Cloud's Bailian service.
 Official documentation: https://help.aliyun.com/zh/model-studio/
 
 Supported models:
-- Qwen series: qwen-plus, qwen-turbo, qwen-max, etc.
+- Text-only (Generation API): qwen-plus, qwen-turbo, qwen-max, etc.
+- Multimodal (MultiModalConversation API): qwen-vl-max, qwen-vl-plus, qwen3.6-plus, etc.
 - With reasoning: qwen-plus (enable_thinking), QwQ models, etc.
 """
 from typing import Optional, Dict, Any, List, Iterator
 
 from pydantic import field_validator
-from dashscope import Generation
+from dashscope import Generation, MultiModalConversation
 from dashscope.api_entities.dashscope_response import GenerationResponse
 
 from .base import Provider, BaseProviderConfig, BaseMessageConverter
+from ...exceptions import ProviderError
 from ...message import Message, AIMessage, MessageChunk, ReasoningChunk, UnifiedStreamChunk, ToolCallDelta
 from ...metadata import Metadata, Usage
 from ...schemas import Reasoning
@@ -34,6 +36,38 @@ class BailianConfig(BaseProviderConfig):
 
 class BailianMessageConverter(BaseMessageConverter):
     """Converter for Bailian (DashScope) message formats."""
+    
+    @staticmethod
+    def _convert_content_to_multimodal(content):
+        """Convert OpenAI-compatible multimodal content to DashScope multimodal format.
+        
+        OpenAI-compatible format:
+            [{"type": "image_url", "image_url": {"url": "..."}}, {"type": "text", "text": "..."}]
+        
+        DashScope MultiModalConversation format:
+            [{"image": "..."}, {"text": "..."}]
+        
+        If content is a plain string, returns it unchanged.
+        """
+        if not isinstance(content, list):
+            return content
+        
+        result = []
+        for part in content:
+            part_type = part.get("type", "")
+            if part_type == "image_url":
+                result.append({"image": part["image_url"]["url"]})
+            elif part_type == "text":
+                result.append({"text": part["text"]})
+            elif part_type == "input_audio":
+                audio = part.get("input_audio", {})
+                result.append({"audio": audio.get("data", "")})
+            elif part_type == "video":
+                result.append({"video": part.get("video", {}).get("url", "")})
+            else:
+                # Unknown type, pass through as-is
+                result.append(part)
+        return result
     
     def to_provider_format(self, messages: List[Message]) -> List[Dict[str, Any]]:
         """Convert chak messages to DashScope format.
@@ -74,13 +108,18 @@ class BailianMessageConverter(BaseMessageConverter):
             provider_messages.append(provider_msg)
         return provider_messages
     
-    def from_provider_response(self, response: GenerationResponse) -> AIMessage:
+    def from_provider_response(self, response: GenerationResponse, is_multimodal: bool = False) -> AIMessage:
         """Convert DashScope response to AIMessage.
         
-        DashScope response structure:
-        - response.output.choices[0].message.content: answer content
+        DashScope Generation response structure:
+        - response.output.choices[0].message.content: answer content (string)
         - response.output.choices[0].message.reasoning_content: reasoning content
         - response.output.choices[0].message.tool_calls: tool calls (if any)
+        
+        DashScope MultiModalConversation response structure:
+        - response.output.choices[0].message.content: answer content (list of dicts)
+          e.g. [{"text": "answer text"}]
+        - response.output.choices[0].message.reasoning_content: reasoning content
         """
         # Extract content
         content = ""
@@ -95,7 +134,18 @@ class BailianMessageConverter(BaseMessageConverter):
                 message = output.choices[0].message
                 
                 # Answer content
-                content = getattr(message, 'content', '') or ""
+                raw_content = getattr(message, 'content', '') or ""
+                if is_multimodal and isinstance(raw_content, list):
+                    # MultiModalConversation returns content as list of dicts
+                    # e.g. [{"text": "..."}, {"text": "..."}]
+                    text_parts = []
+                    for part in raw_content:
+                        if isinstance(part, dict) and "text" in part:
+                            text_parts.append(part["text"])
+                    content = "".join(text_parts) if text_parts else ""
+                else:
+                    content = raw_content if isinstance(raw_content, str) else ""
+                
                 # Reasoning content (safely check existence)
                 try:
                     reasoning_content = message.reasoning_content
@@ -270,7 +320,15 @@ class BailianMessageConverter(BaseMessageConverter):
 
 
 class BailianProvider(Provider):
-    """Bailian provider implementation using DashScope SDK."""
+    """Bailian provider implementation using DashScope SDK.
+    
+    Supports two DashScope APIs depending on the model:
+    - Generation.call(): text-only models (qwen-plus, qwen-max, qwen-turbo, etc.)
+    - MultiModalConversation.call(): multimodal models (qwen-vl-*, qwen3.6-*, etc.)
+    """
+    
+    # Model name patterns that require MultiModalConversation API
+    _MULTIMODAL_MODEL_PATTERNS = ["qwen-vl", "qwen3."]
     
     def __init__(self, config: BailianConfig, converter: BailianMessageConverter = None):
         self.config: BailianConfig = config
@@ -285,28 +343,100 @@ class BailianProvider(Provider):
         """
         pass
     
-    def _send_complete(self, messages: List[Dict[str, Any]], **kwargs) -> GenerationResponse:
+    @staticmethod
+    def _is_multimodal_model(model: str) -> bool:
+        """Check if the model requires MultiModalConversation API.
+        
+        Models like qwen-vl-max, qwen-vl-plus, qwen3.6-plus are multimodal
+        and require the MultiModalConversation API instead of Generation API.
+        """
+        model_lower = model.lower()
+        return any(pattern in model_lower for pattern in BailianProvider._MULTIMODAL_MODEL_PATTERNS)
+    
+    def send(
+            self,
+            messages: List[Message],
+            stream: bool = False,
+            **kwargs
+    ):
+        """Unified send method — branches on model type for correct API."""
+        is_multimodal = self._is_multimodal_model(self.config.model)
+        
+        try:
+            # Convert messages to provider format
+            provider_messages = self.converter.to_provider_format(messages)
+            
+            # For multimodal models, convert content to DashScope multimodal format
+            if is_multimodal:
+                provider_messages = self._convert_to_multimodal_messages(provider_messages)
+            
+            if stream:
+                return self._wrap_stream_errors(
+                    self._send_stream(provider_messages, is_multimodal=is_multimodal, **kwargs)
+                )
+            else:
+                response = self._send_complete(provider_messages, is_multimodal=is_multimodal, **kwargs)
+                result = self.converter.from_provider_response(response, is_multimodal=is_multimodal)
+                self._ensure_provider_trace(result)
+                return result
+        
+        except Exception as e:
+            raise self._provider_error(e) from e
+    
+    def _convert_to_multimodal_messages(self, provider_messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Convert message content from OpenAI format to DashScope multimodal format."""
+        converted = []
+        for msg in provider_messages:
+            converted_msg = dict(msg)
+            converted_msg["content"] = self.converter._convert_content_to_multimodal(msg.get("content"))
+            converted.append(converted_msg)
+        return converted
+    
+    @staticmethod
+    def _check_response_error(response) -> None:
+        """Check if a DashScope response contains an error and raise if so.
+        
+        DashScope returns HTTP 200 even for errors, with status_code in body.
+        We check response.status_code (the API-level status, not HTTP status).
+        """
+        status_code = getattr(response, 'status_code', None)
+        if status_code is not None and status_code != 200:
+            code = getattr(response, 'code', 'Unknown')
+            message = getattr(response, 'message', 'Unknown error')
+            raise ProviderError(
+                f"DashScope API error (status={status_code}, code={code}): {message}"
+            )
+    
+    def _send_complete(self, messages: List[Dict[str, Any]], is_multimodal: bool = False, **kwargs):
         """Send non-streaming request using DashScope SDK.
         
         Args:
             messages: Already converted provider-format messages
+            is_multimodal: If True, use MultiModalConversation API
             **kwargs: Additional parameters including:
                 - tools: list of tool definitions (optional)
                 - reasoning: dict with reasoning config (optional)
                 - temperature, top_p, max_tokens, etc.
         
         Returns:
-            DashScope GenerationResponse
+            DashScope response (GenerationResponse or MultiModalConversationResponse)
         """
+        if is_multimodal:
+            return self._send_multimodal_complete(messages, **kwargs)
+        else:
+            return self._send_generation_complete(messages, **kwargs)
+    
+    def _send_generation_complete(self, messages: List[Dict[str, Any]], **kwargs):
+        """Send non-streaming request via Generation API (text-only models)."""
         # Apply reasoning parameters
         self._apply_reasoning_params(kwargs)
         
         # Build DashScope parameters
         params = {
-            "api_key": self.config.api_key,  # Pass API key directly
+            "api_key": self.config.api_key,
             "model": self.config.model,
-            "messages": messages,  # Already converted
-            "result_format": "message",  # Use message format for easier parsing
+            "messages": messages,
+            "result_format": "message",
         }
         
         # Add tools if present
@@ -325,32 +455,70 @@ class BailianProvider(Provider):
         if "thinking_budget" in kwargs:
             params["thinking_budget"] = kwargs["thinking_budget"]
         
-        # Call DashScope API
+        # Call DashScope Generation API
         response = Generation.call(**params)
+        
+        # Check for API errors (DashScope returns HTTP 200 even on errors)
+        self._check_response_error(response)
         
         return response
     
-    def _send_stream(self, messages: List[Dict[str, Any]], **kwargs) -> Iterator[Any]:
+    def _send_multimodal_complete(self, messages: List[Dict[str, Any]], **kwargs):
+        """Send non-streaming request via MultiModalConversation API."""
+        import dashscope
+        dashscope.base_http_api_url = "https://dashscope.aliyuncs.com/api/v1"
+        
+        params = {
+            "api_key": self.config.api_key,
+            "model": self.config.model,
+            "messages": messages,
+        }
+        
+        # Add optional parameters supported by MultiModalConversation
+        if "temperature" in kwargs:
+            params["temperature"] = kwargs["temperature"]
+        if "top_p" in kwargs:
+            params["top_p"] = kwargs["top_p"]
+        if "max_tokens" in kwargs:
+            params["max_tokens"] = kwargs["max_tokens"]
+        
+        # Call DashScope MultiModalConversation API
+        response = MultiModalConversation.call(**params)
+        
+        # Check for API errors
+        self._check_response_error(response)
+        
+        return response
+    
+    def _send_stream(self, messages: List[Dict[str, Any]], is_multimodal: bool = False, **kwargs) -> Iterator[Any]:
         """Send streaming request using DashScope SDK.
         
         Args:
             messages: Already converted provider-format messages
+            is_multimodal: If True, use MultiModalConversation streaming
             **kwargs: Additional parameters including tools
         
         Returns:
             Iterator of DashScope streaming chunks
         """
+        if is_multimodal:
+            return self._send_multimodal_stream(messages, **kwargs)
+        else:
+            return self._send_generation_stream(messages, **kwargs)
+    
+    def _send_generation_stream(self, messages: List[Dict[str, Any]], **kwargs) -> Iterator[Any]:
+        """Send streaming request via Generation API (text-only models)."""
         # Apply reasoning parameters
         self._apply_reasoning_params(kwargs)
         
         # Build DashScope parameters
         params = {
-            "api_key": self.config.api_key,  # Pass API key directly
+            "api_key": self.config.api_key,
             "model": self.config.model,
-            "messages": messages,  # Already converted
+            "messages": messages,
             "result_format": "message",
             "stream": True,
-            "incremental_output": True,  # Required for streaming
+            "incremental_output": True,
         }
         
         # Add tools if present
@@ -372,15 +540,36 @@ class BailianProvider(Provider):
         # Call DashScope streaming API
         responses = Generation.call(**params)
         
-        # Return the iterator directly
+        return responses
+    
+    def _send_multimodal_stream(self, messages: List[Dict[str, Any]], **kwargs) -> Iterator[Any]:
+        """Send streaming request via MultiModalConversation API."""
+        import dashscope
+        dashscope.base_http_api_url = "https://dashscope.aliyuncs.com/api/v1"
+        
+        params = {
+            "api_key": self.config.api_key,
+            "model": self.config.model,
+            "messages": messages,
+            "stream": True,
+            "incremental_output": True,
+        }
+        
+        # Add optional parameters
+        if "temperature" in kwargs:
+            params["temperature"] = kwargs["temperature"]
+        if "top_p" in kwargs:
+            params["top_p"] = kwargs["top_p"]
+        if "max_tokens" in kwargs:
+            params["max_tokens"] = kwargs["max_tokens"]
+        
+        # Call DashScope MultiModalConversation streaming API
+        responses = MultiModalConversation.call(**params)
+        
         return responses
     
     async def _asend_stream(self, messages: List[Dict[str, Any]], **kwargs) -> Iterator[Any]:
-        """Async streaming is not yet implemented for DashScope.
-        
-        Falls back to sync streaming for now.
-        """
-        # TODO: Implement async streaming when DashScope supports it
+        """Async streaming — falls back to sync streaming for now."""
         return self._send_stream(messages, **kwargs)
     
     def _apply_reasoning_params(self, kwargs: dict) -> None:
