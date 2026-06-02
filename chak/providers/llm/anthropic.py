@@ -22,6 +22,7 @@ import anthropic
 from pydantic import field_validator
 
 from .base import Provider, BaseProviderConfig, BaseMessageConverter
+from ...exceptions import ProviderError, ErrorType
 from ...message import (
     Message, AIMessage, UnifiedStreamChunk,
     ToolCallDelta, ChatCompletionMessageToolCall, Function,
@@ -389,6 +390,67 @@ class AnthropicProvider(Provider):
             kwargs["base_url"] = self.config.base_url
         self._client = anthropic.Anthropic(**kwargs)
 
+    def _normalize_error(self, error: BaseException) -> ProviderError:
+        """Precisely map anthropic SDK exceptions to ProviderError.
+
+        The anthropic SDK mirrors the openai SDK exception hierarchy:
+        - APIStatusError: any non-2xx HTTP response (has .status_code)
+        - APITimeoutError: request timed out
+        - APIConnectionError: network-level failure
+        """
+        if isinstance(error, ProviderError):
+            error.provider = error.provider or self.provider_name
+            error.model = error.model or self.config.model
+            error.base_url = error.base_url or getattr(self.config, "base_url", None)
+            return error
+
+        base_url = getattr(self.config, "base_url", None)
+
+        if isinstance(error, anthropic.APIStatusError):
+            status_code = error.status_code
+            return ProviderError(
+                f"AnthropicProvider error: {error.message}",
+                provider=self.provider_name,
+                model=self.config.model,
+                base_url=base_url,
+                status_code=status_code,
+                error_type=ErrorType.from_status_code(status_code),
+                raw_error=error,
+            )
+
+        if isinstance(error, anthropic.APITimeoutError):
+            return ProviderError(
+                f"AnthropicProvider timeout: {error}",
+                provider=self.provider_name,
+                model=self.config.model,
+                base_url=base_url,
+                status_code=None,
+                error_type=ErrorType.TIMEOUT,
+                raw_error=error,
+            )
+
+        if isinstance(error, anthropic.APIConnectionError):
+            return ProviderError(
+                f"AnthropicProvider connection error: {error}",
+                provider=self.provider_name,
+                model=self.config.model,
+                base_url=base_url,
+                status_code=None,
+                error_type=ErrorType.CONNECTION_ERROR,
+                raw_error=error,
+            )
+
+        # Fallback: unrecognized error
+        return ProviderError(
+            f"AnthropicProvider error: {error}",
+            provider=self.provider_name,
+            model=self.config.model,
+            base_url=base_url,
+            status_code=None,
+            error_type=ErrorType.UNKNOWN,
+            raw_error=error,
+        )
+
     # ------------------------------------------------------------------ #
     # Tool format conversion                                               #
     # ------------------------------------------------------------------ #
@@ -475,9 +537,9 @@ class AnthropicProvider(Provider):
                 response = self._send_complete(provider_data, **kwargs)
                 return self.converter.from_provider_response(response)
         except anthropic.APIError as e:
-            raise self._provider_error(e) from e
+            raise self._normalize_error(e) from e
         except Exception as e:
-            raise self._provider_error(e) from e
+            raise self._normalize_error(e) from e
 
     def _send_complete(self, provider_data: Dict[str, Any], **kwargs) -> Any:
         """Send a non-streaming request to the Anthropic Messages API."""

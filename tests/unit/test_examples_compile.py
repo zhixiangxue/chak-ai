@@ -19,4 +19,4 @@ def test_resilient_provider_example_uses_three_core_provider_types(project_root)
 
     assert "anthropic@http://127.0.0.1:9" in content
     assert "openai@http://127.0.0.1:9/v1" in content
-    assert "deepseek/deepseek-chat" in content
+    assert "deepseek/deepseek-v4-flash" in content

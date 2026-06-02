@@ -1,6 +1,6 @@
 from typing import Any, Dict, Iterator, List, Optional
 
-from ...exceptions import ProviderError
+from ...exceptions import ProviderError, ErrorType, RETRYABLE_STATUS_CODES
 from ...message import FailoverChunk, Message, UnifiedStreamChunk
 from ...metadata import Metadata, ProviderTrace, FailureRecord
 from .base import BaseMessageConverter, Provider
@@ -154,60 +154,53 @@ class ResilientProvider(Provider):
         )
         return ProviderError(
             f"All resilient provider attempts failed: {details}",
-            error_type="all_attempts_failed",
+            error_type=ErrorType.FAILOVER_EXHAUSTED,
         )
 
 
 def is_retryable_provider_error(error: BaseException) -> bool:
-    provider_error = _find_provider_error(error)
-    if provider_error is not None:
-        if provider_error.error_type in {"timeout", "connection_error", "rate_limit", "server_error"}:
-            return True
-        if provider_error.status_code in {408, 409, 425, 429, 500, 502, 503, 504}:
-            return True
-        if provider_error.status_code is not None and 400 <= provider_error.status_code < 500:
-            return False
+    """Decide whether *error* should trigger a resilient failover.
+
+    This function is the single gatekeeper for the retry-or-fail decision
+    in :class:`ResilientProvider`.  It MUST receive a :class:`ProviderError`
+    — all provider SDK errors are precisely mapped into ProviderError by
+    each provider's ``_provider_error()`` override, so raw exceptions should
+    never reach this function.
+
+    Retryable (try next provider):
+        - error_type in {"timeout", "connection_error", "rate_limit", "server_error"}
+        - status_code in {408, 429, 500, 502, 503, 504}
+
+    NOT retryable (raise immediately):
+        - error_type == "unknown" (unrecognized error — be conservative)
+        - error_type in {"auth_error", "bad_request", "not_found"}
+        - Any 4xx status_code not in the retryable set
+        - The error is not a ProviderError at all
+    """
+    if not isinstance(error, ProviderError):
         return False
 
-    status_code = _find_status_code(error)
-    if status_code is not None:
-        if status_code in {408, 409, 425, 429, 500, 502, 503, 504}:
-            return True
-        if 400 <= status_code < 500:
-            return False
-
-    for current in _iter_error_chain(error):
-        name = type(current).__name__.lower()
-        if any(token in name for token in ("timeout", "connection", "connect", "ratelimit")):
-            return True
-
+    if error.error_type in ErrorType.RETRYABLE:
+        return True
+    if error.status_code in RETRYABLE_STATUS_CODES:
+        return True
+    if error.status_code is not None and 400 <= error.status_code < 500:
+        return False
     return False
 
 
 def _find_provider_error(error: BaseException) -> Optional[ProviderError]:
-    for current in _iter_error_chain(error):
-        if isinstance(current, ProviderError):
-            return current
-    return None
+    """Walk the exception chain and return the first ProviderError found.
 
-
-def _find_status_code(error: BaseException) -> Optional[int]:
-    for current in _iter_error_chain(error):
-        status = getattr(current, "status_code", None)
-        if status is None and hasattr(current, "response"):
-            status = getattr(getattr(current, "response"), "status_code", None)
-        if status is not None:
-            try:
-                return int(status)
-            except (TypeError, ValueError):
-                return None
-    return None
-
-
-def _iter_error_chain(error: BaseException):
+    Used by :func:`is_retryable_provider_error` (which first does a direct
+    ``isinstance`` check) and by tests that need to verify the wrapped
+    ProviderError inside a chained exception.
+    """
     current: Optional[BaseException] = error
     seen = set()
     while current is not None and id(current) not in seen:
         seen.add(id(current))
-        yield current
+        if isinstance(current, ProviderError):
+            return current
         current = current.__cause__ or current.__context__
+    return None

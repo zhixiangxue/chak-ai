@@ -38,12 +38,12 @@ def test_without_fallback_uses_single_provider_path(provider_factory):
     assert conv.provider is provider
 
 
-def test_fallback_models_create_resilient_provider_with_provider_name_in_config(provider_factory):
+def test_fallbacks_create_resilient_provider_with_provider_name_in_config(provider_factory):
     conv = Conversation(
         "anthropic@http://127.0.0.1:9:claude-haiku-4-5",
         api_key="anthropic-key",
         timeout=2,
-        fallback_models=[
+        fallbacks=[
             {"model_uri": "openai@http://127.0.0.1:9/v1:gpt-4o-mini", "api_key": "openai-key", "timeout": 3},
             {"model_uri": "deepseek/deepseek-chat", "api_key": "deepseek-key"},
         ],
@@ -59,15 +59,15 @@ def test_fallback_models_create_resilient_provider_with_provider_name_in_config(
     assert provider_factory[2][1]["api_key"] == "deepseek-key"
 
 
-@pytest.mark.parametrize("fallback_models", [["openai/gpt-4o-mini"], [123]])
-def test_fallback_models_must_be_dict_list(fallback_models, provider_factory):
+@pytest.mark.parametrize("fallbacks", [["openai/gpt-4o-mini"], [123]])
+def test_fallbacks_must_be_dict_list(fallbacks, provider_factory):
     with pytest.raises(TypeError, match="fallback model spec must be a dict"):
-        Conversation("deepseek/deepseek-chat", api_key="key", fallback_models=fallback_models)
+        Conversation("deepseek/deepseek-chat", api_key="key", fallbacks=fallbacks)
 
 
-def test_fallback_model_requires_model_uri(provider_factory):
+def test_fallback_requires_model_uri(provider_factory):
     with pytest.raises(ValueError, match="fallback model spec requires 'model_uri'"):
-        Conversation("deepseek/deepseek-chat", api_key="key", fallback_models=[{"api_key": "backup"}])
+        Conversation("deepseek/deepseek-chat", api_key="key", fallbacks=[{"api_key": "backup"}])
 
 
 def test_fallback_nested_kwargs_must_be_dict(provider_factory):
@@ -75,5 +75,5 @@ def test_fallback_nested_kwargs_must_be_dict(provider_factory):
         Conversation(
             "deepseek/deepseek-chat",
             api_key="key",
-            fallback_models=[{"model_uri": "openai/gpt-4o-mini", "kwargs": "bad"}],
+            fallbacks=[{"model_uri": "openai/gpt-4o-mini", "kwargs": "bad"}],
         )

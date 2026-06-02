@@ -16,7 +16,7 @@ from dashscope import Generation, MultiModalConversation
 from dashscope.api_entities.dashscope_response import GenerationResponse
 
 from .base import Provider, BaseProviderConfig, BaseMessageConverter
-from ...exceptions import ProviderError
+from ...exceptions import ProviderError, ErrorType
 from ...message import Message, AIMessage, MessageChunk, ReasoningChunk, UnifiedStreamChunk, ToolCallDelta
 from ...metadata import Metadata, Usage
 from ...schemas import Reasoning
@@ -342,6 +342,105 @@ class BailianProvider(Provider):
         API key is set via environment variable in __init__.
         """
         pass
+
+    def _normalize_error(self, error: BaseException) -> ProviderError:
+        """Precisely map DashScope SDK exceptions to ProviderError.
+
+        DashScope has two error pathways:
+        1. Exceptions raised directly (e.g. InputRequired, RequestFailure,
+           AuthenticationError, TimeoutException, ServiceUnavailableError)
+        2. Error responses wrapped in GenerationResponse with non-200
+           status_code — these are handled by _check_response_error()
+           which raises ProviderError directly.
+        """
+        if isinstance(error, ProviderError):
+            error.provider = error.provider or self.provider_name
+            error.model = error.model or self.config.model
+            error.base_url = error.base_url or getattr(self.config, "base_url", None)
+            return error
+
+        from dashscope.common.error import (
+            AuthenticationError as DashScopeAuthError,
+            RequestFailure,
+            TimeoutException,
+            ServiceUnavailableError,
+            InvalidParameter,
+            InvalidInput,
+            UnsupportedModel,
+            InputRequired,
+            ModelRequired,
+        )
+
+        base_url = getattr(self.config, "base_url", None)
+
+        if isinstance(error, DashScopeAuthError):
+            return ProviderError(
+                f"BailianProvider auth error: {error}",
+                provider=self.provider_name,
+                model=self.config.model,
+                base_url=base_url,
+                status_code=401,
+                error_type=ErrorType.AUTH_ERROR,
+                raw_error=error,
+            )
+
+        if isinstance(error, TimeoutException):
+            return ProviderError(
+                f"BailianProvider timeout: {error}",
+                provider=self.provider_name,
+                model=self.config.model,
+                base_url=base_url,
+                status_code=None,
+                error_type=ErrorType.TIMEOUT,
+                raw_error=error,
+            )
+
+        if isinstance(error, ServiceUnavailableError):
+            return ProviderError(
+                f"BailianProvider service unavailable: {error}",
+                provider=self.provider_name,
+                model=self.config.model,
+                base_url=base_url,
+                status_code=503,
+                error_type=ErrorType.SERVER_ERROR,
+                raw_error=error,
+            )
+
+        if isinstance(error, RequestFailure):
+            # RequestFailure carries http_code from the API
+            http_code = getattr(error, "http_code", None)
+            return ProviderError(
+                f"BailianProvider request failure: {error}",
+                provider=self.provider_name,
+                model=self.config.model,
+                base_url=base_url,
+                status_code=http_code,
+                error_type=ErrorType.from_status_code(http_code),
+                raw_error=error,
+            )
+
+        if isinstance(error, (InvalidParameter, InvalidInput, UnsupportedModel,
+                              InputRequired, ModelRequired)):
+            return ProviderError(
+                f"BailianProvider bad request: {error}",
+                provider=self.provider_name,
+                model=self.config.model,
+                base_url=base_url,
+                status_code=400,
+                error_type=ErrorType.BAD_REQUEST,
+                raw_error=error,
+            )
+
+        # Fallback: unrecognized error
+        return ProviderError(
+            f"BailianProvider error: {error}",
+            provider=self.provider_name,
+            model=self.config.model,
+            base_url=base_url,
+            status_code=None,
+            error_type=ErrorType.UNKNOWN,
+            raw_error=error,
+        )
     
     @staticmethod
     def _is_multimodal_model(model: str) -> bool:
@@ -381,7 +480,7 @@ class BailianProvider(Provider):
                 return result
         
         except Exception as e:
-            raise self._provider_error(e) from e
+            raise self._normalize_error(e) from e
     
     def _convert_to_multimodal_messages(self, provider_messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Convert message content from OpenAI format to DashScope multimodal format."""
@@ -395,16 +494,21 @@ class BailianProvider(Provider):
     @staticmethod
     def _check_response_error(response) -> None:
         """Check if a DashScope response contains an error and raise if so.
-        
+
         DashScope returns HTTP 200 even for errors, with status_code in body.
         We check response.status_code (the API-level status, not HTTP status).
+
+        The raised ProviderError includes both status_code and error_type so
+        that is_retryable_provider_error() can make precise failover decisions.
         """
         status_code = getattr(response, 'status_code', None)
         if status_code is not None and status_code != 200:
             code = getattr(response, 'code', 'Unknown')
             message = getattr(response, 'message', 'Unknown error')
             raise ProviderError(
-                f"DashScope API error (status={status_code}, code={code}): {message}"
+                f"DashScope API error (status={status_code}, code={code}): {message}",
+                status_code=status_code,
+                error_type=ErrorType.from_status_code(status_code),
             )
     
     def _send_complete(self, messages: List[Dict[str, Any]], is_multimodal: bool = False, **kwargs):

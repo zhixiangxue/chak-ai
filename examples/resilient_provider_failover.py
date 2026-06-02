@@ -49,7 +49,7 @@ conv = chak.Conversation(
     "anthropic@http://127.0.0.1:9:claude-haiku-4-5",
     api_key=anthropic_api_key,
     timeout=2,
-    fallback_models=[
+    fallbacks=[
         {
             "model_uri": "openai@http://127.0.0.1:9/v1:gpt-4o-mini",
             "api_key": openai_api_key,

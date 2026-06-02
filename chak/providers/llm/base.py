@@ -6,7 +6,7 @@ import openai
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from ... import __version__
-from ...exceptions import ProviderError
+from ...exceptions import ProviderError, ErrorType
 from ...message import Message, MessageChunk, ReasoningChunk, AIMessage, ChatCompletionMessageToolCall, Function, UnifiedStreamChunk
 from ...metadata import Metadata, Usage, ProviderTrace
 
@@ -106,7 +106,7 @@ class Provider(ABC):
                 return result
 
         except Exception as e:
-            raise self._provider_error(e) from e
+            raise self._normalize_error(e) from e
 
     def _ensure_provider_trace(self, message: Any) -> None:
         """Set a default ProviderTrace on the message metadata if not already set.
@@ -131,13 +131,26 @@ class Provider(ABC):
             resolved_model=self.model_name,
         )
 
-    def _provider_error(self, error: BaseException) -> ProviderError:
-        return ProviderError.from_exception(
-            error,
+    def _normalize_error(self, error: BaseException) -> ProviderError:
+        """Convert a raw exception into ProviderError.
+
+        Subclasses SHOULD override this to precisely map their SDK's
+        exception types.  The base implementation is a conservative
+        fallback that marks everything as 'unknown' (not retryable).
+        """
+        if isinstance(error, ProviderError):
+            error.provider = error.provider or self.provider_name
+            error.model = error.model or self.config.model
+            error.base_url = error.base_url or getattr(self.config, "base_url", None)
+            return error
+        return ProviderError(
+            f"{self.__class__.__name__} error: {error}",
             provider=self.provider_name,
             model=self.config.model,
             base_url=getattr(self.config, "base_url", None),
-            message=f"{self.__class__.__name__} error: {error}",
+            status_code=None,
+            error_type=ErrorType.UNKNOWN,
+            raw_error=error,
         )
 
     def _wrap_stream_errors(self, stream: Iterator[Any]) -> Iterator[Any]:
@@ -145,7 +158,7 @@ class Provider(ABC):
             for chunk in stream:
                 yield chunk
         except Exception as e:
-            raise self._provider_error(e) from e
+            raise self._normalize_error(e) from e
 
     @abstractmethod
     def _send_complete(self, messages: Any, **kwargs) -> Any:
@@ -382,7 +395,68 @@ class OpenAICompatibleMessageConverter(BaseMessageConverter):
 
 class OpenAICompatibleProvider(Provider):
     """OpenAI SDK compatible provider base class."""
-    
+
+    def _normalize_error(self, error: BaseException) -> ProviderError:
+        """Precisely map openai SDK exceptions to ProviderError.
+
+        The openai SDK has three top-level exception families:
+        - APIStatusError: any non-2xx HTTP response (has .status_code)
+        - APITimeoutError: request timed out
+        - APIConnectionError: network-level failure (DNS, refused, reset)
+        """
+        if isinstance(error, ProviderError):
+            error.provider = error.provider or self.provider_name
+            error.model = error.model or self.config.model
+            error.base_url = error.base_url or getattr(self.config, "base_url", None)
+            return error
+
+        base_url = getattr(self.config, "base_url", None)
+
+        if isinstance(error, openai.APIStatusError):
+            status_code = error.status_code
+            return ProviderError(
+                f"{self.__class__.__name__} error: {error.message}",
+                provider=self.provider_name,
+                model=self.config.model,
+                base_url=base_url,
+                status_code=status_code,
+                error_type=ErrorType.from_status_code(status_code),
+                raw_error=error,
+            )
+
+        if isinstance(error, openai.APITimeoutError):
+            return ProviderError(
+                f"{self.__class__.__name__} timeout: {error}",
+                provider=self.provider_name,
+                model=self.config.model,
+                base_url=base_url,
+                status_code=None,
+                error_type=ErrorType.TIMEOUT,
+                raw_error=error,
+            )
+
+        if isinstance(error, openai.APIConnectionError):
+            return ProviderError(
+                f"{self.__class__.__name__} connection error: {error}",
+                provider=self.provider_name,
+                model=self.config.model,
+                base_url=base_url,
+                status_code=None,
+                error_type=ErrorType.CONNECTION_ERROR,
+                raw_error=error,
+            )
+
+        # Fallback: unrecognized error → unknown (not retryable)
+        return ProviderError(
+            f"{self.__class__.__name__} error: {error}",
+            provider=self.provider_name,
+            model=self.config.model,
+            base_url=base_url,
+            status_code=None,
+            error_type=ErrorType.UNKNOWN,
+            raw_error=error,
+        )
+
     def _initialize_client(self):
         """Initialize OpenAI-compatible client."""
         client_kwargs = {

@@ -146,11 +146,11 @@ class Conversation:
         # Initialize context handler
         self.context_handler = context_handler or NoopContextHandler()
 
-        fallback_models = kwargs.pop('fallback_models', None)
+        fallbacks = kwargs.pop('fallbacks', None)
 
         primary_parsed = parse_uri(model_uri)
 
-        if fallback_models:
+        if fallbacks:
             primary_config = self._build_config_dict(primary_parsed, kwargs, api_key=api_key)
             primary_config['provider_name'] = primary_parsed['provider']
             primary_provider = create_provider(
@@ -159,7 +159,7 @@ class Conversation:
                 category=self.PROVIDER_CATEGORY
             )
             fallback_providers = []
-            for fallback in fallback_models:
+            for fallback in fallbacks:
                 if not isinstance(fallback, dict):
                     raise TypeError("fallback model spec must be a dict")
 
