@@ -28,8 +28,8 @@ from chak.message import AIMessage, UnifiedStreamChunk
 from chak.providers.llm.base import (
     BaseMessageConverter,
     BaseProviderConfig,
-    OpenAICompatibleProvider,
 )
+from chak.providers.llm.openai_compat import OpenAICompatibleProvider
 from chak.providers.llm.resilient import is_retryable_provider_error
 
 pytestmark = pytest.mark.unit

@@ -20,7 +20,8 @@ from openai.types.responses import (
     ResponseStreamEvent,
 )
 
-from .base import BaseProviderConfig, OpenAICompatibleMessageConverter, OpenAICompatibleProvider
+from .openai_compat import OpenAICompatibleMessageConverter, OpenAICompatibleProvider
+from .base import BaseProviderConfig
 from ...message import AIMessage, MessageChunk, ReasoningChunk, UnifiedStreamChunk
 from ...schemas import Reasoning
 

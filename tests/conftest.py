@@ -48,6 +48,11 @@ CORE_PROVIDERS: Dict[str, ProviderCase] = {
         model_uri="anthropic/claude-haiku-4-5",
         api_key_env="ANTHROPIC_API_KEY",
     ),
+    "minimax": ProviderCase(
+        name="minimax",
+        model_uri="minimax@https://api.minimax.io/anthropic:MiniMax-M3",
+        api_key_env="MINIMAX_API_KEY",
+    ),
 }
 
 
@@ -55,8 +60,15 @@ def _provider_param(name: str):
     return pytest.param(CORE_PROVIDERS[name], id=name, marks=getattr(pytest.mark, name))
 
 
-@pytest.fixture(params=[_provider_param("deepseek"), _provider_param("qwen"), _provider_param("openai"), _provider_param("claude")])
+@pytest.fixture(params=[_provider_param(n) for n in CORE_PROVIDERS])
 def core_provider(request) -> ProviderCase:
+    """Parametrized fixture running tests across all core providers.
+
+    Usage:
+        pytest tests/live/ -k deepseek       # run only deepseek
+        pytest tests/live/ -k 'claude or minimax'  # run claude + minimax
+        pytest tests/live/                   # run all providers
+    """
     provider = request.param
     if not provider.api_key:
         pytest.skip(f"{provider.api_key_env} is not set")

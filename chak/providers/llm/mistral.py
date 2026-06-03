@@ -15,7 +15,8 @@ from typing import Optional, Dict, Any
 
 from pydantic import field_validator
 
-from .base import BaseProviderConfig, OpenAICompatibleMessageConverter, OpenAICompatibleProvider
+from .openai_compat import OpenAICompatibleMessageConverter, OpenAICompatibleProvider
+from .base import BaseProviderConfig
 from ...metadata import Metadata
 
 
