@@ -453,6 +453,41 @@ class AnthropicCompatibleProvider(Provider):
                 })
         return result
 
+    def _convert_tool_choice(self, tool_choice: Any) -> Any:
+        """Convert OpenAI-format tool_choice to Anthropic format.
+
+        OpenAI format:
+            "required" / "auto" / "none" (strings)
+            {"type": "function", "function": {"name": "..."}} (dict)
+
+        Anthropic format:
+            {"type": "auto"} / {"type": "any"} / {"type": "tool", "name": "..."}
+            / {"type": "none"}
+
+        Already-Anthropic values pass through unchanged.
+        """
+        if isinstance(tool_choice, dict):
+            tc_type = tool_choice.get("type")
+            if tc_type == "function":
+                # OpenAI: {"type": "function", "function": {"name": "X"}}
+                # → Anthropic: {"type": "tool", "name": "X"}
+                func = tool_choice.get("function", {})
+                return {"type": "tool", "name": func.get("name", "")}
+            # Already Anthropic format or unknown: pass through
+            return tool_choice
+
+        if isinstance(tool_choice, str):
+            if tool_choice == "required":
+                # OpenAI "required" → Anthropic {"type": "any"}
+                return {"type": "any"}
+            if tool_choice in ("auto", "none", "any", "tool"):
+                # Already Anthropic strings: wrap in dict
+                return {"type": tool_choice}
+            # Unknown string: pass through as-is
+            return tool_choice
+
+        return tool_choice
+
     # ------------------------------------------------------------------ #
     # Shared param builder                                                 #
     # ------------------------------------------------------------------ #
@@ -464,6 +499,7 @@ class AnthropicCompatibleProvider(Provider):
 
         # Pop params that need special handling
         tools = kwargs.pop("tools", None)
+        tool_choice = kwargs.pop("tool_choice", None)
         kwargs.pop("timeout", None)      # handled at client level
         kwargs.pop("stream_options", None)  # OpenAI-only, not needed here
 
@@ -493,6 +529,10 @@ class AnthropicCompatibleProvider(Provider):
             if cache and cache.tools and converted:
                 converted[-1]["cache_control"] = _cache_control(cache)
             params["tools"] = converted
+
+        # Tool choice: convert from OpenAI format to Anthropic format
+        if tool_choice is not None:
+            params["tool_choice"] = self._convert_tool_choice(tool_choice)
 
         # Pass through recognised Anthropic kwargs
         _allowed = {"temperature", "top_p", "top_k", "stop_sequences", "thinking"}
