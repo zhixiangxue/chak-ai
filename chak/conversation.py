@@ -1096,13 +1096,13 @@ class Conversation:
         Returns:
             Instance of the Pydantic model (or List/Dict of instances).
         """
-        from pydantic import BaseModel, RootModel, ValidationError as PydanticValidationError
+        from pydantic import BaseModel, ConfigDict, Field, RootModel, ValidationError as PydanticValidationError, create_model
         from typing import get_origin, get_args
         import json
 
         # Resolve generic wrappers (List[Model], Dict[str, Model])
         origin = get_origin(returns)
-        is_wrapped = False
+        unwrap_field = None
         original_returns = returns
 
         if origin is list:
@@ -1112,8 +1112,12 @@ class Conversation:
                     f"List type must contain a Pydantic BaseModel, "
                     f"got List[{args[0] if args else 'Unknown'}]"
                 )
-            returns = RootModel[original_returns]
-            is_wrapped = True
+            returns = create_model(
+                "ExtractedData",
+                __config__=ConfigDict(extra="forbid"),
+                items=(original_returns, Field(..., description="Extracted items")),
+            )
+            unwrap_field = "items"
         elif origin is dict:
             args = get_args(returns)
             if len(args) != 2 or args[0] != str or not (isinstance(args[1], type) and issubclass(args[1], BaseModel)):
@@ -1123,7 +1127,7 @@ class Conversation:
                     f"{args[1] if len(args) > 1 else 'Unknown'}]"
                 )
             returns = RootModel[original_returns]
-            is_wrapped = True
+            unwrap_field = "root"
         elif not (isinstance(returns, type) and issubclass(returns, BaseModel)):
             raise TypeError(
                 f"returns must be a Pydantic BaseModel, List[BaseModel], or "
@@ -1218,9 +1222,9 @@ class Conversation:
                 except PydanticValidationError:
                     result = returns.model_validate(_decode_json_strings(arguments))
 
-                # Unwrap RootModel if it was auto-wrapped
-                if is_wrapped:
-                    result = result.root
+                # Unwrap internal wrappers for generic returns
+                if unwrap_field is not None:
+                    result = getattr(result, unwrap_field)
 
                 # Save the extraction messages to conversation history
                 if isinstance(response, AIMessage):
