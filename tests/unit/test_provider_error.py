@@ -498,7 +498,7 @@ class TestEndToEndPipeline:
         error = provider._normalize_error(raw)
         assert is_retryable_provider_error(error) is True
 
-    def test_auth_error_stops_failover(self):
+    def test_auth_error_is_not_retryable_under_conservative_policy(self):
         """401 from openai SDK → _normalize_error → is_retryable=False."""
         from openai import AuthenticationError
 

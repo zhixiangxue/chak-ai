@@ -2,8 +2,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from chak.exceptions import ProviderError
-from chak.providers.llm.resilient import ResilientProvider, is_retryable_provider_error
+from chak.exceptions import ErrorType, ProviderError
+from chak.providers.llm.resilient import FallbackOn, ResilientProvider, is_retryable_provider_error
 
 pytestmark = pytest.mark.unit
 
@@ -34,7 +34,10 @@ def test_non_retryable_client_status_codes(status_code):
 # =============================================================================
 
 
-@pytest.mark.parametrize("error_type", ["timeout", "connection_error", "rate_limit", "server_error"])
+@pytest.mark.parametrize(
+    "error_type",
+    [ErrorType.TIMEOUT, ErrorType.CONNECTION_ERROR, ErrorType.RATE_LIMIT, ErrorType.SERVER_ERROR],
+)
 def test_retryable_error_types(error_type):
     """ProviderError with a retryable error_type → True."""
     error = ProviderError("temporary", error_type=error_type)
@@ -45,9 +48,9 @@ def test_retryable_error_types(error_type):
 @pytest.mark.parametrize(
     "error_type",
     [
-        "bad_request",
-        "auth_error",
-        "not_found",
+        ErrorType.BAD_REQUEST,
+        ErrorType.AUTH_ERROR,
+        ErrorType.NOT_FOUND,
         "conflict",
         "too_early",
         "http_error",
@@ -75,7 +78,7 @@ def test_unknown_provider_error_is_not_retryable():
 
 def test_error_type_wins_over_status_code():
     """retryable error_type ('rate_limit') wins over non-retryable status_code (400)."""
-    error = ProviderError("rate limited", status_code=400, error_type="rate_limit")
+    error = ProviderError("rate limited", status_code=400, error_type=ErrorType.RATE_LIMIT)
 
     assert is_retryable_provider_error(error) is True
 
@@ -121,6 +124,54 @@ def test_non_provider_error_is_not_retryable():
 
 
 # =============================================================================
+# fallback_on policy
+# =============================================================================
+
+
+def _provider(name):
+    return SimpleNamespace(
+        provider_name=name,
+        model_name=f"{name}-model",
+        config=SimpleNamespace(base_url=f"https://{name}.example.com"),
+    )
+
+
+def test_default_fallback_on_all_errors_tries_next_for_auth_error():
+    resilient = ResilientProvider(_provider("primary"), [_provider("fallback")])
+    error = ProviderError("invalid key", status_code=401, error_type=ErrorType.AUTH_ERROR)
+
+    assert resilient.fallback_on == FallbackOn.ALL_ERRORS
+    assert resilient._should_try_next(error, 0) is True
+    assert resilient._should_try_next(error, 1) is False
+
+
+def test_retryable_errors_policy_preserves_conservative_behavior():
+    resilient = ResilientProvider(
+        _provider("primary"),
+        [_provider("fallback")],
+        fallback_on=FallbackOn.RETRYABLE_ERRORS,
+    )
+
+    assert resilient._should_try_next(
+        ProviderError("invalid key", status_code=401, error_type=ErrorType.AUTH_ERROR),
+        0,
+    ) is False
+    assert resilient._should_try_next(
+        ProviderError("timeout", error_type=ErrorType.TIMEOUT),
+        0,
+    ) is True
+
+
+def test_fallback_on_must_be_enum_value():
+    with pytest.raises(TypeError, match="fallback_on must be a FallbackOn value"):
+        ResilientProvider(
+            _provider("primary"),
+            [_provider("fallback")],
+            fallback_on="all_errors",
+        )
+
+
+# =============================================================================
 # failure_record
 # =============================================================================
 
@@ -133,7 +184,7 @@ def test_failure_record_includes_standardized_error_facts():
             base_url="http://127.0.0.1:9/v1",
         ),
     )
-    error = ProviderError("timeout", status_code=None, error_type="timeout")
+    error = ProviderError("timeout", status_code=None, error_type=ErrorType.TIMEOUT)
 
     record = ResilientProvider._failure_record(provider, 1, error)
 

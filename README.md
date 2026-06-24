@@ -24,7 +24,7 @@ chak is not another liteLLM, one-api, or OpenRouter, but a client library that a
 
 ## 🌵 What's New
 
-- **2026-06-02 | v0.4.0** - Resilient provider failover: Configure `fallbacks` to automatically switch to backup LLM providers on timeout, rate-limit, or server errors. See [example](examples/resilient_provider_failover.py).
+- **2026-06-02 | v0.4.0** - Resilient provider failover: Configure `fallbacks` to route requests through ordered backup LLM providers whenever the current provider fails. Use `fallback_on=FallbackOn.RETRYABLE_ERRORS` for the conservative timeout/rate-limit/server-error policy. See [example](examples/resilient_provider_failover.py).
 - **2026-04-28 | v0.3.5** - SQL & Excel tools:
   - **SQL tool**: Query and modify SQLite / PostgreSQL / MySQL databases. Zero extra deps for SQLite.
   - **Excel tool**: Read and write `.xlsx` and `.csv` spreadsheets. Requires `pip install chakpy[tools]`.

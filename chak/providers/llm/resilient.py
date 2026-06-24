@@ -1,9 +1,17 @@
+from enum import Enum
 from typing import Any, Dict, Iterator, List, Optional
 
 from ...exceptions import ProviderError, ErrorType, RETRYABLE_STATUS_CODES
 from ...message import FailoverChunk, Message, UnifiedStreamChunk
 from ...metadata import Metadata, ProviderTrace, FailureRecord
 from .base import BaseMessageConverter, Provider
+
+
+class FallbackOn(str, Enum):
+    """Controls which provider failures should trigger fallback routing."""
+
+    ALL_ERRORS = "all_errors"
+    RETRYABLE_ERRORS = "retryable_errors"
 
 
 class ResilientMessageConverter(BaseMessageConverter):
@@ -22,12 +30,20 @@ class ResilientMessageConverter(BaseMessageConverter):
 
 
 class ResilientProvider(Provider):
-    """Provider proxy that retries a request through ordered fallback providers."""
+    """Provider proxy that routes a request through ordered fallback providers."""
 
-    def __init__(self, primary_provider: Provider, fallback_providers: List[Provider]):
+    def __init__(
+        self,
+        primary_provider: Provider,
+        fallback_providers: List[Provider],
+        fallback_on: FallbackOn = FallbackOn.ALL_ERRORS,
+    ):
+        if not isinstance(fallback_on, FallbackOn):
+            raise TypeError("fallback_on must be a FallbackOn value")
         self.primary_provider = primary_provider
         self.fallback_providers = list(fallback_providers)
         self.providers = [primary_provider, *self.fallback_providers]
+        self.fallback_on = fallback_on
         self.config = primary_provider.config
         self.converter = ResilientMessageConverter()
         self._client = None
@@ -91,7 +107,13 @@ class ResilientProvider(Provider):
         raise self._build_provider_error(failures)
 
     def _should_try_next(self, error: Exception, index: int) -> bool:
-        return index < len(self.providers) - 1 and is_retryable_provider_error(error)
+        if index >= len(self.providers) - 1:
+            return False
+        if self.fallback_on == FallbackOn.ALL_ERRORS:
+            return True
+        if self.fallback_on == FallbackOn.RETRYABLE_ERRORS:
+            return is_retryable_provider_error(error)
+        raise ValueError(f"Unsupported fallback_on value: {self.fallback_on}")
 
     def _annotate_message(self, message: Message, provider: Provider, failures: List[Dict[str, Any]]) -> None:
         metadata = getattr(message, "metadata", None)
@@ -159,20 +181,18 @@ class ResilientProvider(Provider):
 
 
 def is_retryable_provider_error(error: BaseException) -> bool:
-    """Decide whether *error* should trigger a resilient failover.
+    """Decide whether *error* should trigger retryable-only failover.
 
-    This function is the single gatekeeper for the retry-or-fail decision
-    in :class:`ResilientProvider`.  It MUST receive a :class:`ProviderError`
-    — all provider SDK errors are precisely mapped into ProviderError by
-    each provider's ``_provider_error()`` override, so raw exceptions should
-    never reach this function.
+    This function preserves the conservative fallback policy used by
+    ``FallbackOn.RETRYABLE_ERRORS``. ``FallbackOn.ALL_ERRORS`` bypasses this
+    filter and routes to the next provider for any failed attempt.
 
     Retryable (try next provider):
         - error_type in {"timeout", "connection_error", "rate_limit", "server_error"}
         - status_code in {408, 429, 500, 502, 503, 504}
 
-    NOT retryable (raise immediately):
-        - error_type == "unknown" (unrecognized error — be conservative)
+    NOT retryable under the conservative policy:
+        - error_type == "unknown"
         - error_type in {"auth_error", "bad_request", "not_found"}
         - Any 4xx status_code not in the retryable set
         - The error is not a ProviderError at all

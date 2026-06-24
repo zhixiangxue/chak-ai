@@ -36,6 +36,7 @@ from .exceptions import (
     ChakError, ProviderError, ConfigError,
     ConversationNotFoundError, ContextError
 )
+from .providers.llm.resilient import FallbackOn
 from .message import (
     Message, MessageChunk, ReasoningChunk, FailoverChunk,
     BaseMessage, HumanMessage, AIMessage, SystemMessage, ToolMessage,
@@ -123,6 +124,7 @@ __all__ = [
     'Cache',
     
     # Exceptions
+    'FallbackOn',
     'ChakError',
     'ProviderError', 
     'ConfigError',

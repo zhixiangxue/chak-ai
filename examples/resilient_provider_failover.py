@@ -1,14 +1,15 @@
 """
 Resilient Provider Failover Example
 
-This example demonstrates request-level failover for temporary provider outages.
+This example demonstrates request-level failover across ordered provider alternatives.
 It intentionally points the primary Claude model and the first OpenAI fallback
 model to unreachable local endpoints, then falls back to a working DeepSeek
 model.
 
 Important:
-    Wrong API keys, invalid request parameters, and missing models are treated
-    as configuration errors and should not trigger fallback by default.
+    By default, fallback providers are tried whenever the current provider fails.
+    Use fallback_on=chak.FallbackOn.RETRYABLE_ERRORS to preserve the conservative
+    policy that only falls back on transient failures.
 
 Prerequisites:
     1. Set ANTHROPIC_API_KEY for the primary Claude provider.

@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 import chak.conversation as conversation_module
-from chak import Conversation
+from chak import Conversation, FallbackOn
 from chak.providers.llm.resilient import ResilientProvider
 
 pytestmark = pytest.mark.unit
@@ -50,6 +50,7 @@ def test_fallbacks_create_resilient_provider_with_provider_name_in_config(provid
     )
 
     assert isinstance(conv.provider, ResilientProvider)
+    assert conv.provider.fallback_on == FallbackOn.ALL_ERRORS
     assert len(provider_factory) == 3
     assert provider_factory[0][1]["provider_name"] == "anthropic"
     assert provider_factory[1][1]["provider_name"] == "openai"
@@ -57,6 +58,20 @@ def test_fallbacks_create_resilient_provider_with_provider_name_in_config(provid
     assert provider_factory[0][1]["base_url"] == "http://127.0.0.1:9"
     assert provider_factory[1][1]["base_url"] == "http://127.0.0.1:9/v1"
     assert provider_factory[2][1]["api_key"] == "deepseek-key"
+
+
+def test_fallback_on_retryable_errors_is_passed_to_resilient_provider(provider_factory):
+    conv = Conversation(
+        "anthropic/claude-haiku-4-5",
+        api_key="anthropic-key",
+        fallback_on=FallbackOn.RETRYABLE_ERRORS,
+        fallbacks=[
+            {"model_uri": "openai/gpt-4o-mini", "api_key": "openai-key"},
+        ],
+    )
+
+    assert isinstance(conv.provider, ResilientProvider)
+    assert conv.provider.fallback_on == FallbackOn.RETRYABLE_ERRORS
 
 
 @pytest.mark.parametrize("fallbacks", [["openai/gpt-4o-mini"], [123]])

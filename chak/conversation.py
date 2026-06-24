@@ -9,7 +9,7 @@ from .context.handlers import BaseContextHandler, NoopContextHandler
 from .message import Message, MessageChunk, ReasoningChunk, FailoverChunk, HumanMessage, AIMessage, SystemMessage, ToolMessage, _current_turn_id
 from .metadata import ProviderTrace
 from .providers import create_provider
-from .providers.llm.resilient import ResilientProvider
+from .providers.llm.resilient import FallbackOn, ResilientProvider
 from .providers.types import ProviderCategory
 from .schemas import Reasoning
 from .utils.uri import parse as parse_uri
@@ -72,6 +72,7 @@ class Conversation:
         tools: Optional[List["MCPTool"]] = None,
         tool_executor: ToolExecutor = ToolExecutor.ASYNCIO,
         hitl_handler: Optional["HITLHandler"] = None,
+        fallback_on: FallbackOn = FallbackOn.ALL_ERRORS,
         **kwargs
     ):
         """
@@ -95,6 +96,8 @@ class Conversation:
                           - ASYNCIO: Best for IO-bound tasks (API calls, DB queries)
                           - THREAD: ThreadPoolExecutor for sync blocking operations
                           - PROCESS: ProcessPoolExecutor for CPU-bound tasks
+            fallback_on: Controls which failures trigger fallback providers.
+                         Defaults to FallbackOn.ALL_ERRORS when fallbacks are configured.
             **kwargs: Additional configuration parameters
         
         Example:
@@ -185,7 +188,11 @@ class Conversation:
                     category=self.PROVIDER_CATEGORY
                 )
                 fallback_providers.append(fallback_provider)
-            self.provider = ResilientProvider(primary_provider, fallback_providers)
+            self.provider = ResilientProvider(
+                primary_provider,
+                fallback_providers,
+                fallback_on=fallback_on,
+            )
         else:
             config_dict = self._build_config_dict(primary_parsed, kwargs)
             config_dict['provider_name'] = primary_parsed['provider']
