@@ -24,7 +24,7 @@ import json
 import re
 import tempfile
 from pathlib import Path
-from typing import Literal
+from typing import Any
 
 _HTML_CSS = """
   body  { font-family: Arial, sans-serif; margin: 0.75in; font-size: 9pt; color: #222; }
@@ -44,12 +44,24 @@ _HTML_CSS = """
 """
 
 
-def _require_pymupdf4llm():
+def _require_pdf_libs(use_layout: bool = False):
+    try:
+        import pymupdf  # noqa: PLC0415
+    except ImportError:
+        raise ImportError("PyMuPDF is required. Run: pip install PyMuPDF")
+
     try:
         import pymupdf4llm  # noqa: PLC0415
-        return pymupdf4llm
     except ImportError:
         raise ImportError("pymupdf4llm is required. Run: pip install pymupdf4llm")
+
+    if use_layout:
+        try:
+            import pymupdf.layout  # noqa: F401, PLC0415
+        except ImportError:
+            raise ImportError("pymupdf-layout is required. Run: pip install pymupdf-layout")
+
+    return pymupdf, pymupdf4llm
 
 
 def _md_to_plain(md: str) -> str:
@@ -114,68 +126,396 @@ def _resolve_pdf(source: str) -> str:
     return str(path)
 
 
+def _json(data: dict[str, Any] | list[Any]) -> str:
+    return json.dumps(data, ensure_ascii=False, indent=2)
+
+
+
+def _content(text: str, max_chars: int | None) -> str:
+    if max_chars is None:
+        return text
+    return text[:max_chars]
+
+
+def _file_size_mb(size_bytes: int) -> float:
+    return round(size_bytes / (1024 * 1024), 2)
+
+
+def _text_density(average_chars_per_page: int) -> str:
+    if average_chars_per_page <= 0:
+        return "none"
+    if average_chars_per_page < 500:
+        return "low"
+    if average_chars_per_page < 2000:
+        return "medium"
+    return "high"
+
+
+def _size_category(file_size_mb: float, page_count: int, estimated_total_chars: int) -> str:
+    if file_size_mb >= 100 or page_count >= 500 or estimated_total_chars >= 1_000_000:
+        return "huge"
+    if file_size_mb >= 25 or page_count >= 100 or estimated_total_chars >= 250_000:
+        return "large"
+    if file_size_mb >= 5 or page_count >= 25 or estimated_total_chars >= 50_000:
+        return "medium"
+    return "small"
+
+
+def _likely_scanned_or_image_heavy(file_size_mb: float, page_count: int, average_chars_per_page: int) -> bool:
+    if page_count <= 0:
+        return False
+    return file_size_mb >= 2 and average_chars_per_page < 200
+
+
+def _page_numbers(start_page: int, end_page: int, page_count: int) -> list[int]:
+    if start_page < 1:
+        raise ValueError("start_page must be >= 1")
+    if end_page < start_page:
+        raise ValueError("end_page must be >= start_page")
+    if end_page > page_count:
+        raise ValueError(f"end_page must be <= total pages ({page_count})")
+    return list(range(start_page - 1, end_page))
+
+
+def _chunk_page(chunk: dict[str, Any], fallback: int) -> int:
+    metadata = chunk.get("metadata") or {}
+    return metadata.get("page") or metadata.get("page_number") or fallback
+
+
+def _format_output(markdown_text: str, format: str, title: str = "PDF") -> str:
+    if format == "markdown":
+        return markdown_text
+    if format == "txt":
+        return _md_to_plain(markdown_text)
+    if format == "html":
+        return _md_to_html(markdown_text, title)
+    raise ValueError("format must be one of: markdown, txt, html")
+
+
+def _headings_from_markdown_chunks(chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    headings: list[dict[str, Any]] = []
+    for index, chunk in enumerate(chunks):
+        text = chunk.get("text", "")
+        page = _chunk_page(chunk, index + 1)
+        for match in re.finditer(r"^(#{1,6})\s+(.+?)\s*$", text, flags=re.M):
+            headings.append(
+                {
+                    "level": len(match.group(1)),
+                    "title": match.group(2).strip(),
+                    "page": page,
+                }
+            )
+    return headings
+
+
+def _looks_like_heading(line: str) -> bool:
+    text = line.strip()
+    if not text or len(text) > 120:
+        return False
+    if text.endswith((".", ",", ";", ":")):
+        return False
+    if re.match(r"^(chapter|section|part|appendix)\b", text, flags=re.I):
+        return True
+    if re.match(r"^\d+(?:\.\d+)*\s+\S", text):
+        return True
+    words = re.findall(r"[A-Za-z][A-Za-z'-]*", text)
+    if len(words) < 2:
+        return False
+    title_words = sum(1 for word in words if word[:1].isupper())
+    return title_words / len(words) >= 0.6
+
+
+def _headings_from_plain_text(doc: Any) -> list[dict[str, Any]]:
+    headings: list[dict[str, Any]] = []
+    seen: set[tuple[int, str]] = set()
+    for page_index in range(doc.page_count):
+        text = doc.load_page(page_index).get_text("text")
+        for line in text.splitlines():
+            title = line.strip()
+            key = (page_index + 1, title)
+            if key in seen or not _looks_like_heading(title):
+                continue
+            seen.add(key)
+            headings.append({"level": 1, "title": title, "page": page_index + 1})
+    return headings
+
+
 class Pdf:
-    """Read and extract content from PDF files (local path or HTTPS URL).
+    """Navigate and extract PDF content safely for LLM workflows.
 
-    Exposes a single LLM-callable method `read` via NativeObjectTool.
-
-    Example::
-
-        pdf = Pdf()
-        conv = Conversation(model, tools=[pdf])
+    The default API is intentionally navigation-oriented: call metadata first,
+    then read page ranges or search for relevant pages. All page fields and
+    start_page/end_page arguments are 1-based PDF physical pages, not printed
+    page labels shown inside the document.
     """
 
-    def read(
+    def metadata(
         self,
         source: str,
-        format: str = "markdown",
     ) -> str:
-        """Read a PDF file and return its content as text.
+        """Return PDF metadata and high-level document overview.
 
         Args:
             source: Local file path or HTTPS URL pointing to a PDF file.
-                    Non-PDF files are rejected with an error.
-            format: Output format. One of:
-                    - "markdown" (default) — Markdown with tables and headings,
-                      best for LLM reasoning and token efficiency.
-                    - "txt"      — Plain text, no Markdown syntax.
-                    - "html"     — Styled HTML document.
-                    - "json"     — JSON array, one object per page:
-                                   [{"page": 1, "content": "..."}, ...]
 
         Returns:
-            PDF content as a string in the requested format.
+            JSON string with source, PDF physical page count, file size,
+            structural metadata, TOC count, estimated total characters, sampled
+            page text density, and compact document-scale signals. This method
+            intentionally does not include page content; use read_pages when
+            content is needed.
+        """
+        pymupdf, _ = _require_pdf_libs()
+        local_path = _resolve_pdf(source)
+        file_size_bytes = Path(local_path).stat().st_size
+        file_size_mb = _file_size_mb(file_size_bytes)
+        with pymupdf.open(local_path) as doc:
+            sample_pages = min(2, doc.page_count)
+            sample_texts = [doc.load_page(i).get_text("text") for i in range(sample_pages)]
+            sample_text = "\n\n".join(sample_texts)
+            average_chars = int(len(sample_text) / sample_pages) if sample_pages else 0
+            estimated_total_chars = average_chars * doc.page_count
+            text_density = _text_density(average_chars)
+            toc = doc.get_toc(simple=True)
+            pdf_metadata = dict(doc.metadata or {})
 
-        Raises:
-            ValueError:       If source is not a PDF or format is unsupported.
-            FileNotFoundError: If a local path does not exist.
+            payload = {
+                "source": source,
+                "pages": doc.page_count,
+                "file_size_bytes": file_size_bytes,
+                "file_size_mb": file_size_mb,
+                "pdf_format": pdf_metadata.get("format"),
+                "document_title": pdf_metadata.get("title"),
+                "document_author": pdf_metadata.get("author"),
+                "document_subject": pdf_metadata.get("subject"),
+                "document_keywords": pdf_metadata.get("keywords"),
+                "pdf_creator": pdf_metadata.get("creator"),
+                "pdf_producer": pdf_metadata.get("producer"),
+                "creation_date": pdf_metadata.get("creationDate"),
+                "modification_date": pdf_metadata.get("modDate"),
+                "is_encrypted": bool(pdf_metadata.get("encryption")),
+                "toc_items": len(toc),
+                "has_toc": bool(toc),
+                "sampled_pages": sample_pages,
+                "average_chars_per_sampled_page": average_chars,
+                "estimated_total_chars": estimated_total_chars,
+                "text_density": text_density,
+                "size_category": _size_category(file_size_mb, doc.page_count, estimated_total_chars),
+                "likely_scanned_or_image_heavy": _likely_scanned_or_image_heavy(
+                    file_size_mb,
+                    doc.page_count,
+                    average_chars,
+                ),
+            }
+        return _json(payload)
+
+    def outline(
+        self,
+        source: str,
+    ) -> str:
+        """Return the full PDF outline, falling back to inferred Markdown headings.
+
+        Args:
+            source: Local file path or HTTPS URL pointing to a PDF file.
+
+        Returns:
+            JSON string with outline items. Standard PDF TOC items contain level,
+            title, and page. The page field is the 1-based PDF physical page,
+            not the printed page label shown inside the document. When citing
+            locations, prefer this PDF physical page value; printed page labels
+            may be mentioned separately if they appear in the content. If the
+            PDF has no standard TOC/bookmarks, headings are inferred from the
+            full document using layout extraction, with a plain-text heading
+            scan as a fallback if layout extraction fails.
+        """
+        pymupdf, _ = _require_pdf_libs()
+        local_path = _resolve_pdf(source)
+        with pymupdf.open(local_path) as doc:
+            toc = doc.get_toc(simple=True)
+            if toc:
+                items = [
+                    {"level": level, "title": title, "page": page}
+                    for level, title, page in toc
+                ]
+                return _json({"source": source, "type": "toc", "items": items, "total_items": len(toc)})
+
+            _, lib = _require_pdf_libs(use_layout=True)
+            try:
+                chunks = lib.to_markdown(doc, page_chunks=True)
+                headings = _headings_from_markdown_chunks(chunks)
+                method = "layout_markdown"
+            except Exception:
+                headings = _headings_from_plain_text(doc)
+                method = "plain_text"
+
+            return _json(
+                {
+                    "source": source,
+                    "type": "inferred_headings",
+                    "method": method,
+                    "items": headings,
+                    "total_items": len(headings),
+                }
+            )
+
+    def search(
+        self,
+        source: str,
+        query: str,
+        max_results: int = 20,
+        context_chars: int = 220,
+    ) -> str:
+        """Search text quickly across the PDF and return page-level matches.
+
+        Args:
+            source: Local file path or HTTPS URL pointing to a PDF file.
+            query: Case-insensitive keyword or phrase to search.
+            max_results: Maximum matches returned.
+            context_chars: Characters of context around each match.
+
+        Returns:
+            JSON string with matching page numbers and snippets. The page field
+            is the 1-based PDF physical page, not the printed page label shown
+            inside the document. When citing search results, prefer this PDF
+            physical page value; printed page labels may be mentioned separately
+            if they appear in the snippet.
+        """
+        if not query:
+            raise ValueError("query is required")
+
+        pymupdf, _ = _require_pdf_libs()
+        local_path = _resolve_pdf(source)
+        results = []
+        query_lower = query.lower()
+        with pymupdf.open(local_path) as doc:
+            for page_index in range(doc.page_count):
+                text = doc.load_page(page_index).get_text("text")
+                position = text.lower().find(query_lower)
+                if position < 0:
+                    continue
+                start = max(0, position - context_chars)
+                end = min(len(text), position + len(query) + context_chars)
+                results.append(
+                    {
+                        "page": page_index + 1,
+                        "position": position,
+                        "context": text[start:end],
+                    }
+                )
+                if len(results) >= max_results:
+                    break
+
+            payload = {
+                "source": source,
+                "query": query,
+                "pages": doc.page_count,
+                "results": results,
+            }
+        return _json(payload)
+
+    def read_pages(
+        self,
+        source: str,
+        start_page: int,
+        end_page: int,
+        format: str = "markdown",
+        max_chars: int | None = None,
+    ) -> str:
+        """Read a page range with layout-aware extraction.
+
+        Args:
+            source: Local file path or HTTPS URL pointing to a PDF file.
+            start_page: First PDF physical page to read, 1-based.
+            end_page: Last PDF physical page to read, inclusive and 1-based.
+            format: Output format: markdown, txt, html, or json.
+            max_chars: Maximum characters returned for text formats. If None,
+                the full extracted range is returned.
+
+        Returns:
+            Text for markdown/txt/html, or JSON page chunks for json. Text
+            formats include a JSON-like navigation header followed by content.
+            All page values are 1-based PDF physical pages, not printed page
+            labels shown inside the document. When citing extracted content,
+            prefer the PDF physical page values from the navigation header or
+            JSON chunks; printed page labels inside the content may be mentioned
+            separately but should not be mixed into the same page range.
         """
         valid_formats = {"markdown", "txt", "html", "json"}
         if format not in valid_formats:
-            raise ValueError(
-                f"Unsupported format '{format}'. Choose from: {', '.join(sorted(valid_formats))}"
-            )
+            raise ValueError(f"Unsupported format '{format}'. Choose from: {', '.join(sorted(valid_formats))}")
 
-        lib = _require_pymupdf4llm()
+        pymupdf, lib = _require_pdf_libs(use_layout=True)
         local_path = _resolve_pdf(source)
+        with pymupdf.open(local_path) as doc:
+            pages = _page_numbers(start_page, end_page, doc.page_count)
+            if format == "json":
+                chunks = lib.to_markdown(doc, pages=pages, page_chunks=True)
+                payload = {
+                    "source": source,
+                    "start_page": start_page,
+                    "end_page": end_page,
+                    "total_pages": doc.page_count,
+                    "pages": [
+                        {
+                            "page": _chunk_page(chunk, start_page + index),
+                            "content": chunk.get("text", ""),
+                        }
+                        for index, chunk in enumerate(chunks)
+                    ],
+                }
+                return _json(payload)
 
-        if format == "json":
-            chunks = lib.to_markdown(local_path, page_chunks=True)
-            pages = [
-                {"page": c["metadata"].get("page", i + 1), "content": c["text"]}
-                for i, c in enumerate(chunks)
-            ]
-            return json.dumps(pages, ensure_ascii=False, indent=2)
+            md = lib.to_markdown(doc, pages=pages)
+            formatted = _format_output(md, format, Path(source).stem)
+            content = _content(formatted, max_chars)
+            header = _json(
+                {
+                    "source": source,
+                    "start_page": start_page,
+                    "end_page": end_page,
+                    "total_pages": doc.page_count,
+                    "format": format,
+                    "next_page": end_page + 1 if end_page < doc.page_count else None,
+                }
+            )
+            return f"{header}\n\n{content}"
 
-        md = lib.to_markdown(local_path)
+    def read_all(
+        self,
+        source: str,
+        format: str = "markdown",
+        max_chars: int | None = None,
+    ) -> str:
+        """Read the full PDF.
 
-        if format == "markdown":
-            return md
-        if format == "txt":
-            return _md_to_plain(md)
-        if format == "html":
-            title = Path(source).stem
-            return _md_to_html(md, title)
+        Args:
+            source: Local file path or HTTPS URL pointing to a PDF file.
+            format: Output format: markdown, txt, or html.
+            max_chars: Maximum characters returned. If None, the full extracted
+                document is returned. For large PDFs, prefer metadata, outline,
+                search, and read_pages unless full text is explicitly required.
 
-        # unreachable
-        return md
+        Returns:
+            Full-document text with navigation metadata. The pages field is the
+            PDF physical page count, not the document's printed page label range.
+            When citing content, prefer PDF physical page values over printed
+            page labels shown inside the document.
+        """
+        valid_formats = {"markdown", "txt", "html"}
+        if format not in valid_formats:
+            raise ValueError(f"Unsupported format '{format}'. Choose from: {', '.join(sorted(valid_formats))}")
+
+        pymupdf, lib = _require_pdf_libs(use_layout=True)
+        local_path = _resolve_pdf(source)
+        with pymupdf.open(local_path) as doc:
+            md = lib.to_markdown(doc)
+            formatted = _format_output(md, format, Path(source).stem)
+            content = _content(formatted, max_chars)
+            header = _json(
+                {
+                    "source": source,
+                    "pages": doc.page_count,
+                    "format": format,
+                }
+            )
+            return f"{header}\n\n{content}"
