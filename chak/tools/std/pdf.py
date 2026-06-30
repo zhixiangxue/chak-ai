@@ -240,6 +240,38 @@ def _headings_from_plain_text(doc: Any) -> list[dict[str, Any]]:
     return headings
 
 
+def _fallback_markdown(doc: Any, pages: list[int]) -> str:
+    """Extract text from pages using PyMuPDF native get_text.
+
+    Fallback when pymupdf4llm raises ValueError on pages with empty or
+    complex table structures (min() iterable argument is empty).
+    """
+    parts = []
+    for page_index in pages:
+        text = doc.load_page(page_index).get_text("text")
+        if text.strip():
+            parts.append(text)
+    return "\n\n".join(parts)
+
+
+def _fallback_chunks(doc: Any, pages: list[int]) -> list[dict[str, Any]]:
+    """Extract per-page chunks using PyMuPDF native get_text.
+
+    Fallback when pymupdf4llm raises ValueError on pages with empty or
+    complex table structures (min() iterable argument is empty).
+    """
+    chunks = []
+    for page_index in pages:
+        text = doc.load_page(page_index).get_text("text")
+        chunks.append(
+            {
+                "text": text,
+                "metadata": {"page": page_index + 1},
+            }
+        )
+    return chunks
+
+
 class Pdf:
     """Navigate and extract PDF content safely for LLM workflows.
 
@@ -449,12 +481,18 @@ class Pdf:
         with pymupdf.open(local_path) as doc:
             pages = _page_numbers(start_page, end_page, doc.page_count)
             if format == "json":
-                chunks = lib.to_markdown(doc, pages=pages, page_chunks=True)
+                try:
+                    chunks = lib.to_markdown(doc, pages=pages, page_chunks=True)
+                    extraction_method = "layout"
+                except ValueError:
+                    chunks = _fallback_chunks(doc, pages)
+                    extraction_method = "plain_text"
                 payload = {
                     "source": source,
                     "start_page": start_page,
                     "end_page": end_page,
                     "total_pages": doc.page_count,
+                    "extraction_method": extraction_method,
                     "pages": [
                         {
                             "page": _chunk_page(chunk, start_page + index),
@@ -465,7 +503,12 @@ class Pdf:
                 }
                 return _json(payload)
 
-            md = lib.to_markdown(doc, pages=pages)
+            try:
+                md = lib.to_markdown(doc, pages=pages)
+                extraction_method = "layout"
+            except ValueError:
+                md = _fallback_markdown(doc, pages)
+                extraction_method = "plain_text"
             formatted = _format_output(md, format, Path(source).stem)
             content = _content(formatted, max_chars)
             header = _json(
@@ -475,6 +518,7 @@ class Pdf:
                     "end_page": end_page,
                     "total_pages": doc.page_count,
                     "format": format,
+                    "extraction_method": extraction_method,
                     "next_page": end_page + 1 if end_page < doc.page_count else None,
                 }
             )
@@ -508,7 +552,12 @@ class Pdf:
         pymupdf, lib = _require_pdf_libs(use_layout=True)
         local_path = _resolve_pdf(source)
         with pymupdf.open(local_path) as doc:
-            md = lib.to_markdown(doc)
+            try:
+                md = lib.to_markdown(doc)
+                extraction_method = "layout"
+            except ValueError:
+                md = _fallback_markdown(doc, list(range(doc.page_count)))
+                extraction_method = "plain_text"
             formatted = _format_output(md, format, Path(source).stem)
             content = _content(formatted, max_chars)
             header = _json(
@@ -516,6 +565,7 @@ class Pdf:
                     "source": source,
                     "pages": doc.page_count,
                     "format": format,
+                    "extraction_method": extraction_method,
                 }
             )
             return f"{header}\n\n{content}"
