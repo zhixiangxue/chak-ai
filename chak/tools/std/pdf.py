@@ -26,6 +26,13 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+_PDF_DOWNLOAD_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (compatible; chak-pdf/1.0)",
+    "Accept": "application/pdf,application/octet-stream,*/*",
+}
+_PDF_DOWNLOAD_TIMEOUT = 60
+
+
 _HTML_CSS = """
   body  { font-family: Arial, sans-serif; margin: 0.75in; font-size: 9pt; color: #222; }
   h1   { color: #1F3864; font-size: 14pt; margin-bottom: 1em; }
@@ -64,6 +71,11 @@ def _require_pdf_libs(use_layout: bool = False):
     return pymupdf, pymupdf4llm
 
 
+def _is_certificate_verify_error(error: Exception) -> bool:
+    message = str(error).lower()
+    return "certificate_verify_failed" in message or "certificate verify failed" in message
+
+
 def _md_to_plain(md: str) -> str:
     """Strip Markdown syntax to produce readable plain text."""
     txt = re.sub(r"\|[^\n]+", "", md)            # remove table rows
@@ -98,7 +110,44 @@ def _resolve_pdf(source: str) -> str:
         except ImportError:
             raise ImportError("httpx is required for URL sources. Run: pip install httpx")
 
-        resp = httpx.get(source, follow_redirects=True, timeout=60)
+        try:
+            resp = httpx.get(
+                source,
+                follow_redirects=True,
+                timeout=_PDF_DOWNLOAD_TIMEOUT,
+                headers=_PDF_DOWNLOAD_HEADERS,
+            )
+        except httpx.HTTPError as httpx_error:
+            try:
+                import requests  # noqa: PLC0415
+            except ImportError:
+                if not _is_certificate_verify_error(httpx_error):
+                    raise httpx_error
+                resp = httpx.get(
+                    source,
+                    follow_redirects=True,
+                    timeout=_PDF_DOWNLOAD_TIMEOUT,
+                    headers=_PDF_DOWNLOAD_HEADERS,
+                    verify=False,
+                )
+            else:
+                try:
+                    resp = requests.get(
+                        source,
+                        allow_redirects=True,
+                        timeout=_PDF_DOWNLOAD_TIMEOUT,
+                        headers=_PDF_DOWNLOAD_HEADERS,
+                    )
+                except requests.exceptions.SSLError as requests_ssl_error:
+                    if not _is_certificate_verify_error(requests_ssl_error):
+                        raise
+                    resp = requests.get(
+                        source,
+                        allow_redirects=True,
+                        timeout=_PDF_DOWNLOAD_TIMEOUT,
+                        headers=_PDF_DOWNLOAD_HEADERS,
+                        verify=False,
+                    )
         resp.raise_for_status()
 
         # Validate Content-Type
