@@ -124,31 +124,35 @@ def create_app(config: ServerConfig) -> FastAPI:
 
 # Configuration file template
 CONFIG_TEMPLATE = """\
-api_keys:
-  # Simple format - uses default base_url
-  openai: ${OPENAI_API_KEY}
-  bailian: sk-your-api-key-here
+providers:
+  # Simple provider (uses default base_url)
+  openai:
+    api_key: ${OPENAI_API_KEY}
   
-  # Custom base_url format (must use quotes)
-  # Format: "provider@base_url": "api_key"
-  "ollama@http://localhost:11434": "ollama"
-  "vllm@http://192.168.1.100:8000": "dummy-key"
+  # Provider with custom base_url
+  ollama:
+    api_key: "ollama"
+    base_url: "http://localhost:11434/v1"
   
-  # Supported providers (uncomment as needed):
-  # anthropic: ${ANTHROPIC_API_KEY}
-  # azure: ${AZURE_API_KEY}
-  # baidu: ${BAIDU_API_KEY}
-  # deepseek: ${DEEPSEEK_API_KEY}
-  # google: ${GOOGLE_API_KEY}
-  # iflytek: ${IFLYTEK_API_KEY}
-  # minimax: ${MINIMAX_API_KEY}
-  # mistral: ${MISTRAL_API_KEY}
-  # moonshot: ${MOONSHOT_API_KEY}
-  # siliconflow: ${SILICONFLOW_API_KEY}
-  # tencent: ${TENCENT_API_KEY}
-  # volcengine: ${VOLCENGINE_API_KEY}
-  # xai: ${XAI_API_KEY}
-  # zhipu: ${ZHIPU_API_KEY}
+  # More providers (uncomment as needed):
+  # anthropic:
+  #   api_key: ${ANTHROPIC_API_KEY}
+  # deepseek:
+  #   api_key: ${DEEPSEEK_API_KEY}
+  # bailian:
+  #   api_key: ${BAILIAN_API_KEY}
+  # google:
+  #   api_key: ${GOOGLE_API_KEY}
+  # zhipu:
+  #   api_key: ${ZHIPU_API_KEY}
+  # moonshot:
+  #   api_key: ${MOONSHOT_API_KEY}
+  # minimax:
+  #   api_key: ${MINIMAX_API_KEY}
+  # mistral:
+  #   api_key: ${MISTRAL_API_KEY}
+  # xai:
+  #   api_key: ${XAI_API_KEY}
 
 server:
   host: "0.0.0.0"

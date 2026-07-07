@@ -137,6 +137,7 @@ celerybeat.pid
 # Environments
 .env
 .envrc
+chak-config.yaml
 .venv
 env/
 venv/

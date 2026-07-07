@@ -18,11 +18,18 @@ class ServerSettings(BaseModel):
     cors_origins: List[str] = Field(default=["*"], description="CORS allowed origins")
 
 
+class ProviderConfig(BaseModel):
+    """Configuration for a single LLM provider."""
+    
+    api_key: str = Field(description="API key or ${ENV_VAR} reference")
+    base_url: Optional[str] = Field(default=None, description="Custom API base URL")
+
+
 class ServerConfig(BaseModel):
     """Complete server configuration."""
     
-    api_keys: Dict[str, str] = Field(
-        description="Provider API keys. Supports two formats: 'provider' or 'provider@base_url'"
+    providers: Dict[str, ProviderConfig] = Field(
+        description="Provider configurations keyed by provider name"
     )
     server: ServerSettings = Field(default_factory=ServerSettings)
     
@@ -51,8 +58,8 @@ class ServerConfig(BaseModel):
         if not data:
             raise ValueError(f"Empty configuration file: {config_path}")
         
-        if 'api_keys' not in data:
-            raise ValueError("Configuration must contain 'api_keys' section")
+        if 'providers' not in data:
+            raise ValueError("Configuration must contain 'providers' section")
         
         return cls(**data)
     
@@ -60,105 +67,72 @@ class ServerConfig(BaseModel):
         """
         Get provider configuration (API key and optional base_url).
         
-        Supports two config key formats:
-        1. Simple: 'provider' -> uses default base_url
-        2. Custom: 'provider@base_url' -> uses custom base_url
-        
         Args:
             provider: Provider name (e.g., 'openai', 'ollama')
             
         Returns:
             Dict with 'api_key' and optional 'base_url', or None if not found
-            
-        Examples:
-            # Simple format (default base_url)
-            api_keys:
-              openai: sk-xxx
-            
-            # Custom base_url format
-            api_keys:
-              "ollama@http://localhost:11434": "ollama"
         """
-        # First try exact match (simple format)
-        if provider in self.api_keys:
-            api_key = self._resolve_api_key(self.api_keys[provider])
-            if api_key:
-                return {'api_key': api_key}
+        if provider not in self.providers:
+            return None
         
-        # Then try matching provider@base_url format
-        for config_key, config_value in self.api_keys.items():
-            if '@' in config_key:
-                # Parse "provider@base_url" format
-                key_provider = config_key.split('@')[0]
-                if key_provider == provider:
-                    api_key = self._resolve_api_key(config_value)
-                    if api_key:
-                        base_url = config_key.split('@', 1)[1]
-                        return {'api_key': api_key, 'base_url': base_url}
+        cfg = self.providers[provider]
+        api_key = self._resolve_value(cfg.api_key)
+        if not api_key:
+            return None
         
-        return None
+        result = {'api_key': api_key}
+        if cfg.base_url:
+            result['base_url'] = cfg.base_url
+        return result
     
     def get_provider_entries(self) -> Dict[str, Dict[str, str]]:
         """
         Get all provider entries with their configurations.
         
         Returns:
-            Dict mapping provider names to their config (api_key, optional base_url)
-            For providers with custom base_url, the key is 'provider@base_url'
+            Dict mapping provider display keys to their config.
+            Simple providers use the provider name as key.
+            Providers with custom base_url use 'provider@base_url' as key
+            (for frontend compatibility).
         """
         result = {}
         
-        for config_key, config_value in self.api_keys.items():
-            api_key = self._resolve_api_key(config_value)
+        for name, cfg in self.providers.items():
+            api_key = self._resolve_value(cfg.api_key)
             if not api_key:
                 continue
-                
-            if '@' in config_key:
-                # Custom base_url format: keep full key
-                provider = config_key.split('@')[0]
-                base_url = config_key.split('@', 1)[1]
-                result[config_key] = {'api_key': api_key, 'base_url': base_url}
+            
+            if cfg.base_url:
+                # Frontend-compatible key: provider@base_url
+                display_key = f"{name}@{cfg.base_url}"
+                result[display_key] = {'api_key': api_key, 'base_url': cfg.base_url}
             else:
-                # Simple format
-                result[config_key] = {'api_key': api_key}
+                result[name] = {'api_key': api_key}
         
         return result
     
     def get_api_key(self, provider: str) -> Optional[str]:
-        """
-        Get API key for specified provider (backward compatible).
-        
-        Args:
-            provider: Provider name or full config key
-            
-        Returns:
-            API key or None if not found
-        """
+        """Get API key for specified provider."""
         config = self.get_provider_config(provider)
         return config['api_key'] if config else None
     
-    def _resolve_api_key(self, config_value: str) -> Optional[str]:
+    @staticmethod
+    def _resolve_value(value: str) -> Optional[str]:
         """
-        Resolve API key from config value.
-        
-        Supports:
-        1. ${ENV_VAR} syntax - references environment variable
-        2. Plain text value (not recommended for production)
+        Resolve a config value, supporting ${ENV_VAR} syntax.
         
         Args:
-            config_value: Value from config file
+            value: Raw value from config file
             
         Returns:
-            Resolved API key or None
+            Resolved value or None
         """
-        if not config_value:
+        if not value:
             return None
         
-        # Parse ${ENV_VAR} syntax if present
-        if config_value.startswith("${") and config_value.endswith("}"):
-            # Extract variable name from ${VAR_NAME}
-            var_name = config_value[2:-1].strip()
+        if value.startswith("${") and value.endswith("}"):
+            var_name = value[2:-1].strip()
             return os.getenv(var_name)
         
-        # Return plain text value from config
-        return config_value
+        return value

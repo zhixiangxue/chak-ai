@@ -13,7 +13,7 @@ from .schemas import (
     InitMessage, SendMessage, AddMessagesMessage,
     StatsResponse, ErrorResponse
 )
-from ..context.strategies import NoopStrategy, FIFOStrategy
+from ..context.handlers import NoopContextHandler, FIFOContextHandler
 from ..conversation import Conversation
 
 
@@ -134,15 +134,15 @@ class ConversationWebSocketHandler:
         # - Custom base_url: provider@base_url:model
         final_model_uri = msg.model_uri
         
-        # Create context strategy
-        context_strategy = self._create_strategy(msg.context_strategy)
+        # Create context handler
+        context_handler = self._create_context_handler(msg.context_strategy)
         
         # Create Conversation (same as SDK!)
         conversation = Conversation(
             model_uri=final_model_uri,
             api_key=provider_config['api_key'],
             system_message=msg.system_message,
-            context_strategy=context_strategy
+            context_handler=context_handler
         )
         
         self.conversations[conn_id] = conversation
@@ -164,18 +164,14 @@ class ConversationWebSocketHandler:
         """Handle send message."""
         msg = SendMessage(**data)
         
-        # Validate role
-        role = msg.role  # type: ignore
-        
         if msg.stream:
             # Streaming mode - just forward all chunks as-is
-            chunks = conversation.send(
+            chunks = await conversation.asend(
                 message=msg.message,
-                role=role,
                 stream=True
             )
             
-            for chunk in chunks:  # type: ignore
+            async for chunk in chunks:  # type: ignore
                 # Build chunk data
                 chunk_data = {
                     "type": "chunk",
@@ -196,9 +192,8 @@ class ConversationWebSocketHandler:
                 await websocket.send_text(json.dumps(chunk_data))
         else:
             # Non-streaming mode
-            response_msg = conversation.send(
+            response_msg = await conversation.asend(
                 message=msg.message,
-                role=role,
                 stream=False
             )
             
@@ -259,32 +254,38 @@ class ConversationWebSocketHandler:
         else:
             return model_uri
     
-    def _create_strategy(self, strategy_name: Optional[str]):
-        """Create context strategy instance."""
-        if not strategy_name or strategy_name == "noop":
-            return NoopStrategy()
-        elif strategy_name == "fifo":
-            return FIFOStrategy()
-        # Add more strategies as needed
+    def _create_context_handler(self, handler_name: Optional[str]):
+        """Create context handler instance."""
+        if not handler_name or handler_name == "noop":
+            return NoopContextHandler()
+        elif handler_name == "fifo":
+            return FIFOContextHandler()
+        # Add more handlers as needed
         else:
-            return NoopStrategy()
+            return NoopContextHandler()
     
-    def _serialize_metadata(self, metadata: Dict[str, Any]) -> Dict[str, Any]:
+    def _serialize_metadata(self, metadata: Any) -> Dict[str, Any]:
         """
         Serialize metadata to JSON-compatible format.
         
-        Handles special objects like CompletionUsage that can't be directly serialized.
+        Handles Metadata Pydantic model, dicts, and special objects
+        like CompletionUsage that can't be directly serialized.
         """
         if not metadata:
             return {}
         
+        # Metadata is a Pydantic BaseModel (e.g. Metadata)
+        if hasattr(metadata, 'model_dump'):
+            return metadata.model_dump(exclude_none=True)
+        
+        if not isinstance(metadata, dict):
+            return vars(metadata) if hasattr(metadata, '__dict__') else {}
+        
         result = {}
         for key, value in metadata.items():
             if hasattr(value, 'model_dump'):
-                # Pydantic model
                 result[key] = value.model_dump()
             elif hasattr(value, '__dict__'):
-                # Object with __dict__
                 result[key] = vars(value)
             else:
                 result[key] = value
