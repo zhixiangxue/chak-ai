@@ -11,6 +11,7 @@ ToolManager 类：管理 LLM + 工具调用循环
 
 import asyncio
 import re
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional, Union
@@ -132,6 +133,32 @@ def _dict_to_metadata(meta: Optional[Dict[str, Any]]) -> Metadata:
     )
 
 
+def _fmt_duration_ms(ms: float) -> str:
+    """Format a duration in milliseconds to a human-readable string.
+
+    >>> _fmt_duration_ms(234.5)
+    '234ms'
+    >>> _fmt_duration_ms(1200)
+    '1.2s'
+    >>> _fmt_duration_ms(94000)
+    '1m34s'
+    """
+    if ms < 1:
+        return f"{ms:.1f}ms"
+    if ms < 1000:
+        return f"{ms:.0f}ms"
+    sec = ms / 1000
+    if sec < 60:
+        return f"{sec:.1f}s"
+    minutes = int(sec // 60)
+    remainder = sec % 60
+    if minutes < 60:
+        return f"{minutes}m{remainder:.0f}s"
+    hours = minutes // 60
+    minutes = minutes % 60
+    return f"{hours}h{minutes}m"
+
+
 @dataclass
 class ToolCallResult:
     """工具调用结果"""
@@ -141,6 +168,15 @@ class ToolCallResult:
     # Attachment objects extracted from the tool output (output-type, no reader).
     # These travel out-of-band from the LLM context so the frontend can render downloads.
     attachments: List[_Attachment] = field(default_factory=list)
+    # Absolute wall-clock timestamps (``time.perf_counter()``) for the tool execution.
+    start_time: float = 0.0
+    end_time: float = 0.0
+
+    @property
+    def elapsed(self) -> str:
+        """Human-readable elapsed duration (e.g. ``"234ms"``, ``"1.2s"``, ``"2m34s"``)."""
+        ms = (self.end_time - self.start_time) * 1000
+        return _fmt_duration_ms(ms)
 
 
 @dataclass
@@ -245,13 +281,16 @@ class ToolManager:
         )
     """
     
-    def __init__(self, tools: List[Union[MCPTool, NativeFunctionTool, NativeObjectTool, SkillObjectTool, ClaudeSkill]], max_iterations: int = 50, executor=None, hitl_handler: Optional["HITLHandler"] = None):
+    def __init__(self, tools: List[Union[MCPTool, NativeFunctionTool, NativeObjectTool, SkillObjectTool, ClaudeSkill]], max_iterations: int = 50, executor=None, hitl_handler: Optional["HITLHandler"] = None, verbose: Union[bool, Any] = False):
         """
         Args:
             tools: 工具列表（MCPTool、NativeFunctionTool、NativeObjectTool 或 SkillObjectTool）
             max_iterations: 最大迭代次数（防止无限循环），默认 50（每个 skill 调用消耗 2-3 轮）
             executor: 执行器实例（ThreadPoolExecutor/ProcessPoolExecutor）或 None（使用 asyncio）
             hitl_handler: Human-in-the-loop middleware called before each tool execution
+            verbose: Controls tool-call logging verbosity. Accepts a bool or a _VerboseFlag
+                     object (e.g. ``conv.verbose``). When truthy, tool input arguments and
+                     output results are logged at INFO level. False by default.
         """
         self.tools = tools
         self._tool_map = self._build_tool_map()
@@ -265,6 +304,7 @@ class ToolManager:
         self.max_iterations = max_iterations if max_iterations is not None else 50
         self.executor = executor
         self.hitl_handler = hitl_handler
+        self.verbose = verbose
     
     def _build_tool_map(self) -> Dict[str, Any]:
         """
@@ -503,6 +543,9 @@ class ToolManager:
                 )
                 current_messages.append(tool_msg)
                 new_messages.append(tool_msg)
+
+            if self.verbose:
+                self._flush_tool_trace(iteration, tool_calls, tool_results)
             
             # Step 6: Update tool list for next iteration if any skill was activated
             if self._active_skills:
@@ -700,6 +743,9 @@ class ToolManager:
                     )
                     current_messages.append(tool_msg)
                     new_messages.append(tool_msg)
+
+                if self.verbose:
+                    self._flush_tool_trace(iteration, tool_calls_objects, tool_results)
                 
                 # Update tool list for next iteration if any skill was activated
                 if self._active_skills:
@@ -1021,6 +1067,9 @@ class ToolManager:
                     )
                     current_messages.append(tool_msg)
                     new_messages.append(tool_msg)
+
+                if self.verbose:
+                    self._flush_tool_trace(iteration, tool_calls_objects, tool_results)
                 
                 # Update tool list for next iteration if any skill was activated
                 if self._active_skills:
@@ -1089,8 +1138,9 @@ class ToolManager:
         arguments = tool_call.function.arguments if hasattr(tool_call, 'function') else tool_call.arguments
         
         logger.info(f"🔧 [Tool] Calling tool: {tool_name}")
-        logger.debug(f"📨 [Tool] Tool call ID: {call_id}")
-        logger.debug(f"📨 [Tool] Arguments: {arguments}")
+        _log_detail = logger.info if self.verbose else logger.debug
+        _log_detail(f"📨 [Tool] Tool call ID: {call_id}")
+        _log_detail(f"📨 [Tool] Arguments: {arguments}")
         
         # 解析 arguments（可能是 JSON 字符串）
         if isinstance(arguments, str):
@@ -1215,7 +1265,9 @@ class ToolManager:
         try:
             # 调用工具（支持 MCPTool 和 NativeFunctionTool）
             logger.debug(f"⚙️  [Tool] Executing tool: {tool_name}...")
+            _t0 = time.perf_counter()
             result = await tool.call(arguments, executor=self.executor)
+            _t1 = time.perf_counter()
         
             # Extract result content
             if hasattr(result, 'content'):
@@ -1236,18 +1288,95 @@ class ToolManager:
                 attachments.append(_url_to_attachment(m.group(1)))
 
             logger.info(f"✅ [Tool] Tool '{tool_name}' succeeded")
-            logger.debug(f"📦 [Tool] Result: {content[:200]}..." if len(content) > 200 else f"📦 [Tool] Result: {content}")
+            _log_detail(f"📦 [Tool] Result ({call_id[:8]}...): {content[:200]}..." if len(content) > 200 else f"📦 [Tool] Result ({call_id[:8]}...): {content}")
 
             return ToolCallResult(
                 call_id=call_id,
                 content=content,
                 is_error=False,
                 attachments=attachments,
+                start_time=_t0,
+                end_time=_t1,
             )
         except Exception as e:
+            _t1 = time.perf_counter() if '_t0' in locals() else 0.0
             logger.error(f"❌ [Tool] Tool '{tool_name}' failed: {str(e)}")
             return ToolCallResult(
                 call_id=call_id,
                 content=f"Error: {str(e)}",
-                is_error=True
+                is_error=True,
+                start_time=_t0 if '_t0' in locals() else 0.0,
+                end_time=_t1,
             )
+
+    def _flush_tool_trace(
+        self,
+        iteration: int,
+        tool_calls: List[Any],
+        results: List[ToolCallResult],
+    ) -> None:
+        """Render a tree-style trace of tool calls for the current iteration.
+
+        Called after each tool-execution round when ``self.verbose`` is truthy.
+        The output is written directly to stdout via ``logger.opt(raw=True)``
+        so it appears as a clean tree block distinct from normal log lines.
+        """
+        import json
+
+        # Build a name lookup: call_id -> (tool_name, raw_arguments)
+        _name_map: Dict[str, tuple] = {}
+        for tc in tool_calls:
+            cid = tc.id
+            name = tc.function.name if hasattr(tc, 'function') else getattr(tc, 'name', '?')
+            raw_args = tc.function.arguments if hasattr(tc, 'function') else getattr(tc, 'arguments', '{}')
+            if isinstance(raw_args, str):
+                try:
+                    raw_args = json.loads(raw_args)
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            _name_map[cid] = (name, raw_args)
+
+        # Summarise arguments: compact JSON, truncate if too long
+        def _fmt_args(args: Any) -> str:
+            s = json.dumps(args, ensure_ascii=False, default=str)
+            return s[:200] + "…" if len(s) > 200 else s
+
+        # Summarise result: truncate long content, escape newlines for tree display
+        def _fmt_result(text: str) -> str:
+            t = text.replace("\n", "\\n").replace("\r", "")
+            return t[:300] + "…" if len(t) > 300 else t
+
+        # Human-readable total using the same logic as ToolCallResult.elapsed
+        _total_ms = sum((r.end_time - r.start_time) * 1000 for r in results)
+        _total_display = _fmt_duration_ms(_total_ms)
+
+        lines: List[str] = []
+        lines.append(f"🔧 Tool Calls — Iteration {iteration} ({_total_display} total)")
+
+        for i, (tc, res) in enumerate(zip(tool_calls, results)):
+            cid = tc.id
+            name, args = _name_map.get(cid, ("?", {}))
+            is_last = (i == len(tool_calls) - 1)
+            branch = "└──" if is_last else "├──"
+            indent = "    " if is_last else "│   "
+
+            status = "❌ " if res.is_error else ""
+            header = f"{branch} {status}{name} · {cid[:8]} · {res.elapsed}"
+            if res.is_error:
+                header += " (FAILED)"
+            lines.append(header)
+
+            # Arguments
+            lines.append(f"{indent}├── Args:  {_fmt_args(args)}")
+
+            # Result / Error
+            label = "Error" if res.is_error else "Result"
+            lines.append(f"{indent}└── {label}:  {_fmt_result(res.content)}")
+
+            # Blank line between tool calls for readability (keep │ to preserve tree)
+            if not is_last:
+                lines.append("│")
+
+        # Write the whole block at once via logger so it respects the log handler.
+        # Using opt(raw=True) to bypass loguru formatting for the tree block.
+        logger.opt(raw=True).info("\n".join(lines) + "\n")

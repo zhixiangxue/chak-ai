@@ -51,6 +51,33 @@ class ToolExecutor(str, Enum):
     PROCESS = "process"  # Use ProcessPoolExecutor (for CPU-bound tasks)
 
 
+class _VerboseFlag:
+    """Fluent toggle for tool-call verbose logging.
+
+    Usage:
+        conv.verbose.on()   # enable verbose tool logging
+        conv.verbose.off()  # disable verbose tool logging
+    """
+
+    def __init__(self):
+        self._enabled = False
+
+    @property
+    def enabled(self) -> bool:
+        return self._enabled
+
+    def on(self) -> None:
+        """Enable verbose tool logging (show arguments and results)."""
+        self._enabled = True
+
+    def off(self) -> None:
+        """Disable verbose tool logging (default, only show tool name and status)."""
+        self._enabled = False
+
+    def __bool__(self) -> bool:
+        return self._enabled
+
+
 class Conversation:
     """
     Chat conversation that follows your desired flow:
@@ -136,6 +163,7 @@ class Conversation:
         self._thread_pool: Optional[ThreadPoolExecutor] = None
         self._process_pool: Optional[ProcessPoolExecutor] = None
         self._hitl_handler: Optional["HITLHandler"] = hitl_handler
+        self.verbose = _VerboseFlag()
         
         # Initialize tools if provided
         if tools:
@@ -394,6 +422,7 @@ class Conversation:
             wrapped_tools,
             executor=executor,
             hitl_handler=self._hitl_handler,
+            verbose=self.verbose,
         )
     
     def _build_config_dict(self, parsed_uri: Dict, kwargs: Dict, api_key: Optional[str] = None) -> Dict[str, Any]:
