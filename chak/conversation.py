@@ -51,31 +51,70 @@ class ToolExecutor(str, Enum):
     PROCESS = "process"  # Use ProcessPoolExecutor (for CPU-bound tasks)
 
 
-class _VerboseFlag:
-    """Fluent toggle for tool-call verbose logging.
+class _ToolConfig:
+    """Fluent configuration namespace for tool-related settings.
 
     Usage:
-        conv.verbose.on()   # enable verbose tool logging
-        conv.verbose.off()  # disable verbose tool logging
+        conv.tool.verbose.on()      # enable verbose tool logging
+        conv.tool.loop.max(10000)   # raise max tool-call iterations
     """
 
+    class Verbose:
+        """Fluent toggle for tool-call verbose logging."""
+
+        def __init__(self):
+            self._enabled = False
+
+        @property
+        def enabled(self) -> bool:
+            return self._enabled
+
+        def on(self) -> None:
+            """Enable verbose tool logging (show arguments and results)."""
+            self._enabled = True
+
+        def off(self) -> None:
+            """Disable verbose tool logging (default, only show tool name and status)."""
+            self._enabled = False
+
+        def __bool__(self) -> bool:
+            return self._enabled
+
+    class Loop:
+        """Fluent config for the tool-calling loop."""
+
+        def __init__(self):
+            self._max_iterations = 50
+
+        @property
+        def max_iterations(self) -> int:
+            return self._max_iterations
+
+        def max(self, n: int) -> None:
+            """Set the maximum number of tool-call iterations.
+
+            The loop will raise an error if the LLM keeps requesting tool calls
+            beyond this limit, preventing infinite loops.
+
+            Args:
+                n: Maximum iterations (must be >= 1). Default is 50.
+            """
+            if n < 1:
+                raise ValueError("max_iterations must be >= 1")
+            self._max_iterations = n
+
+        def unlimited(self) -> None:
+            """Remove the iteration limit entirely.
+
+            Use with caution — a stuck LLM will loop forever without this
+            safety net.
+            """
+            import sys
+            self._max_iterations = sys.maxsize
+
     def __init__(self):
-        self._enabled = False
-
-    @property
-    def enabled(self) -> bool:
-        return self._enabled
-
-    def on(self) -> None:
-        """Enable verbose tool logging (show arguments and results)."""
-        self._enabled = True
-
-    def off(self) -> None:
-        """Disable verbose tool logging (default, only show tool name and status)."""
-        self._enabled = False
-
-    def __bool__(self) -> bool:
-        return self._enabled
+        self.verbose = _ToolConfig.Verbose()
+        self.loop = _ToolConfig.Loop()
 
 
 class Conversation:
@@ -163,7 +202,7 @@ class Conversation:
         self._thread_pool: Optional[ThreadPoolExecutor] = None
         self._process_pool: Optional[ProcessPoolExecutor] = None
         self._hitl_handler: Optional["HITLHandler"] = hitl_handler
-        self.verbose = _VerboseFlag()
+        self.tool = _ToolConfig()
         
         # Initialize tools if provided
         if tools:
@@ -420,9 +459,10 @@ class Conversation:
         executor = self._get_executor()
         self._tool_manager = ToolManager(
             wrapped_tools,
+            max_iterations=self.tool.loop.max_iterations,
             executor=executor,
             hitl_handler=self._hitl_handler,
-            verbose=self.verbose,
+            verbose=self.tool.verbose,
         )
     
     def _build_config_dict(self, parsed_uri: Dict, kwargs: Dict, api_key: Optional[str] = None) -> Dict[str, Any]:

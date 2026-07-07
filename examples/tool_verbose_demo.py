@@ -1,7 +1,7 @@
 """
 Tool Verbose Logging Demo
 
-Demonstrates ``conv.verbose.on()`` / ``conv.verbose.off()`` to toggle
+Demonstrates ``conv.tool.verbose.on()`` / ``conv.tool.verbose.off()`` to toggle
 tree-style tool-call trace logging at runtime.
 
 When verbose is ON, each tool-execution round prints a structured tree block
@@ -107,7 +107,7 @@ async def main():
     # ------------------------------------------------------------------
     # Round 2 — verbose ON: tree-style trace after each tool round
     # ------------------------------------------------------------------
-    conv.verbose.on()
+    conv.tool.verbose.on()
     print("\n--- Round 2: verbose ON ---\n")
     response = await conv.asend(
         "Now: add 99 and 1, also echo 'world', and tell me the time again."
@@ -117,7 +117,7 @@ async def main():
     # ------------------------------------------------------------------
     # Round 3 — verbose OFF again (dynamic toggle)
     # ------------------------------------------------------------------
-    conv.verbose.off()
+    conv.tool.verbose.off()
     print("\n--- Round 3: verbose OFF again ---\n")
     response = await conv.asend("What was the last thing I asked?")
     print(f"\n[Assistant]: {response.content}\n")

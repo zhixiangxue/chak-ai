@@ -288,8 +288,8 @@ class ToolManager:
             max_iterations: 最大迭代次数（防止无限循环），默认 50（每个 skill 调用消耗 2-3 轮）
             executor: 执行器实例（ThreadPoolExecutor/ProcessPoolExecutor）或 None（使用 asyncio）
             hitl_handler: Human-in-the-loop middleware called before each tool execution
-            verbose: Controls tool-call logging verbosity. Accepts a bool or a _VerboseFlag
-                     object (e.g. ``conv.verbose``). When truthy, tool input arguments and
+            verbose: Controls tool-call logging verbosity. Accepts a bool or a truthy
+                     object (e.g. ``conv.tool.verbose``). When truthy, tool input arguments and
                      output results are logged at INFO level. False by default.
         """
         self.tools = tools
@@ -1318,14 +1318,21 @@ class ToolManager:
         """Render a tree-style trace of tool calls for the current iteration.
 
         Called after each tool-execution round when ``self.verbose`` is truthy.
-        The output is written directly to stdout via ``logger.opt(raw=True)``
-        so it appears as a clean tree block distinct from normal log lines.
+        Uses ``rich`` for auto-wrapping, panel borders, and tree rendering.
         """
         import json
+        from rich.console import Console
+        from rich.panel import Panel
+        from rich.tree import Tree
 
-        # Build a name lookup: call_id -> (tool_name, raw_arguments)
-        _name_map: Dict[str, tuple] = {}
-        for tc in tool_calls:
+        console = Console()
+
+        _total_ms = sum((r.end_time - r.start_time) * 1000 for r in results)
+        _total_display = _fmt_duration_ms(_total_ms)
+
+        tree = Tree(f"🔧 Tool Calls — Iteration {iteration} ({_total_display} total)")
+
+        for i, (tc, res) in enumerate(zip(tool_calls, results)):
             cid = tc.id
             name = tc.function.name if hasattr(tc, 'function') else getattr(tc, 'name', '?')
             raw_args = tc.function.arguments if hasattr(tc, 'function') else getattr(tc, 'arguments', '{}')
@@ -1334,49 +1341,22 @@ class ToolManager:
                     raw_args = json.loads(raw_args)
                 except (json.JSONDecodeError, TypeError):
                     pass
-            _name_map[cid] = (name, raw_args)
-
-        # Summarise arguments: compact JSON, truncate if too long
-        def _fmt_args(args: Any) -> str:
-            s = json.dumps(args, ensure_ascii=False, default=str)
-            return s[:200] + "…" if len(s) > 200 else s
-
-        # Summarise result: truncate long content, escape newlines for tree display
-        def _fmt_result(text: str) -> str:
-            t = text.replace("\n", "\\n").replace("\r", "")
-            return t[:300] + "…" if len(t) > 300 else t
-
-        # Human-readable total using the same logic as ToolCallResult.elapsed
-        _total_ms = sum((r.end_time - r.start_time) * 1000 for r in results)
-        _total_display = _fmt_duration_ms(_total_ms)
-
-        lines: List[str] = []
-        lines.append(f"🔧 Tool Calls — Iteration {iteration} ({_total_display} total)")
-
-        for i, (tc, res) in enumerate(zip(tool_calls, results)):
-            cid = tc.id
-            name, args = _name_map.get(cid, ("?", {}))
-            is_last = (i == len(tool_calls) - 1)
-            branch = "└──" if is_last else "├──"
-            indent = "    " if is_last else "│   "
 
             status = "❌ " if res.is_error else ""
-            header = f"{branch} {status}{name} · {cid[:8]} · {res.elapsed}"
+            elapsed = _fmt_duration_ms((res.end_time - res.start_time) * 1000)
+            header = f"{status}{name} · {cid[:8]} · {elapsed}"
             if res.is_error:
                 header += " (FAILED)"
-            lines.append(header)
 
-            # Arguments
-            lines.append(f"{indent}├── Args:  {_fmt_args(args)}")
+            branch = tree.add(header)
+
+            # Arguments — compact JSON in a dim panel
+            args_str = json.dumps(raw_args, ensure_ascii=False, indent=2, default=str)
+            branch.add(Panel(args_str, title="Args", border_style="dim"))
 
             # Result / Error
             label = "Error" if res.is_error else "Result"
-            lines.append(f"{indent}└── {label}:  {_fmt_result(res.content)}")
+            border = "red" if res.is_error else "dim"
+            branch.add(Panel(res.content, title=label, border_style=border))
 
-            # Blank line between tool calls for readability (keep │ to preserve tree)
-            if not is_last:
-                lines.append("│")
-
-        # Write the whole block at once via logger so it respects the log handler.
-        # Using opt(raw=True) to bypass loguru formatting for the tree block.
-        logger.opt(raw=True).info("\n".join(lines) + "\n")
+        console.print(tree)

@@ -431,6 +431,7 @@ dependencies = [
     { name = "loguru" },
     { name = "openai" },
     { name = "pydantic" },
+    { name = "rich" },
     { name = "tenacity" },
     { name = "tiktoken" },
 ]
@@ -560,6 +561,7 @@ requires-dist = [
     { name = "readability-lxml", marker = "extra == 'web'", specifier = ">=0.8.1" },
     { name = "requests", marker = "extra == 'all'", specifier = ">=2.31.0" },
     { name = "requests", marker = "extra == 'documents'", specifier = ">=2.31.0" },
+    { name = "rich", specifier = ">=13.0.0" },
     { name = "tavily-python", marker = "extra == 'all'", specifier = ">=0.3.0" },
     { name = "tavily-python", marker = "extra == 'tools'", specifier = ">=0.3.0" },
     { name = "tavily-python", marker = "extra == 'web'", specifier = ">=0.3.0" },
