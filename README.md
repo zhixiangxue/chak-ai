@@ -24,7 +24,7 @@ chak is not another liteLLM, one-api, or OpenRouter, but a client library that a
 
 ## 🌵 What's New
 
-- **2026-07-08 | v0.4.5** - Notebook tool: Built-in persistent memory for LLM agents via `Notebook`. Agents can `note()` down facts/preferences and `recall()` them across conversations. Powered by [seeka](https://github.com/nicepkg/seeka) under the hood — zero extra config. See [example](examples/notebook_demo.py).
+- **2026-07-08 | v0.4.5** - Notebook tool: Built-in persistent memory for LLM agents via `Notebook`. Agents can `note()` down facts/preferences and `recall()` them across conversations. Powered by [seeka](https://github.com/zhixiangxue/seeka-ai) (embedded vector DB — no external database setup needed). See [example](examples/notebook_demo.py).
 - **2026-06-02 | v0.4.0** - Resilient provider failover: Configure `fallbacks` to route requests through ordered backup LLM providers whenever the current provider fails. Use `fallback_on=FallbackOn.RETRYABLE_ERRORS` for the conservative timeout/rate-limit/server-error policy. See [example](examples/resilient_provider_failover.py).
 - **2026-04-28 | v0.3.5** - SQL & Excel tools:
   - **SQL tool**: Query and modify SQLite / PostgreSQL / MySQL databases. Zero extra deps for SQLite.
