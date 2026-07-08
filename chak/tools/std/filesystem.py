@@ -254,14 +254,15 @@ class FileSystem:
     # ------------------------------------------------------------------
 
     def write_file(self, path: str, content: str) -> str:
-        """Write content to a file, overwriting if it exists.
+        """Write a file, replacing any existing content entirely.
 
-        Creates parent directories as needed.
-        For partial edits use edit_file instead.
+        Creates parent directories as needed. To modify only a portion
+        of an existing file, use edit_file instead.
 
         Args:
             path:    File path (absolute or relative to workdir).
-            content: Full file content to write (UTF-8).
+            content: Complete file content to write (UTF-8). Must be the
+                     full text, not a fragment or diff.
 
         Returns:
             Success message or error string.
@@ -283,12 +284,13 @@ class FileSystem:
     def create_file(self, path: str, content: str) -> str:
         """Create a new file. Fails if the file already exists.
 
-        Use write_file to overwrite an existing file.
-        Creates parent directories as needed.
+        Creates parent directories as needed. Use write_file to overwrite
+        an existing file.
 
         Args:
             path:    File path (absolute or relative to workdir).
-            content: Full file content to write (UTF-8).
+            content: Complete file content to write (UTF-8). Must be the
+                     full text of the new file.
 
         Returns:
             Success message or error string.

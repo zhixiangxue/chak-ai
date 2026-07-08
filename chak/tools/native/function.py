@@ -57,7 +57,7 @@ class NativeFunctionTool:
         if parse_docstring and self.func.__doc__:
             doc = parse_docstring(self.func.__doc__)
             description = doc.short_description or doc.long_description or self._name
-            param_docs = {p.arg_name: p.description for p in doc.params}
+            param_docs = {p.arg_name: (p.description or "").strip() for p in doc.params}
         else:
             # Simple parsing: use first line as description
             if self.func.__doc__:
