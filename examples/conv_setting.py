@@ -1,13 +1,18 @@
 """
-Tool Verbose Logging Demo
+Conversation Fluent Settings Demo
 
-Demonstrates ``conv.tool.verbose.on()`` / ``conv.tool.verbose.off()`` to toggle
-tree-style tool-call trace logging at runtime.
+Demonstrates the fluent configuration API for conversation-level settings:
 
-When verbose is ON, each tool-execution round prints a structured tree block
-showing tool name, call_id, arguments, result/error, and wall-clock timing.
-The trace is purely additive — existing log lines and streaming output are
-unaffected.
+    conv.tool.verbose.on()                          # enable verbose tool logging
+    conv.tool.verbose.off()                         # disable verbose tool logging
+    conv.tool.loop.max(100)                         # set max tool-call iterations
+    conv.tool.loop.unlimited()                      # remove iteration limit
+    conv.tool.executor.use(ToolExecutor.THREAD)     # switch execution mode
+    conv.fallback.on(FallbackOn.RETRYABLE_ERRORS)   # set fallback trigger
+
+Deprecated (will be removed in v0.5):
+    Conversation(tool_executor=..., fallback_on=...)
+    conv.set_tool_executor(...)
 
 Prerequisites:
     Set your LLM provider credentials. For example:
@@ -15,13 +20,8 @@ Prerequisites:
         export OPENAI_API_KEY=sk-...
         export CHAK_MODEL_URI="openai:gpt-4o-mini"
 
-    Or any other supported provider:
-
-        export DASHSCOPE_API_KEY=sk-...
-        export CHAK_MODEL_URI="bailian@https://dashscope.aliyuncs.com/compatible-mode/v1:qwen-plus"
-
 Usage:
-    python examples/tool_verbose_demo.py
+    python examples/conv_setting.py
 """
 
 import asyncio
@@ -42,7 +42,7 @@ API_KEY = os.getenv("DEEPSEEK_API_KEY")
 os.environ.setdefault("CHAK_LOG_LEVEL", "INFO")
 
 import chak
-from chak import Conversation
+from chak import Conversation, ToolExecutor, FallbackOn
 
 
 # ============================================================================
@@ -85,7 +85,7 @@ def echo(message: str) -> str:
 
 async def main():
     print("=" * 60)
-    print("  Tool Verbose Logging Demo")
+    print("  Conversation Fluent Settings Demo")
     print("=" * 60)
 
     conv = Conversation(
@@ -96,33 +96,48 @@ async def main():
     )
 
     # ------------------------------------------------------------------
-    # Round 1 — verbose OFF (default): only minimal tool-call log lines
+    # 1. conv.tool.verbose — toggle tree-style tool-call trace logging
     # ------------------------------------------------------------------
-    print("\n--- Round 1: verbose OFF ---\n")
+    print("\n--- 1. verbose OFF (default) ---\n")
     response = await conv.asend(
         "What time is it now? Also calculate 123 * 456, and echo 'hello'."
     )
     print(f"\n[Assistant]: {response.content}\n")
 
-    # ------------------------------------------------------------------
-    # Round 2 — verbose ON: tree-style trace after each tool round
-    # ------------------------------------------------------------------
     conv.tool.verbose.on()
-    print("\n--- Round 2: verbose ON ---\n")
+    print("\n--- 1. verbose ON ---\n")
     response = await conv.asend(
         "Now: add 99 and 1, also echo 'world', and tell me the time again."
     )
     print(f"\n[Assistant]: {response.content}\n")
-
-    # ------------------------------------------------------------------
-    # Round 3 — verbose OFF again (dynamic toggle)
-    # ------------------------------------------------------------------
     conv.tool.verbose.off()
-    print("\n--- Round 3: verbose OFF again ---\n")
-    response = await conv.asend("What was the last thing I asked?")
-    print(f"\n[Assistant]: {response.content}\n")
 
-    print("Done! 🎉")
+    # ------------------------------------------------------------------
+    # 2. conv.tool.executor — switch execution mode at runtime
+    # ------------------------------------------------------------------
+    print("\n--- 2. executor: ASYNCIO -> THREAD ---\n")
+    print(f"Current executor: {conv.tool.executor.mode}")
+    conv.tool.executor.use(ToolExecutor.THREAD)
+    print(f"New executor:     {conv.tool.executor.mode}")
+
+    # ------------------------------------------------------------------
+    # 3. conv.tool.loop — control iteration limits
+    # ------------------------------------------------------------------
+    print("\n--- 3. loop config ---\n")
+    print(f"Current max iterations: {conv.tool.loop.max_iterations}")
+    conv.tool.loop.max(100)
+    print(f"New max iterations:     {conv.tool.loop.max_iterations}")
+
+    # ------------------------------------------------------------------
+    # 4. conv.fallback — set fallback trigger condition
+    #    (only meaningful when fallbacks are configured in __init__)
+    # ------------------------------------------------------------------
+    print("\n--- 4. fallback config ---\n")
+    print(f"Current fallback mode: {conv.fallback.mode}")
+    conv.fallback.on(FallbackOn.RETRYABLE_ERRORS)
+    print(f"New fallback mode:     {conv.fallback.mode}")
+
+    print("\nDone!")
 
 
 if __name__ == "__main__":

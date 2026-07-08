@@ -1,5 +1,6 @@
 import asyncio
 import uuid
+import warnings
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
 from enum import Enum
 from typing import TYPE_CHECKING, List, Dict, Any, Iterator, Union, Optional, AsyncIterator
@@ -55,8 +56,9 @@ class _ToolConfig:
     """Fluent configuration namespace for tool-related settings.
 
     Usage:
-        conv.tool.verbose.on()      # enable verbose tool logging
-        conv.tool.loop.max(10000)   # raise max tool-call iterations
+        conv.tool.verbose.on()              # enable verbose tool logging
+        conv.tool.loop.max(10000)           # raise max tool-call iterations
+        conv.tool.executor.use(ToolExecutor.THREAD)  # switch execution mode
     """
 
     class Verbose:
@@ -112,9 +114,63 @@ class _ToolConfig:
             import sys
             self._max_iterations = sys.maxsize
 
+    class Executor:
+        """Fluent config for tool execution mode."""
+
+        def __init__(self):
+            self._mode = ToolExecutor.ASYNCIO
+            # Back-reference set by Conversation after construction, so that
+            # fluent changes can propagate to the live ToolManager.
+            self._owner: Optional["Conversation"] = None
+
+        @property
+        def mode(self) -> "ToolExecutor":
+            return self._mode
+
+        def use(self, mode: "ToolExecutor") -> None:
+            """Set the tool execution mode.
+
+            Args:
+                mode: ToolExecutor.ASYNCIO (default), THREAD, or PROCESS
+            """
+            if not isinstance(mode, ToolExecutor):
+                raise TypeError(f"Expected ToolExecutor, got {type(mode).__name__}")
+            self._mode = mode
+            # Propagate to live ToolManager if Conversation is already initialized
+            if self._owner is not None:
+                self._owner._tool_executor = mode
+                if self._owner._tool_manager:
+                    self._owner._tool_manager.executor = self._owner._get_executor()
+
     def __init__(self):
         self.verbose = _ToolConfig.Verbose()
         self.loop = _ToolConfig.Loop()
+        self.executor = _ToolConfig.Executor()
+
+
+class _FallbackConfig:
+    """Fluent config for provider fallback strategy.
+
+    Usage:
+        conv.fallback.on(FallbackOn.RETRYABLE_ERRORS)
+    """
+
+    def __init__(self):
+        self._mode = FallbackOn.ALL_ERRORS
+
+    @property
+    def mode(self) -> FallbackOn:
+        return self._mode
+
+    def on(self, mode: FallbackOn) -> None:
+        """Set the fallback trigger condition.
+
+        Args:
+            mode: FallbackOn.ALL_ERRORS (default) or RETRYABLE_ERRORS
+        """
+        if not isinstance(mode, FallbackOn):
+            raise TypeError(f"Expected FallbackOn, got {type(mode).__name__}")
+        self._mode = mode
 
 
 class Conversation:
@@ -136,9 +192,9 @@ class Conversation:
         system_prompt: Optional[str] = None,
         context_handler: Optional[BaseContextHandler] = None,
         tools: Optional[List["MCPTool"]] = None,
-        tool_executor: ToolExecutor = ToolExecutor.ASYNCIO,
+        tool_executor: Optional[ToolExecutor] = None,
         hitl_handler: Optional["HITLHandler"] = None,
-        fallback_on: FallbackOn = FallbackOn.ALL_ERRORS,
+        fallback_on: Optional[FallbackOn] = None,
         **kwargs
     ):
         """
@@ -158,12 +214,8 @@ class Conversation:
                           If you need structured content, use \n\n to separate sections.
             context_handler: Context management handler (default: NoopContextHandler)
             tools: Optional list of MCP tools or native functions (requires async asend() method)
-            tool_executor: Tool execution mode (default: ToolExecutor.ASYNCIO)
-                          - ASYNCIO: Best for IO-bound tasks (API calls, DB queries)
-                          - THREAD: ThreadPoolExecutor for sync blocking operations
-                          - PROCESS: ProcessPoolExecutor for CPU-bound tasks
-            fallback_on: Controls which failures trigger fallback providers.
-                         Defaults to FallbackOn.ALL_ERRORS when fallbacks are configured.
+            tool_executor: [Deprecated] Use conv.tool.executor.use() instead.
+            fallback_on: [Deprecated] Use conv.fallback.on() instead.
             **kwargs: Additional configuration parameters
         
         Example:
@@ -197,12 +249,37 @@ class Conversation:
         self._raw_tools: List = []  # Store original tools
         self._tool_manager: Optional["ToolManager"] = None
         
-        # Tool executor configuration
-        self._tool_executor = tool_executor
+        # Initialize fluent configs first
+        self.tool = _ToolConfig()
+        self.fallback = _FallbackConfig()
+
+        # Handle deprecated `tool_executor` parameter
+        if tool_executor is not None:
+            warnings.warn(
+                "Parameter 'tool_executor' is deprecated and will be removed in v0.5. "
+                "Use conv.tool.executor.use(ToolExecutor.XXX) instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            self.tool.executor.use(tool_executor)
+
+        # Handle deprecated `fallback_on` parameter
+        if fallback_on is not None:
+            warnings.warn(
+                "Parameter 'fallback_on' is deprecated and will be removed in v0.5. "
+                "Use conv.fallback.on(FallbackOn.XXX) instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            self.fallback.on(fallback_on)
+
+        # Tool executor configuration (read from fluent config)
+        self._tool_executor = self.tool.executor.mode
         self._thread_pool: Optional[ThreadPoolExecutor] = None
         self._process_pool: Optional[ProcessPoolExecutor] = None
         self._hitl_handler: Optional["HITLHandler"] = hitl_handler
-        self.tool = _ToolConfig()
+        # Wire back-reference so fluent Executor.use() can propagate to live ToolManager
+        self.tool.executor._owner = self
         
         # Initialize tools if provided
         if tools:
@@ -258,7 +335,7 @@ class Conversation:
             self.provider = ResilientProvider(
                 primary_provider,
                 fallback_providers,
-                fallback_on=fallback_on,
+                fallback_on=self.fallback.mode,
             )
         else:
             config_dict = self._build_config_dict(primary_parsed, kwargs)
@@ -295,18 +372,19 @@ class Conversation:
         """
         Change tool execution mode.
         
+        .. deprecated::
+            Use ``conv.tool.executor.use(ToolExecutor.XXX)`` instead.
+        
         Args:
             executor: New execution mode (ToolExecutor.ASYNCIO/THREAD/PROCESS)
-        
-        Example:
-            >>> conv = Conversation(..., tool_executor=ToolExecutor.ASYNCIO)
-            >>> # Switch to process pool for CPU-bound tasks
-            >>> conv.set_tool_executor(ToolExecutor.PROCESS)
         """
-        self._tool_executor = executor
-        # Update tool manager's executor if it exists
-        if self._tool_manager:
-            self._tool_manager.executor = self._get_executor()
+        warnings.warn(
+            "set_tool_executor() is deprecated and will be removed in v0.5. "
+            "Use conv.tool.executor.use(ToolExecutor.XXX) instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        self.tool.executor.use(executor)
     
     def _get_executor(self, override: Optional[ToolExecutor] = None):
         """

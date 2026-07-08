@@ -253,7 +253,7 @@ class FileSystem:
     # write_file
     # ------------------------------------------------------------------
 
-    def write_file(self, path: str, content: str) -> str:
+    def write_file(self, path: str, content: str = "") -> str:
         """Write a file, replacing any existing content entirely.
 
         Creates parent directories as needed. To modify only a portion
@@ -262,7 +262,7 @@ class FileSystem:
         Args:
             path:    File path (absolute or relative to workdir).
             content: Complete file content to write (UTF-8). Must be the
-                     full text, not a fragment or diff.
+                     full text, not a fragment or diff. Defaults to "".
 
         Returns:
             Success message or error string.
@@ -271,7 +271,9 @@ class FileSystem:
             fp = self._resolve(path)
             fp.parent.mkdir(parents=True, exist_ok=True)
             fp.write_text(content, encoding="utf-8")
-            return f"Written {len(content)} chars to {fp}"
+            if content:
+                return f"Written {len(content)} chars to {fp}"
+            return f"Written empty file {fp}"
         except PermissionError as e:
             return f"Error: {e}"
         except Exception as e:
@@ -281,7 +283,7 @@ class FileSystem:
     # create_file
     # ------------------------------------------------------------------
 
-    def create_file(self, path: str, content: str) -> str:
+    def create_file(self, path: str, content: str = "") -> str:
         """Create a new file. Fails if the file already exists.
 
         Creates parent directories as needed. Use write_file to overwrite
@@ -290,7 +292,7 @@ class FileSystem:
         Args:
             path:    File path (absolute or relative to workdir).
             content: Complete file content to write (UTF-8). Must be the
-                     full text of the new file.
+                     full text of the new file. Defaults to "".
 
         Returns:
             Success message or error string.
@@ -301,7 +303,9 @@ class FileSystem:
                 return f"Error: File already exists: {path}. Use write_file to overwrite."
             fp.parent.mkdir(parents=True, exist_ok=True)
             fp.write_text(content, encoding="utf-8")
-            return f"Created {fp} ({len(content)} chars)"
+            if content:
+                return f"Created {fp} ({len(content)} chars)"
+            return f"Created empty file {fp}"
         except PermissionError as e:
             return f"Error: {e}"
         except Exception as e:

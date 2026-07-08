@@ -1,15 +1,18 @@
 import importlib.util
-import os
 import subprocess
 import sys
 from pathlib import Path
 
-CORE_API_KEYS = {
-    "deepseek": "DEEPSEEK_API_KEY",
-    "qwen": "BAILIAN_API_KEY",
-    "openai": "OPENAI_API_KEY",
-    "claude": "ANTHROPIC_API_KEY",
-}
+PROVIDERS = [
+    {"mark": "deepseek", "region": "domestic"},
+    {"mark": "qwen",     "region": "domestic"},
+    {"mark": "openai",   "region": "foreign"},
+    {"mark": "claude",   "region": "foreign"},
+    {"mark": "minimax",  "region": "foreign"},
+]
+
+_ALL_MARKS = {p["mark"] for p in PROVIDERS}
+_DEFAULT_REGION = "domestic"
 
 SCENARIO_MARKS = {
     "streaming": "streaming",
@@ -17,8 +20,6 @@ SCENARIO_MARKS = {
     "structured": "structured",
     "skill": "skill",
 }
-
-PROVIDER_MARKS = set(CORE_API_KEYS)
 
 
 def load_dotenv_if_available(root: Path) -> None:
@@ -38,6 +39,49 @@ def ensure_pytest_available() -> bool:
     return False
 
 
+# ---------------------------------------------------------------------------
+# helpers
+# ---------------------------------------------------------------------------
+
+def _resolve_region(passthrough: list) -> tuple:
+    """Pop ``--region <name>`` or ``--region=<name>`` from *passthrough*."""
+    region = _DEFAULT_REGION
+    out = []
+    skip = False
+    for i, arg in enumerate(passthrough):
+        if skip:
+            skip = False
+            continue
+        if arg == "--region" and i + 1 < len(passthrough):
+            region = passthrough[i + 1]
+            skip = True
+            continue
+        if arg.startswith("--region="):
+            region = arg.split("=", 1)[1]
+            continue
+        out.append(arg)
+    return region, out
+
+
+def _filter(region: str) -> list:
+    """Return PROVIDERS entries for *region* (``domestic``, ``foreign``, ``all``)."""
+    if region == "all":
+        return PROVIDERS
+    if region in ("domestic", "foreign"):
+        return [p for p in PROVIDERS if p["region"] == region]
+    print(f"Error: unknown region '{region}'. Choose: domestic, foreign, all")
+    return []
+
+
+def _run(cmd: list, cwd: Path) -> int:
+    print("Running:", " ".join(cmd))
+    return subprocess.call(cmd, cwd=cwd)
+
+
+# ---------------------------------------------------------------------------
+# main
+# ---------------------------------------------------------------------------
+
 def main() -> int:
     root = Path(__file__).resolve().parent
     if not (root / "chak").is_dir():
@@ -52,50 +96,82 @@ def main() -> int:
     command = args[0] if args else "default"
     passthrough = args[1:] if args else []
 
-    if command == "release":
-        missing = [name for name in CORE_API_KEYS.values() if not os.getenv(name)]
-        if missing:
-            print("Error: release mode requires these environment variables:")
-            for name in missing:
-                print(f"  - {name}")
-            return 2
-        pytest_args = ["tests/unit", "tests/live", "-q"]
-    elif command == "unit":
-        pytest_args = ["tests/unit", "-q"]
-    elif command == "live":
-        pytest_args = ["tests/live", "-q"]
-    elif command == "quick":
-        pytest_args = ["tests/unit/test_provider_error.py", "tests/unit/test_provider_base.py", "tests/unit/test_resilient_provider_policy.py", "-q"]
-    elif command == "provider":
-        if not passthrough:
-            print("Error: provider command requires one of: deepseek, qwen, openai, claude")
-            return 2
-        provider = passthrough[0]
-        if provider not in PROVIDER_MARKS:
-            print("Error: unknown provider. Choose one of: deepseek, qwen, openai, claude")
-            return 2
-        pytest_args = ["tests/live", "-q", "-m", provider]
-        passthrough = passthrough[1:]
-    elif command == "scenario":
-        if not passthrough:
-            print("Error: scenario command requires one of: streaming, tools, structured, skill")
-            return 2
-        scenario = passthrough[0]
-        marker = SCENARIO_MARKS.get(scenario)
-        if marker is None:
-            print("Error: unknown scenario. Choose one of: streaming, tools, structured, skill")
-            return 2
-        pytest_args = ["tests/live", "-q", "-m", marker]
-        passthrough = passthrough[1:]
-    elif command in {"default", "all"}:
-        pytest_args = ["tests/unit", "tests/live", "-q"]
-    else:
-        pytest_args = [command, *passthrough]
-        passthrough = []
+    # --- release: unit (all) + live (region-filtered) -----------------------
 
-    full_command = [sys.executable, "-m", "pytest", *pytest_args, *passthrough]
-    print("Running:", " ".join(full_command))
-    return subprocess.call(full_command, cwd=root)
+    if command == "release":
+        region, passthrough = _resolve_region(passthrough)
+        entries = _filter(region)
+        if not entries:
+            return 2
+        marks = [p["mark"] for p in entries]
+        marker = " or ".join(marks)
+        print(f"Region: {region} ({', '.join(marks)})\n")
+
+        print("--- unit ---")
+        ret = _run([sys.executable, "-m", "pytest", "tests/unit", "-q", *passthrough], root)
+        if ret != 0:
+            return ret
+
+        print("\n--- live ---")
+        return _run([sys.executable, "-m", "pytest", "tests/live", "-q", "-m", marker, *passthrough], root)
+
+    # --- unit ---------------------------------------------------------------
+
+    if command == "unit":
+        return _run([sys.executable, "-m", "pytest", "tests/unit", "-q", *passthrough], root)
+
+    # --- live: region-filtered ----------------------------------------------
+
+    if command == "live":
+        region, passthrough = _resolve_region(passthrough)
+        entries = _filter(region)
+        if not entries:
+            return 2
+        marks = [p["mark"] for p in entries]
+        marker = " or ".join(marks)
+        print(f"Region: {region} ({', '.join(marks)})\n")
+        return _run([sys.executable, "-m", "pytest", "tests/live", "-q", "-m", marker, *passthrough], root)
+
+    # --- quick --------------------------------------------------------------
+
+    if command == "quick":
+        return _run([sys.executable, "-m", "pytest",
+            "tests/unit/test_provider_error.py",
+            "tests/unit/test_provider_base.py",
+            "tests/unit/test_resilient_provider_policy.py",
+            "-q", *passthrough], root)
+
+    # --- provider: single provider ------------------------------------------
+
+    if command == "provider":
+        if not passthrough:
+            print(f"Error: provider command requires one of: {', '.join(sorted(_ALL_MARKS))}")
+            return 2
+        mark = passthrough[0]
+        if mark not in _ALL_MARKS:
+            print(f"Error: unknown provider '{mark}'. Choose: {', '.join(sorted(_ALL_MARKS))}")
+            return 2
+        return _run([sys.executable, "-m", "pytest", "tests/live", "-q", "-m", mark, *passthrough[1:]], root)
+
+    # --- scenario -----------------------------------------------------------
+
+    if command == "scenario":
+        if not passthrough:
+            print(f"Error: scenario command requires one of: {', '.join(sorted(SCENARIO_MARKS))}")
+            return 2
+        s = passthrough[0]
+        mark = SCENARIO_MARKS.get(s)
+        if mark is None:
+            print(f"Error: unknown scenario '{s}'. Choose: {', '.join(sorted(SCENARIO_MARKS))}")
+            return 2
+        return _run([sys.executable, "-m", "pytest", "tests/live", "-q", "-m", mark, *passthrough[1:]], root)
+
+    # --- default / all / raw passthrough ------------------------------------
+
+    if command in {"default", "all"}:
+        return _run([sys.executable, "-m", "pytest", "tests/unit", "tests/live", "-q", *passthrough], root)
+
+    return _run([sys.executable, "-m", "pytest", command, *passthrough], root)
 
 
 if __name__ == "__main__":
