@@ -20,7 +20,7 @@ from . import std
 from .mcp import Server, MCPTool
 from .native import NativeFunctionTool, NativeObjectTool
 from .skills import SkillBase, SkillObjectTool, ClaudeSkill
-from .std import Bash, Python, FileSystem, Web, Search, Http
+from .std import Bash, Python, FileSystem, Web, Search, Http, Notebook, NotebookBackend
 from .manager import ToolManager
 
 # Type alias for any supported tool — use this instead of repeating the full union.
@@ -32,6 +32,7 @@ ToolLike = Union[
     ClaudeSkill,
     Bash,
     Python,
+    Notebook,
     Callable,
     object,
 ]
@@ -53,6 +54,8 @@ __all__ = [
     "Web",
     "Search",
     "Http",
+    "Notebook",
+    "NotebookBackend",
     "ToolManager",
     "ToolLike",
     "wrap_tools",

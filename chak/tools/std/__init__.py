@@ -13,6 +13,7 @@ All first-party atomic tools that ship with chak live here:
   - Sandbox:    execute multi-file code projects in an isolated e2b cloud sandbox
   - SQL:        query and modify SQLite / PostgreSQL / MySQL databases
   - Excel:      read and write .xlsx and .csv spreadsheets
+  - Notebook:   persistent, searchable notebook for agents (note + recall)
 """
 
 from .bash import Bash
@@ -25,5 +26,6 @@ from .pdf import Pdf
 from .sandbox import Sandbox
 from .sql import SQL
 from .excel import Excel
+from .notebook import Notebook, NotebookBackend
 
-__all__ = ["Bash", "Python", "FileSystem", "Web", "Search", "Http", "Pdf", "Sandbox", "SQL", "Excel"]
+__all__ = ["Bash", "Python", "FileSystem", "Web", "Search", "Http", "Pdf", "Sandbox", "SQL", "Excel", "Notebook", "NotebookBackend"]
