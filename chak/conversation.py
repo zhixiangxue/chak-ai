@@ -173,6 +173,57 @@ class _FallbackConfig:
         self._mode = mode
 
 
+class _HookPoint:
+    """A single hook registration point (before_send or after_send).
+
+    Supports fluent registration via direct call:
+        conv.hook.before_send(my_callback)
+        conv.hook.before_send([cb1, cb2])
+    """
+
+    def __init__(self):
+        self._callbacks: list = []
+
+    def __call__(self, callbacks):
+        """Register one or more callbacks.
+
+        Args:
+            callbacks: A single callable or a list of callables.
+                       Each callback must have the signature:
+                       async def callback(conv, request, **send_kwargs) -> None
+        """
+        if callable(callbacks):
+            self._callbacks.append(callbacks)
+        elif isinstance(callbacks, list):
+            self._callbacks.extend(callbacks)
+        else:
+            raise TypeError(
+                f"Expected a callable or list of callables, got {type(callbacks).__name__}"
+            )
+
+    async def _invoke(self, conv, request, **send_kwargs):
+        """Execute all registered callbacks in registration order.
+
+        Exceptions propagate to the caller — hooks that need to abort
+        the current operation should raise directly.
+        """
+        for cb in self._callbacks:
+            await cb(conv, request, **send_kwargs)
+
+
+class _HookGroup:
+    """Fluent configuration namespace for lifecycle hooks.
+
+    Usage:
+        conv.hook.before_send(budget_checker)
+        conv.hook.after_send([logger, metrics])
+    """
+
+    def __init__(self):
+        self.before_send = _HookPoint()
+        self.after_send = _HookPoint()
+
+
 class Conversation:
     """
     Chat conversation that follows your desired flow:
@@ -183,6 +234,64 @@ class Conversation:
     
     # 类常量：指定Conversation只使用LLM类型的provider
     PROVIDER_CATEGORY = ProviderCategory.LLM
+
+    @staticmethod
+    async def _build_human_message(message: Union[str, "Message"], attachments: Optional[List["Attachment"]] = None) -> "HumanMessage":
+        """Build a HumanMessage from a string and optional attachments.
+
+        If ``message`` is already a Message object, returns it as-is.
+        If no attachments are provided, returns a simple text HumanMessage.
+        Otherwise, builds a multimodal content array by reading document
+        attachments (async).
+
+        This is the single source of truth for str → HumanMessage conversion
+        across all async send paths.
+        """
+        if not isinstance(message, str):
+            return message  # type: ignore[return-value]
+        if not attachments:
+            return HumanMessage(content=message)
+
+        content_parts: list = [{"type": "text", "text": message}]
+        for att in attachments:
+            if att.mime_type.is_image():
+                content_parts.append({
+                    "type": "image_url",
+                    "image_url": {"url": att.source},
+                })
+            elif att.mime_type.is_audio():
+                content_parts.append({
+                    "type": "input_audio",
+                    "input_audio": {
+                        "data": att.source,
+                        "format": att.mime_type.subtype,
+                    },
+                })
+            elif att.mime_type.is_video():
+                content_parts.append({
+                    "type": "video",
+                    "video": {"url": att.source},
+                })
+            elif att.mime_type.is_document() or att.reader:
+                doc_result = await att.aread()
+                if doc_result and doc_result.content:
+                    doc_text = doc_result.content
+                    if doc_result.meta:
+                        meta_str = ", ".join(
+                            f"{k}: {v}" for k, v in doc_result.meta.items()
+                            if k != "error"
+                        )
+                        if meta_str:
+                            doc_text = f"[Document metadata: {meta_str}]\n\n{doc_text}"
+                    content_parts.append({
+                        "type": "text",
+                        "text": doc_text,
+                    })
+
+        return HumanMessage(
+            content=content_parts,
+            attachments=list(attachments) if attachments else [],
+        )
 
     def __init__(
         self, 
@@ -252,6 +361,7 @@ class Conversation:
         # Initialize fluent configs first
         self.tool = _ToolConfig()
         self.fallback = _FallbackConfig()
+        self.hook = _HookGroup()
 
         # Handle deprecated `tool_executor` parameter
         if tool_executor is not None:
@@ -892,6 +1002,22 @@ class Conversation:
         # are tagged with turn_id and purged separately).
         att_snap = len(self.attachments)
         
+        # Build send_kwargs snapshot for hooks (read-only)
+        stream_send_kwargs = {
+            'timeout': timeout,
+            'stream': stream,
+            'event': event,
+            'returns': returns,
+            'reasoning': reasoning,
+            **kwargs,
+        }
+
+        # Prepare user_message once for all paths (hooks + streaming + non-streaming)
+        user_message = await self._build_human_message(message, attachments)
+
+        # before_send hook — fires once for all modes
+        await self.hook.before_send._invoke(self, user_message, **stream_send_kwargs)
+
         # Check if event stream mode is requested FIRST (before try block)
         # This must be handled separately because it returns an async generator
         if event:
@@ -904,7 +1030,7 @@ class Conversation:
             async def _event_stream_wrapper():
                 try:
                     async for evt in self._asend_with_events_impl(
-                        message=message,
+                        message=user_message,
                         attachments=attachments,
                         tool_executor=tool_executor,
                         **kwargs
@@ -914,6 +1040,7 @@ class Conversation:
                     self._purge_turn(turn_id, att_snap)
                     raise
                 finally:
+                    await self.hook.after_send._invoke(self, user_message, **stream_send_kwargs)
                     _current_turn_id.reset(token)
             
             return _event_stream_wrapper()
@@ -923,7 +1050,7 @@ class Conversation:
             async def _stream_wrapper():
                 try:
                     async for chunk in self._asend_stream_impl(
-                        message=message,
+                        message=user_message,
                         attachments=attachments,
                         tool_executor=tool_executor,
                         **kwargs
@@ -933,6 +1060,7 @@ class Conversation:
                     self._purge_turn(turn_id, att_snap)
                     raise
                 finally:
+                    await self.hook.after_send._invoke(self, user_message, **stream_send_kwargs)
                     _current_turn_id.reset(token)
             
             return _stream_wrapper()
@@ -942,16 +1070,32 @@ class Conversation:
             if timeout is not None:
                 kwargs['timeout'] = timeout
 
-            # Structured output without tools: fast path, message pre-processing
-            # is handled inside _asend_with_structured_output.
+            # Build send_kwargs snapshot for hooks (read-only)
+            send_kwargs = {
+                'timeout': timeout,
+                'stream': stream,
+                'event': event,
+                'returns': returns,
+                'reasoning': reasoning,
+                **kwargs,
+            }
+
+            # Structured output without tools: fast path.
+            # user_message was already built and before_send already fired above.
             if returns is not None and not self._tool_manager:
+                self.messages.append(user_message)
+                if attachments:
+                    self.attachments.extend(attachments)
+
                 try:
-                    return await self._asend_with_structured_output(
-                        message=message,
+                    result = await self._asend_with_structured_output(
+                        message=user_message,
                         attachments=attachments,
                         returns=returns,
                         **kwargs
                     )
+                    await self.hook.after_send._invoke(self, user_message, **send_kwargs)
+                    return result
                 except Exception as e:
                     # Structured output failed, log and return None.
                     # Purge so the caller's retry doesn't see a stale
@@ -961,54 +1105,7 @@ class Conversation:
                     self._purge_turn(turn_id, att_snap)
                     return None
 
-            # Convert str to HumanMessage and merge attachments if present
-            if isinstance(message, str):
-                if attachments:
-                    # Create multimodal message
-                    content_parts = [{"type": "text", "text": message}]
-                    for att in attachments:
-                        if att.mime_type.is_image():
-                            content_parts.append({
-                                "type": "image_url",
-                                "image_url": {"url": att.source}
-                            })
-                        elif att.mime_type.is_audio():
-                            content_parts.append({
-                                "type": "input_audio",
-                                "input_audio": {
-                                    "data": att.source,
-                                    "format": att.mime_type.subtype
-                                }
-                            })
-                        elif att.mime_type.is_video():
-                            content_parts.append({
-                                "type": "video",
-                                "video": {"url": att.source}
-                            })
-                        elif att.mime_type.is_document() or att.reader:
-                            # Document types (PDF, DOC, Excel, TXT, Link, etc.)
-                            # Need to read and extract text content first
-                            doc_result = await att.aread()  # Async read for async method
-                            if doc_result and doc_result.content:
-                                # Add extracted text as text part
-                                doc_text = doc_result.content
-                                # Include metadata info if available
-                                if doc_result.meta:
-                                    meta_str = ", ".join([f"{k}: {v}" for k, v in doc_result.meta.items() if k != "error"])
-                                    if meta_str:
-                                        doc_text = f"[Document metadata: {meta_str}]\n\n{doc_text}"
-                                content_parts.append({
-                                    "type": "text",
-                                    "text": doc_text
-                                })
-                    user_message = HumanMessage(content=content_parts, attachments=list(attachments) if attachments else [])
-                else:
-                    # Simple text message
-                    user_message = HumanMessage(content=message)
-            else:
-                # User provided a Message object directly
-                user_message = message
-
+            # Append the user_message (prepared above in the hook section)
             self.messages.append(user_message)
 
             # Track attachments at conversation level
@@ -1074,7 +1171,9 @@ class Conversation:
                                     "function to provide the structured output."
                                 )
                             extraction_messages.append(HumanMessage(content=bridge_content))
-                            return await self._run_extraction_loop(extraction_messages, returns, **kwargs)
+                            result = await self._run_extraction_loop(extraction_messages, returns, **kwargs)
+                            await self.hook.after_send._invoke(self, user_message, **send_kwargs)
+                            return result
                         except Exception as e:
                             from .utils.logger import logger
                             logger.warning(f"Structured output failed: {type(e).__name__}: {e}")
@@ -1084,7 +1183,9 @@ class Conversation:
                             return None
                     else:
                         # Normal tool-calling mode
-                        return await self._asend_nonstream_with_tools(messages_to_send, **kwargs)
+                        result = await self._asend_nonstream_with_tools(messages_to_send, **kwargs)
+                        await self.hook.after_send._invoke(self, user_message, **send_kwargs)
+                        return result
                 finally:
                     # Restore original executor
                     if original_executor is not None:
@@ -1095,7 +1196,9 @@ class Conversation:
                     kwargs['reasoning'] = reasoning
 
                 # Normal LLM mode (non-stream only, stream handled by wrapper above)
-                return await self._asend_nonstream(messages_to_send, **kwargs)
+                result = await self._asend_nonstream(messages_to_send, **kwargs)
+                await self.hook.after_send._invoke(self, user_message, **send_kwargs)
+                return result
         except BaseException:
             # All-or-nothing: drop everything this turn produced so the caller
             # can safely retry the same conv.asend(text) call.
@@ -1194,26 +1297,6 @@ class Conversation:
                 is_final=True,
                 final_message=final_message
             )
-    
-    async def _asend_stream_with_tools(self, messages: List[Message], **kwargs) -> AsyncIterator[Union[MessageChunk, ReasoningChunk]]:
-        """Handle async streaming response with MCP tools, supporting both answer and reasoning chunks."""
-        if not self._tool_manager:
-            raise RuntimeError("Tool manager not initialized")
-        
-        all_new_messages = []
-        
-        # Use tool manager's streaming loop
-        async for chunk, new_messages in self._tool_manager.execute_loop_stream(
-            provider=self.provider,
-            messages=messages,
-            model_uri=self.model_uri
-        ):
-            # Sync new_messages to all_new_messages
-            all_new_messages = new_messages
-            yield chunk
-        
-        # Save all new messages (including intermediate AIMessage + ToolMessage)
-        self.messages.extend(all_new_messages)
     
     async def _asend_nonstream_with_tools(self, messages: List[Message], **kwargs) -> Message:
         """Handle async non-streaming response with MCP tools."""
@@ -1430,8 +1513,8 @@ class Conversation:
         """
         Handle structured output (no tools configured).
 
-        Prepares the user message, applies context handling, then delegates
-        the schema-forced extraction to _run_extraction_loop.
+        The caller has already appended the user_message to self.messages.
+        This method only applies context handling and runs extraction.
 
         Supports:
         - BaseModel: returns=MyModel
@@ -1439,60 +1522,21 @@ class Conversation:
         - Dict[str, BaseModel]: returns=Dict[str, MyModel]
 
         Args:
-            message: User message
-            attachments: Optional attachments
+            message: Pre-built HumanMessage (or raw str for backward compat)
+            attachments: Optional attachments (for backward compat str path)
             returns: Pydantic BaseModel class or generic type (List/Dict)
             **kwargs: Additional LLM parameters
 
         Returns:
             Instance of the Pydantic model (or List/Dict of instances)
         """
-        # Convert str to HumanMessage (same logic as regular asend)
+        # message is already a HumanMessage built by the caller; the str
+        # path is retained only for backward compatibility.
         if isinstance(message, str):
+            user_message = await self._build_human_message(message, attachments)
+            self.messages.append(user_message)
             if attachments:
-                # Create multimodal message
-                content_parts = [{"type": "text", "text": message}]
-                for att in attachments:
-                    if att.mime_type.is_image():
-                        content_parts.append({
-                            "type": "image_url",
-                            "image_url": {"url": att.source}
-                        })
-                    elif att.mime_type.is_audio():
-                        content_parts.append({
-                            "type": "input_audio",
-                            "input_audio": {
-                                "data": att.source,
-                                "format": att.mime_type.subtype
-                            }
-                        })
-                    elif att.mime_type.is_video():
-                        content_parts.append({
-                            "type": "video",
-                            "video": {"url": att.source}
-                        })
-                    elif att.mime_type.is_document() or att.reader:
-                        doc_result = await att.aread()
-                        if doc_result and doc_result.content:
-                            doc_text = doc_result.content
-                            if doc_result.meta:
-                                meta_str = ", ".join([f"{k}: {v}" for k, v in doc_result.meta.items() if k != "error"])
-                                if meta_str:
-                                    doc_text = f"[Document metadata: {meta_str}]\n\n{doc_text}"
-                            content_parts.append({
-                                "type": "text",
-                                "text": doc_text
-                            })
-                user_message = HumanMessage(content=content_parts, attachments=list(attachments) if attachments else [])
-            else:
-                user_message = HumanMessage(content=message)
-        else:
-            user_message = message
-
-        self.messages.append(user_message)
-
-        if attachments:
-            self.attachments.extend(attachments)
+                self.attachments.extend(attachments)
 
         # Apply context handler
         messages_to_send = self._apply_context_handler()
@@ -1574,34 +1618,8 @@ class Conversation:
         """
         from .message import MessageChunk, ReasoningChunk, AIMessage
         
-        # Convert str to HumanMessage and merge attachments if present
-        if isinstance(message, str):
-            if attachments:
-                # Create multimodal message
-                content_parts = [{"type": "text", "text": message}]
-                for att in attachments:
-                    if att.mime_type.is_image():
-                        content_parts.append({
-                            "type": "image_url",
-                            "image_url": {"url": att.source}
-                        })
-                    elif att.mime_type.is_audio():
-                        content_parts.append({
-                            "type": "input_audio",
-                            "input_audio": {
-                                "data": att.source,
-                                "format": att.mime_type.subtype
-                            }
-                        })
-                user_message = HumanMessage(content=content_parts)
-            else:
-                # Simple text message
-                user_message = HumanMessage(content=message)
-        else:
-            # User provided a Message object directly
-            user_message = message
-        
-        self.messages.append(user_message)
+        # message is already a HumanMessage built by the caller (asend)
+        self.messages.append(message)
         
         # Track attachments at conversation level
         if attachments:
@@ -1673,34 +1691,8 @@ class Conversation:
         """
         from .message import MessageChunk, ReasoningChunk, ConversationCompleteEvent, _current_turn_id
         
-        # Convert str to HumanMessage and merge attachments if present
-        if isinstance(message, str):
-            if attachments:
-                # Create multimodal message
-                content_parts = [{"type": "text", "text": message}]
-                for att in attachments:
-                    if att.mime_type.is_image():
-                        content_parts.append({
-                            "type": "image_url",
-                            "image_url": {"url": att.source}
-                        })
-                    elif att.mime_type.is_audio():
-                        content_parts.append({
-                            "type": "input_audio",
-                            "input_audio": {
-                                "data": att.source,
-                                "format": att.mime_type.subtype
-                            }
-                        })
-                user_message = HumanMessage(content=content_parts)
-            else:
-                # Simple text message
-                user_message = HumanMessage(content=message)
-        else:
-            # User provided a Message object directly
-            user_message = message
-        
-        self.messages.append(user_message)
+        # message is already a HumanMessage built by the caller (asend)
+        self.messages.append(message)
         
         # Track attachments at conversation level
         if attachments:

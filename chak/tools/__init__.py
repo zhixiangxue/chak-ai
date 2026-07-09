@@ -20,7 +20,7 @@ from . import std
 from .mcp import Server, MCPTool
 from .native import NativeFunctionTool, NativeObjectTool
 from .skills import SkillBase, SkillObjectTool, ClaudeSkill
-from .std import Bash, Python, FileSystem, Web, Search, Http, Notebook, NotebookBackend
+from .std import Bash, Python, FileSystem, Web, Search, Http  # Notebook, NotebookBackend — TODO: re-enable after seeka fix
 from .manager import ToolManager
 
 # Type alias for any supported tool — use this instead of repeating the full union.
@@ -32,7 +32,7 @@ ToolLike = Union[
     ClaudeSkill,
     Bash,
     Python,
-    Notebook,
+    object,  # Notebook — TODO: re-enable after seeka fix
     Callable,
     object,
 ]
@@ -54,8 +54,8 @@ __all__ = [
     "Web",
     "Search",
     "Http",
-    "Notebook",
-    "NotebookBackend",
+    # "Notebook",       # TODO: re-enable after seeka fix
+    # "NotebookBackend", # TODO: re-enable after seeka fix
     "ToolManager",
     "ToolLike",
     "wrap_tools",

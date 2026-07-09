@@ -26,6 +26,7 @@ from .pdf import Pdf
 from .sandbox import Sandbox
 from .sql import SQL
 from .excel import Excel
-from .notebook import Notebook, NotebookBackend
+# TODO: re-enable after seeka 0.2.1+ is installable (currently blocked by zvec)
+# from .notebook import Notebook, NotebookBackend
 
-__all__ = ["Bash", "Python", "FileSystem", "Web", "Search", "Http", "Pdf", "Sandbox", "SQL", "Excel", "Notebook", "NotebookBackend"]
+__all__ = ["Bash", "Python", "FileSystem", "Web", "Search", "Http", "Pdf", "Sandbox", "SQL", "Excel"]  # Notebook, NotebookBackend — TODO: re-enable

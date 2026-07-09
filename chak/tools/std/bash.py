@@ -8,9 +8,11 @@ Handles cross-platform compatibility automatically:
 """
 
 import asyncio
+import os
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any, Dict
 
@@ -72,6 +74,7 @@ class Bash:
         deny_patterns: list[str] | None = None,
         sensitive_files: list[str] | None = None,
         working_dir: str | None = None,
+        allow_temp_dir: bool = True,
     ):
         r"""
         Args:
@@ -89,6 +92,11 @@ class Bash:
             working_dir: If set, commands may not reference absolute paths outside
                          this directory, and path-traversal sequences (../ or ..\)
                          are blocked.  Defaults to ``None`` (no path restriction).
+            allow_temp_dir: When ``True`` (default) and ``working_dir`` is set,
+                            absolute paths that fall under a system temporary
+                            directory (e.g. ``/tmp``, ``TMPDIR``) are allowed
+                            regardless of ``working_dir``.  Set to ``False`` to
+                            enforce strict ``working_dir`` confinement everywhere.
         """
         self._timeout = timeout
         self._python = venv_python or sys.executable
@@ -99,6 +107,8 @@ class Bash:
             sensitive_files if sensitive_files is not None else self._DEFAULT_SENSITIVE
         )
         self._working_dir = Path(working_dir).resolve() if working_dir else None
+        self._allow_temp_dir = allow_temp_dir
+        self._temp_dirs: set[Path] = self._collect_temp_dirs() if allow_temp_dir else set()
 
     # ------------------------------------------------------------------
     # Duck-typing interface required by ToolManager
@@ -190,16 +200,19 @@ class Bash:
         if self._working_dir:
             if "..\\" in command or "../" in command:
                 return "Error: command blocked — path traversal detected"
-
+        
             # Extract Windows-style absolute paths (e.g. C:\Users\...)
             win_paths = re.findall(r"[A-Za-z]:\\[^\s\"'|><;]*", command)
             # Extract POSIX absolute paths (e.g. /home/...)
             posix_paths = re.findall(r"(?:^|[\s|>'\"])(/[^\s\"'>;|<]+)", command)
-
+        
             for raw in win_paths + posix_paths:
                 try:
                     target = Path(raw.strip()).resolve()
                 except Exception:
+                    continue
+                # Skip paths inside system temp directories
+                if self._is_temp_path(target):
                     continue
                 if (
                     target != self._working_dir
@@ -209,8 +222,50 @@ class Bash:
                         f"Error: command blocked — path '{raw.strip()}' is outside "
                         f"working directory '{self._working_dir}'"
                     )
-
+        
         return None
+
+    def _collect_temp_dirs(self) -> set[Path]:
+        """Build a set of resolved system temporary directories.
+
+        Uses ``tempfile.gettempdir()`` (cross-platform) plus well-known POSIX
+        temporary locations (``/tmp``, ``/var/tmp``) so that even raw ``/tmp``
+        references are recognised without hard-coding every platform variant.
+        """
+        dirs: set[Path] = set()
+
+        # Primary: the runtime's notion of the temp directory
+        try:
+            dirs.add(Path(tempfile.gettempdir()).resolve())
+        except Exception:
+            pass
+
+        # Secondary: well-known POSIX temp locations (resolved if they exist)
+        for candidate in ("/tmp", "/var/tmp"):
+            try:
+                p = Path(candidate)
+                if p.exists():
+                    dirs.add(p.resolve())
+            except Exception:
+                pass
+
+        # Tertiary: env vars that commonly point to a temp directory
+        for env_name in ("TMPDIR", "TEMP", "TMP"):
+            val = os.getenv(env_name)
+            if val:
+                try:
+                    dirs.add(Path(val).resolve())
+                except Exception:
+                    pass
+
+        return dirs
+
+    def _is_temp_path(self, target: Path) -> bool:
+        """Return ``True`` if *target* lives under any known temp directory."""
+        for tmp_dir in self._temp_dirs:
+            if target == tmp_dir or tmp_dir in target.parents:
+                return True
+        return False
 
     def _run(self, command: str) -> str:
         """Execute *command* synchronously and return its output.
