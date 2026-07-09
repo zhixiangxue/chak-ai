@@ -35,6 +35,7 @@ dependencies = [
     "docstring-parser>=0.15",
     "tenacity>=9.0.0",
     "rich>=13.0.0",
+    "python-dotenv>=1.2.2",
 ]
 
 [project.optional-dependencies]
@@ -138,6 +139,7 @@ markers = [
     "streaming: streaming response tests",
     "structured: structured output tests",
     "skill: skill and ClaudeSkill tests",
+    "hook: lifecycle hook (before_send / after_send) tests",
     "deepseek: DeepSeek live provider tests",
     "qwen: Qwen/Bailian live provider tests",
     "openai: OpenAI live provider tests",

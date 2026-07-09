@@ -786,6 +786,16 @@ class Conversation:
         # Snapshot attachments length so we can rewind on failure (messages
         # are tagged with turn_id and purged separately).
         att_snap = len(self.attachments)
+
+        # Build send_kwargs snapshot for hooks (read-only)
+        send_kwargs = {
+            'timeout': timeout,
+            'stream': stream,
+            'event': False,
+            'returns': returns,
+            'reasoning': reasoning,
+            **kwargs,
+        }
         
         try:
             # Check if tools are configured
@@ -864,6 +874,9 @@ class Conversation:
             else:
                 # User provided a Message object directly
                 user_message = message
+
+            # before_send hook — fires before message is appended to history
+            asyncio.run(self.hook.before_send._invoke(self, user_message, **send_kwargs))
             
             self.messages.append(user_message)
             
@@ -887,9 +900,13 @@ class Conversation:
                     except BaseException:
                         self._purge_turn(turn_id, att_snap)
                         raise
+                    finally:
+                        asyncio.run(self.hook.after_send._invoke(self, user_message, **send_kwargs))
                 return _stream_wrap()
             else:
-                return self._send_nonstream(messages_to_send, **kwargs)
+                result = self._send_nonstream(messages_to_send, **kwargs)
+                asyncio.run(self.hook.after_send._invoke(self, user_message, **send_kwargs))
+                return result
         except BaseException:
             # All-or-nothing: drop everything this turn produced so the caller
             # can safely retry the same conv.send(text) call.

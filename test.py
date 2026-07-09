@@ -19,6 +19,7 @@ SCENARIO_MARKS = {
     "tools": "tools",
     "structured": "structured",
     "skill": "skill",
+    "hook": "hook",
 }
 
 
