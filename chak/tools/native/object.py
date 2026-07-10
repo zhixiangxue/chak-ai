@@ -3,6 +3,12 @@ NativeObjectTool: Wrap Python objects with multiple methods as tools
 
 Automatically discovers all public methods from an object and wraps them as individual tools.
 Maintains object state across method calls, enabling stateful tool interactions.
+
+Protocol: ``__available__``
+    Wrapped objects may optionally define ``__available__() -> frozenset[str]``
+    to explicitly declare which public methods should be registered as tools.
+    When absent, all public methods (not starting with ``_``) are discovered
+    automatically via ``dir()``.
 """
 
 import inspect
@@ -61,6 +67,11 @@ class NativeObjectTool:
         """
         Discover all public callable methods from the object.
 
+        If the object defines ``__available__()``, that method's return value
+        (a ``frozenset[str]``) is used as the authoritative list of method
+        names to expose.  Otherwise all public methods (not starting with
+        ``_``) are discovered automatically.
+
         Method tool names are namespaced as ``{class_name}-{method_name}``
         (e.g. ``calculator-add``) to avoid collisions when multiple objects
         expose methods with the same name.
@@ -71,16 +82,23 @@ class NativeObjectTool:
         methods = {}
         prefix = type(self.obj).__name__.lower()
 
-        for name in dir(self.obj):
-            # Skip private and magic methods
-            if name.startswith('_'):
+        # Honour __available__ protocol if the object defines it
+        provider = getattr(self.obj, '__available__', None)
+        if provider is not None and callable(provider):
+            candidates = frozenset(provider())
+        else:
+            candidates = frozenset(
+                n for n in dir(self.obj)
+                if not n.startswith('_')
+            )
+
+        for name in sorted(candidates):
+            # Belt-and-suspenders: skip private/magic names, and the
+            # protocol method itself (harmless but strict).
+            if name.startswith('_') or name == '__available__':
                 continue
-
-            # Get attribute
-            attr = getattr(self.obj, name)
-
-            # Only include callable methods (bound methods)
-            if callable(attr) and inspect.ismethod(attr):
+            attr = getattr(self.obj, name, None)
+            if attr is not None and callable(attr) and inspect.ismethod(attr):
                 namespaced = f"{prefix}-{name}"
                 tool = NativeFunctionTool(attr)
                 tool._name = namespaced  # override bare method name

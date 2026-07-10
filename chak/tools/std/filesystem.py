@@ -132,6 +132,7 @@ class FileSystem:
         self,
         workdir: Optional[str] = None,
         allowed_dirs: Optional[List[str]] = None,
+        mode: str = "rw",
     ):
         """
         Args:
@@ -139,13 +140,37 @@ class FileSystem:
                      to this tree when set.  Relative paths resolve against it.
             allowed_dirs: Additional directories outside workdir that are
                           permitted (e.g. a shared assets folder).
+            mode: Tool visibility mode — ``"r"`` (read-only, only read methods
+                  exposed to LLM), ``"rw"`` (read+write, all methods, default),
+                  or ``"w"`` (write-only, only write methods exposed).
         """
+        if mode not in ("r", "rw", "w"):
+            raise ValueError(
+                f"Invalid mode '{mode}': must be 'r', 'rw', or 'w'."
+            )
+        self._mode = mode
         self._workdir: Optional[Path] = Path(workdir).resolve() if workdir else None
         self._allowed: List[Path] = []
         if self._workdir:
             self._allowed.append(self._workdir)
         for d in (allowed_dirs or []):
             self._allowed.append(Path(d).resolve())
+    
+    def __available__(self) -> frozenset:
+        """Return method names to expose as LLM tools based on current mode.
+
+        This is part of the ``__available__`` protocol consumed by
+        ``NativeObjectTool`` — objects may override it to declare which
+        public methods should be registered as tools.
+        """
+        if self._mode == "r":
+            return frozenset({"read_file", "tree", "list_dir", "find", "grep"})
+        if self._mode == "w":
+            return frozenset({"write_file", "create_file", "edit_file", "move", "delete_file"})
+        return frozenset({
+            "read_file", "write_file", "create_file", "edit_file",
+            "tree", "list_dir", "move", "find", "grep", "delete_file",
+        })
 
     # ------------------------------------------------------------------
     # Path resolution & security
@@ -703,5 +728,5 @@ class FileSystem:
 
     def __repr__(self) -> str:
         wd = str(self._workdir) if self._workdir else "unrestricted"
-        return f"<FileSystem workdir={wd}>"
+        return f"<FileSystem workdir={wd} mode={self._mode}>"
 

@@ -1,8 +1,9 @@
+import copy
 from enum import Enum
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Dict, Iterator, List, Optional, Set
 
 from ...exceptions import ProviderError, ErrorType, RETRYABLE_STATUS_CODES
-from ...message import FailoverChunk, Message, UnifiedStreamChunk
+from ...message import AIMessage, FailoverChunk, Message, ToolMessage, UnifiedStreamChunk
 from ...metadata import Metadata, ProviderTrace, FailureRecord
 from .base import BaseMessageConverter, Provider
 
@@ -57,7 +58,88 @@ class ResilientProvider(Provider):
     def _send_stream(self, messages: Any, **kwargs) -> Iterator[Any]:
         raise NotImplementedError("ResilientProvider uses send() directly")
 
+    # ------------------------------------------------------------------ #
+    # Message sanitization for cross-provider fallback                     #
+    # ------------------------------------------------------------------ #
+    #
+    # Each provider's converter (Anthropic / OpenAI / DashScope) expects
+    # chak's internal message format and independently transforms it to
+    # its own API representation. However, when messages are passed through
+    # multiple providers during fallback, tool-call structural invariants
+    # can break:
+    #
+    #   Problem 1 — Orphan tool_calls:
+    #     An AIMessage carries tool_calls but no ToolMessage with a
+    #     matching tool_call_id follows. Both Anthropic and OpenAI reject
+    #     this with a 400.
+    #
+    #   Problem 2 — Anthropic strict ordering:
+    #     Anthropic requires that every assistant message containing
+    #     ``tool_use`` blocks be **immediately** followed by a user
+    #     message with ``tool_result`` blocks. If an extra message
+    #     (HumanMessage or another AIMessage) sits between them, the
+    #     Anthropic converter produces valid-looking blocks but the API
+    #     rejects them because the tool_results are one message too late.
+    #
+    # We sanitize messages before EVERY provider attempt (including the
+    # primary) so that even the first provider sees structurally clean
+    # input. The overhead is linear in the message count and negligible
+    # compared to the network round-trip.
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _sanitize_messages(messages: List[Message]) -> List[Message]:
+        """Return a deep-copied list with orphan / out-of-order tool-call
+        data stripped so every provider receives structurally valid input.
+
+        The sanitizer works at the chak Message level (OpenAI-compatible
+        internal format) and does NOT depend on any provider-specific
+        converter. It only removes data — it never invents or reorders
+        messages, which would be semantically unsafe.
+        """
+        # Deep-copy so mutations inside a provider's converter never
+        # leak across fallback attempts.
+        sanitized: List[Message] = [copy.deepcopy(m) for m in messages]
+
+        # Build a set of all tool_call_ids that have a corresponding
+        # ToolMessage IMMEDIATELY AFTER the AIMessage that owns them.
+        # "Immediately after" means: consecutive ToolMessages following
+        # an AIMessage, before any other message type appears.
+        resolved_ids: Set[str] = set()
+        i = 0
+        while i < len(sanitized):
+            msg = sanitized[i]
+            if isinstance(msg, AIMessage) and msg.tool_calls:
+                # Collect tool_call_ids from the NEXT messages (must be ToolMessages)
+                j = i + 1
+                while j < len(sanitized) and isinstance(sanitized[j], ToolMessage):
+                    tid = sanitized[j].tool_call_id
+                    if tid:
+                        resolved_ids.add(tid)
+                    j += 1
+            i += 1
+
+        # Strip tool_calls whose IDs never appear in any immediately-
+        # following ToolMessage. The rest of the message (text content,
+        # reasoning, metadata) is preserved.
+        for msg in sanitized:
+            if isinstance(msg, AIMessage) and msg.tool_calls:
+                surviving = [
+                    tc for tc in msg.tool_calls if tc.id in resolved_ids
+                ]
+                msg.tool_calls = surviving if surviving else None
+
+        return sanitized
+
+    # ------------------------------------------------------------------ #
+    # Send / fallback loops                                                #
+    # ------------------------------------------------------------------ #
+
     def send(self, messages: List[Message], stream: bool = False, **kwargs):
+        # Sanitize once before the first attempt so every provider in the
+        # chain starts from structurally clean input.
+        messages = self._sanitize_messages(messages)
+
         if stream:
             return self._send_stream_with_fallback(messages, **kwargs)
         return self._send_nonstream_with_fallback(messages, **kwargs)

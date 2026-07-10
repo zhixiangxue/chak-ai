@@ -1104,6 +1104,7 @@ class Conversation:
                 if attachments:
                     self.attachments.extend(attachments)
 
+                result = None
                 try:
                     result = await self._asend_with_structured_output(
                         message=user_message,
@@ -1111,8 +1112,6 @@ class Conversation:
                         returns=returns,
                         **kwargs
                     )
-                    await self.hook.after_send._invoke(self, user_message, **send_kwargs)
-                    return result
                 except Exception as e:
                     # Structured output failed, log and return None.
                     # Purge so the caller's retry doesn't see a stale
@@ -1121,6 +1120,11 @@ class Conversation:
                     logger.warning(f"Structured output failed: {type(e).__name__}: {e}")
                     self._purge_turn(turn_id, att_snap)
                     return None
+
+                # after_send runs OUTSIDE the try block so hook exceptions
+                # propagate upward (e.g. BudgetExceededError from budget guard).
+                await self.hook.after_send._invoke(self, user_message, **send_kwargs)
+                return result
 
             # Append the user_message (prepared above in the hook section)
             self.messages.append(user_message)
@@ -1146,6 +1150,7 @@ class Conversation:
                         # ClaudeSkill (and any other tools) can activate normally,
                         # then run a schema-forced extraction pass on the resulting
                         # conversation history.
+                        result = None
                         try:
                             await self._asend_nonstream_with_tools(messages_to_send, **kwargs)
                             # Re-apply context handler so extraction sees updated history.
@@ -1189,8 +1194,6 @@ class Conversation:
                                 )
                             extraction_messages.append(HumanMessage(content=bridge_content))
                             result = await self._run_extraction_loop(extraction_messages, returns, **kwargs)
-                            await self.hook.after_send._invoke(self, user_message, **send_kwargs)
-                            return result
                         except Exception as e:
                             from .utils.logger import logger
                             logger.warning(f"Structured output failed: {type(e).__name__}: {e}")
@@ -1198,6 +1201,11 @@ class Conversation:
                             # tool-loop messages accumulating each attempt.
                             self._purge_turn(turn_id, att_snap)
                             return None
+
+                        # after_send runs OUTSIDE the try block so hook exceptions
+                        # propagate upward (e.g. BudgetExceededError from budget guard).
+                        await self.hook.after_send._invoke(self, user_message, **send_kwargs)
+                        return result
                     else:
                         # Normal tool-calling mode
                         result = await self._asend_nonstream_with_tools(messages_to_send, **kwargs)
