@@ -33,7 +33,7 @@ class FIFOContextHandler(BaseContextHandler):
         
         self.keep_recent_turns = keep_recent_turns
     
-    def handle(
+    def handle_turn(
         self,
         messages: List[Message],
         *,

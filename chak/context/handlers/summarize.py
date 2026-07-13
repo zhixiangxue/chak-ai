@@ -133,7 +133,7 @@ class SummarizationContextHandler(BaseContextHandler):
     # Public interface
     # ------------------------------------------------------------------
 
-    def handle(
+    def handle_turn(
         self,
         messages: List[Message],
         *,

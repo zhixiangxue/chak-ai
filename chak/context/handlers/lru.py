@@ -33,7 +33,7 @@ class LRUContextHandler(BaseContextHandler):
         super().__init__()
         self.keep_recent = keep_recent
     
-    def handle(
+    def handle_turn(
         self,
         messages: List[Message],
         *,

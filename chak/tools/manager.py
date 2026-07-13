@@ -424,7 +424,8 @@ class ToolManager:
         self, 
         provider: Any,  # LLM Provider
         messages: List["Message"],
-        model_uri: str
+        model_uri: str,
+        round_context_fn: Optional[Callable[[List["Message"], int], List["Message"]]] = None,
     ) -> tuple["Message", List["Message"]]:
         """
         Execute LLM + MCP tool calling loop (non-streaming).
@@ -440,6 +441,12 @@ class ToolManager:
             provider: LLM Provider instance
             messages: Message list
             model_uri: Model URI (not used, provider already has model)
+            round_context_fn: Optional callback invoked before every round
+                (each provider.send()).  Signature: ``fn(current_messages,
+                round_index) -> messages``.  Returned messages replace
+                ``current_messages`` for the upcoming LLM call only; the
+                loop's own append-only history is kept intact so all rounds
+                are still recorded back to the conversation.
         
         Returns:
             tuple: (final_message, all_new_messages)
@@ -464,12 +471,21 @@ class ToolManager:
         openai_tools = self._get_openai_tools()
         
         for iteration in range(self.max_iterations):
+            # Round-scoped context handling (optional): let the caller compress
+            # in-flight history right before every LLM call.  Only the
+            # messages sent to the provider are affected; the loop's own
+            # append-only history (current_messages) is still what we return.
+            if round_context_fn is not None:
+                messages_for_send = round_context_fn(current_messages, iteration)
+            else:
+                messages_for_send = current_messages
+
             # Step 1: Call LLM with tools
             logger.debug(f"💬 [Tool Loop] Iteration {iteration}: Calling LLM with {len(openai_tools)} tools...")
             try:
                 # Anthropic (and some other providers) reject tools=[] — only pass
                 # the parameter when there is at least one tool to send.
-                _send_kwargs: Dict[str, Any] = {"messages": current_messages, "stream": False}
+                _send_kwargs: Dict[str, Any] = {"messages": messages_for_send, "stream": False}
                 if openai_tools:
                     _send_kwargs["tools"] = openai_tools
                 response = await asyncio.to_thread(provider.send, **_send_kwargs)
@@ -482,7 +498,7 @@ class ToolManager:
                     # Graceful degradation: call without tools and return
                     response = await asyncio.to_thread(
                         provider.send,
-                        messages=current_messages,
+                        messages=messages_for_send,
                         stream=False
                     )
                     final_msg = AIMessage(
@@ -562,7 +578,7 @@ class ToolManager:
             "The conversation may be stuck in a loop."
         )
     
-    async def execute_loop_stream(self, provider: Any, messages: List["Message"], model_uri: str):
+    async def execute_loop_stream(self, provider: Any, messages: List["Message"], model_uri: str, round_context_fn: Optional[Callable[[List["Message"], int], List["Message"]]] = None):
         """
         Execute LLM + MCP tool calling loop with streaming support.
         
@@ -577,6 +593,8 @@ class ToolManager:
             provider: LLM Provider instance
             messages: Message list
             model_uri: Model URI
+            round_context_fn: Optional callback invoked before every round
+                (each provider.send()).  See ``execute_loop`` for details.
         
         Yields:
             tuple: (MessageChunk, all_new_messages_so_far)
@@ -600,6 +618,13 @@ class ToolManager:
         openai_tools = self._get_openai_tools()
         
         for iteration in range(self.max_iterations):
+            # Round-scoped context handling (optional): compress in-flight
+            # history right before every streaming LLM call.
+            if round_context_fn is not None:
+                messages_for_send = round_context_fn(current_messages, iteration)
+            else:
+                messages_for_send = current_messages
+
             accumulated_content = ""
             accumulated_reasoning_content = ""
             accumulated_tool_calls = []
@@ -609,7 +634,7 @@ class ToolManager:
                 # Get stream iterator synchronously in thread
                 def _get_stream():
                     # Anthropic rejects tools=[] — only include when non-empty
-                    _kwargs: Dict[str, Any] = {"messages": current_messages, "stream": True}
+                    _kwargs: Dict[str, Any] = {"messages": messages_for_send, "stream": True}
                     if openai_tools:
                         _kwargs["tools"] = openai_tools
                     return provider.send(**_kwargs)
@@ -623,7 +648,7 @@ class ToolManager:
                     # Graceful degradation: streaming without tools
                     def _get_fallback_stream():
                         return provider.send(
-                            messages=current_messages,
+                            messages=messages_for_send,
                             stream=True
                         )
                     stream = await asyncio.to_thread(_get_fallback_stream)
@@ -779,7 +804,8 @@ class ToolManager:
         self,
         provider: Any,
         messages: List["Message"],
-        model_uri: str
+        model_uri: str,
+        round_context_fn: Optional[Callable[[List["Message"], int], List["Message"]]] = None,
     ):
         """
         Execute LLM + tool calling loop with event stream support.
@@ -804,6 +830,8 @@ class ToolManager:
             provider: LLM Provider instance
             messages: Message list
             model_uri: Model URI
+            round_context_fn: Optional callback invoked before every round
+                (each provider.send()).  See ``execute_loop`` for details.
         
         Yields:
             StreamEvent: MessageChunk, ToolCallStartEvent, ToolCallSuccessEvent, ToolCallErrorEvent, or ConversationCompleteEvent
@@ -827,6 +855,13 @@ class ToolManager:
         openai_tools = self._get_openai_tools()
         
         for iteration in range(self.max_iterations):
+            # Round-scoped context handling (optional): compress in-flight
+            # history right before every event-streaming LLM call.
+            if round_context_fn is not None:
+                messages_for_send = round_context_fn(current_messages, iteration)
+            else:
+                messages_for_send = current_messages
+
             accumulated_content = ""
             accumulated_reasoning_content = ""
             accumulated_tool_calls = []
@@ -839,7 +874,7 @@ class ToolManager:
                 # Get stream iterator synchronously in thread
                 def _get_stream():
                     # Anthropic rejects tools=[] — only include when non-empty
-                    _kwargs: Dict[str, Any] = {"messages": current_messages, "stream": True}
+                    _kwargs: Dict[str, Any] = {"messages": messages_for_send, "stream": True}
                     if openai_tools:
                         _kwargs["tools"] = openai_tools
                     return provider.send(**_kwargs)
@@ -853,7 +888,7 @@ class ToolManager:
                     # Graceful degradation: streaming without tools
                     def _get_fallback_stream():
                         return provider.send(
-                            messages=current_messages,
+                            messages=messages_for_send,
                             stream=True
                         )
                     stream = await asyncio.to_thread(_get_fallback_stream)

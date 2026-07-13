@@ -28,7 +28,7 @@ class NoopContextHandler(BaseContextHandler):
         """Initialize the noop handler."""
         super().__init__()
     
-    def handle(
+    def handle_turn(
         self,
         messages: List[Message],
         *,

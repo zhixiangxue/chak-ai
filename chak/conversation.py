@@ -87,6 +87,10 @@ class _ToolConfig:
 
         def __init__(self):
             self._max_iterations = 50
+            # Back-reference set by Conversation after construction, so that
+            # fluent changes can propagate to the live ToolManager (mirrors
+            # Executor.use() below).
+            self._owner: Optional["Conversation"] = None
 
         @property
         def max_iterations(self) -> int:
@@ -104,6 +108,12 @@ class _ToolConfig:
             if n < 1:
                 raise ValueError("max_iterations must be >= 1")
             self._max_iterations = n
+            # Propagate to live ToolManager if Conversation is already initialized.
+            # ToolManager caches max_iterations at construction time, so without
+            # this hop a post-construction ``conv.tool.loop.max(...)`` would be
+            # silently ignored by the running loop.
+            if self._owner is not None and self._owner._tool_manager is not None:
+                self._owner._tool_manager.max_iterations = n
 
         def unlimited(self) -> None:
             """Remove the iteration limit entirely.
@@ -113,6 +123,9 @@ class _ToolConfig:
             """
             import sys
             self._max_iterations = sys.maxsize
+            # Propagate to live ToolManager (see ``max`` for rationale).
+            if self._owner is not None and self._owner._tool_manager is not None:
+                self._owner._tool_manager.max_iterations = sys.maxsize
 
     class Executor:
         """Fluent config for tool execution mode."""
@@ -390,6 +403,9 @@ class Conversation:
         self._hitl_handler: Optional["HITLHandler"] = hitl_handler
         # Wire back-reference so fluent Executor.use() can propagate to live ToolManager
         self.tool.executor._owner = self
+        # Same for Loop.max() / Loop.unlimited() — without this the ToolManager
+        # would keep the max_iterations snapshotted at construction time.
+        self.tool.loop._owner = self
         
         # Initialize tools if provided
         if tools:
@@ -1331,7 +1347,8 @@ class Conversation:
         final_message, new_messages = await self._tool_manager.execute_loop(
             provider=self.provider,
             messages=messages,
-            model_uri=self.model_uri
+            model_uri=self.model_uri,
+            round_context_fn=self._make_round_context_fn(),
         )
         # Add all new messages (including intermediate AIMessage + ToolMessage) to conversation history
         self.messages.extend(new_messages)
@@ -1667,7 +1684,8 @@ class Conversation:
                 async for chunk, new_messages in self._tool_manager.execute_loop_stream(
                     provider=self.provider,
                     messages=messages_to_send,
-                    model_uri=self.model_uri
+                    model_uri=self.model_uri,
+                    round_context_fn=self._make_round_context_fn(),
                 ):
                     final_messages = new_messages  # Keep updating with latest
                     yield chunk
@@ -1740,7 +1758,8 @@ class Conversation:
                 async for event in self._tool_manager.execute_loop_with_events(
                     provider=self.provider,
                     messages=messages_to_send,
-                    model_uri=self.model_uri
+                    model_uri=self.model_uri,
+                    round_context_fn=self._make_round_context_fn(),
                 ):
                     # Intercept ConversationCompleteEvent (internal use only)
                     if isinstance(event, ConversationCompleteEvent):
@@ -1885,6 +1904,27 @@ class Conversation:
         )
         
         return context_messages
+    
+    def _make_round_context_fn(self):
+        """Build the round-scoped context callback passed to the tool loop.
+
+        Returns a closure ``fn(current_messages, round_index) -> messages``
+        that delegates to ``self.context_handler.call_for_round(...)``.
+        The default :meth:`BaseContextHandler.handle_round` is a no-op, so
+        handlers that don't opt in cost nothing beyond a deep-copy per
+        round (kept for symmetry with turn-level compression).
+        """
+        handler = self.context_handler
+        conv_id = self.id
+
+        def _round_context_fn(current_messages: List[Message], round_index: int) -> List[Message]:
+            return handler.call_for_round(
+                current_messages,
+                conversation_id=conv_id,
+                round_index=round_index,
+            )
+
+        return _round_context_fn
     
     def clear(self):
         """Clear conversation history."""
