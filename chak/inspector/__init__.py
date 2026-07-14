@@ -62,9 +62,11 @@ class _ConvSlot:
         self.last_sig: Optional[tuple] = None
         self.version: int = 0
         self.attached_at: float = time.time()
-        # "Running" = mid-turn. Recomputed on every poll from the current
-        # message tail; see ``_infer_running``. Surfaced to the browser so
-        # the sidebar can render a spinner next to active convs.
+        # "Running" = a turn is currently in flight. Flipped True/False
+        # by hooks we install on ``conv.hook.before_send`` /
+        # ``conv.hook.after_send`` (see ``_install_running_hooks``).
+        # This is an authoritative signal from chak's own turn lifecycle,
+        # not a heuristic — no message-tail guessing required.
         self.is_running: bool = False
 
 
@@ -83,11 +85,6 @@ class _Registry:
         # the /convs listing (so a newly-attached conv shows up in the tab
         # bar without a manual refresh).
         self.roster_version: int = 0
-
-    def snapshot_ids(self) -> List[str]:
-        # Snapshot under lock; keys() view is unsafe to iterate lazily.
-        with _LOCK:
-            return list(self.slots.keys())
 
     def snapshot_roster(self) -> List[dict]:
         """Public roster snapshot used by the ``/convs`` REST endpoint.
@@ -169,39 +166,33 @@ def _snapshot_signature(messages: List[Any]) -> tuple:
     return tuple(sig)
 
 
-def _infer_running(messages: List[dict]) -> bool:
-    """Heuristic: is the conversation currently mid-turn?
+def _install_running_hooks(slot: _ConvSlot) -> None:
+    """Track turn boundaries via chak's ``before_send`` / ``after_send`` hooks.
 
-    A chak turn is "complete" when the tail message is an ``assistant``
-    reply with no pending tool_calls. Anything else — an unanswered
-    user prompt, an assistant message whose tool_calls are still waiting
-    for results, or a tool result awaiting the next assistant hop —
-    means the agent loop is expected to append at least one more
-    message shortly.
+    This gives an authoritative "a turn is in flight" signal straight
+    from ``Conversation``'s own lifecycle, replacing the older approach
+    of guessing from the message-tail shape. ``after_send`` is invoked
+    by chak inside ``finally`` blocks on the streaming/event paths and
+    directly after the model call on non-stream paths, so both success
+    and normal error paths reliably clear the flag.
 
-    This is a *conservative* signal derived purely from the message
-    tail; it doesn't require any hook into chak's internals. If the
-    process is genuinely idle but happens to be sitting on a
-    tool_call-terminated turn (e.g. user hit Ctrl+C), we'll still
-    report "running" — that's fine, the sidebar's spinner just means
-    "the model owes us another message here".
+    Caveat: hooks fire in registration order. Registering here at
+    ``watch()`` time means ours run before any hook the user adds
+    afterwards — so a later user hook raising cannot prevent our
+    marker from running. Users who add hooks *before* ``watch()`` and
+    whose hooks raise may leave ``is_running`` stuck True; that is an
+    acceptable trade for the massive simplification vs the heuristic.
     """
-    if not messages:
-        return False
-    last = messages[-1]
-    role = last.get("role")
-    if role == "assistant":
-        # A final assistant reply (no tool_calls) terminates the turn.
-        return bool(last.get("tool_calls"))
-    if role in ("user", "tool"):
-        # The next message is owed by the assistant — still running.
-        return True
-    if role == "system":
-        # A conv containing only a system prompt is idle by definition.
-        return False
-    # Unknown role — err on the side of "running" so we don't drop the
-    # spinner mid-flight for a message shape we don't recognize.
-    return True
+    async def _mark_running(conv, request, **kwargs):
+        with _LOCK:
+            slot.is_running = True
+
+    async def _mark_idle(conv, request, **kwargs):
+        with _LOCK:
+            slot.is_running = False
+
+    slot.conv.hook.before_send(_mark_running)
+    slot.conv.hook.after_send(_mark_idle)
 
 
 def _infer_model_uri(slot: _ConvSlot) -> Optional[str]:
@@ -227,11 +218,13 @@ def _infer_model_uri(slot: _ConvSlot) -> Optional[str]:
     return None
 
 
-def _make_poller(slot: _ConvSlot) -> threading.Thread:
+def _make_poller(conv_id: str, slot: _ConvSlot) -> threading.Thread:
     """Spawn a daemon poller for one conversation slot.
 
     Kept as a per-conv thread instead of a shared loop so a hung/slow
-    ``conv.messages`` access never starves siblings.
+    ``conv.messages`` access never starves siblings. This loop is now
+    purely about detecting message-list changes; the running flag is
+    driven by hooks (see ``_install_running_hooks``).
     """
     poll_interval = _REG.poll_interval
 
@@ -242,22 +235,17 @@ def _make_poller(slot: _ConvSlot) -> threading.Thread:
                 sig = _snapshot_signature(current)
                 if sig != slot.last_sig:
                     dumped = [_serialize(m) for m in current]
-                    running = _infer_running(dumped)
                     with _LOCK:
                         slot.messages = dumped
                         slot.last_sig = sig
                         slot.version += 1
-                        slot.is_running = running
             except Exception:
                 # Never let poller crash — inspector must not affect the app.
                 pass
             time.sleep(poll_interval)
 
-    cid_short = next(
-        (cid for cid, s in _REG.slots.items() if s is slot), "?"
-    )[:8]
     t = threading.Thread(
-        target=_poll, daemon=True, name=f"chak-inspector-poll-{cid_short}"
+        target=_poll, daemon=True, name=f"chak-inspector-poll-{conv_id[:8]}"
     )
     t.start()
     return t
@@ -351,7 +339,8 @@ def watch(
         _REG.slots[conv_id] = slot
         _REG.roster_version += 1
 
-    _make_poller(slot)
+    _install_running_hooks(slot)
+    _make_poller(conv_id, slot)
 
     url = f"http://{host if host != '0.0.0.0' else '127.0.0.1'}:{_REG.port}"
     if first_call:
