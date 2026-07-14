@@ -1,0 +1,1216 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Chak Inspector</title>
+    <!-- Markdown renderer for message content. Falls back gracefully to plain
+         text when the CDN is unreachable (offline / restricted networks). -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <style>
+        /* ─── Monochrome palette ────────────────────────────────────
+           Design intent: pure grayscale. Structure comes from spacing,
+           weight, hairline rules, and a left-edge accent. No fills,
+           no rounded corners, no colored surfaces. */
+        :root {
+            --bg:        #ffffff;
+            --surface:   #ffffff;
+            --line:      #e6e6e6;
+            --line-2:    #d0d0d0;
+            --text:      #111111;
+            --text-2:    #4a4a4a;
+            --text-3:    #8a8a8a;
+            --text-4:    #b5b5b5;
+            --accent:    #000000;
+
+            /* Role palette — muted, deep, professional. Each role gets a
+               distinct hue (solid badge fill + matching left-border) so a
+               glance at the color stripe conveys role without reading text.
+               Kept saturation low to avoid the "toy" look. */
+            --role-system:   #737373;  /* neutral gray */
+            --role-user:     #0a0a0a;  /* near-black */
+            --role-assist:   #1e40af;  /* deep blue */
+            --role-req:      #b45309;  /* deep amber — outgoing tool call */
+            --role-resp:     #15803d;  /* deep green — tool call result   */
+
+            --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+        }
+
+        * { box-sizing: border-box; }
+        html, body {
+            margin: 0; padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI",
+                         Roboto, "Helvetica Neue", "PingFang SC", "Microsoft YaHei",
+                         sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            height: 100%;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+        }
+
+        /* ─── Two-column shell (sidebar | main) ────────────────
+           The body becomes a flex row; the sidebar is a pinned rail on
+           the left (brand + conv switcher) and everything else lives in
+           ``.main-col`` on the right. ``min-width: 0`` on the main col is
+           the classic flex-child fix that prevents wide code blocks or
+           long unbreakable tokens from pushing the sidebar off-screen. */
+        body {
+            /* Sidebar is ``position: fixed`` (see below), so ``body`` no
+               longer needs flex — the main column reserves space for
+               the sidebar via ``margin-left``. Fixed positioning avoids
+               the ``sticky`` quirks with flex ``stretch`` / ancestor
+               heights, and the sidebar is guaranteed to stay anchored
+               no matter how tall the message stream grows. */
+            min-height: 100vh;
+        }
+        aside.sidebar {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 232px;
+            height: 100vh;
+            overflow-y: auto;
+            border-right: 1px solid var(--line);
+            background: var(--bg);
+            display: flex;
+            flex-direction: column;
+            /* Sit above the message stream in case a wide Markdown code
+               block would otherwise render on top of the sidebar. */
+            z-index: 10;
+        }
+        .main-col {
+            /* Reserve horizontal space for the fixed sidebar. */
+            margin-left: 232px;
+            min-width: 0;
+        }
+
+        /* ─── Header (sticky) ───────────────────────────────────── */
+        header.top {
+            /* Header flows with the page instead of ``position: sticky``.
+               A pinned banner felt heavy once the stats table grew to
+               several rows; letting it scroll away restores focus to the
+               message stream. */
+            background: var(--bg);
+            border-bottom: 1px solid var(--line);
+        }
+        .top-bar {
+            /* Fixed height so this row visually aligns with the sidebar's
+               ``.brand`` block — both are the "page header row" and their
+               bottom borders must land on the same pixel to avoid the
+               tell-tale mis-aligned seam. */
+            display: flex; align-items: center; gap: 16px;
+            height: 52px;
+            padding: 0 28px;
+            border-bottom: 1px solid var(--line);
+        }
+        .brand {
+            /* Match .top-bar height exactly so the bottom borders align
+               across the sidebar / main-col boundary. */
+            display: flex;
+            align-items: center;
+            height: 52px;
+            padding: 0 20px;
+            border-bottom: 1px solid var(--line);
+            font-size: 12px;
+            font-weight: 600;
+            letter-spacing: 0.14em;
+            text-transform: uppercase;
+            color: var(--text);
+            font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif;
+        }
+        .brand::before {
+            content: "";
+            display: inline-block;
+            width: 8px; height: 8px;
+            background: var(--accent);
+            margin-right: 10px;
+            vertical-align: middle;
+            transform: translateY(-1px);
+        }
+        .top-meta {
+            margin-left: auto;
+            font-size: 11px;
+            color: var(--text-3);
+            display: flex; align-items: center; gap: 12px;
+            font-family: var(--mono);
+            letter-spacing: 0.02em;
+        }
+        .top-meta .sep { color: var(--line-2); }
+        .dot {
+            display: inline-block;
+            width: 6px; height: 6px;
+            background: var(--text-4);
+            transition: background 0.2s, box-shadow 0.2s;
+        }
+        .dot.live {
+            background: var(--text);
+            box-shadow: 0 0 0 3px rgba(0,0,0,0.06);
+        }
+
+        /* Export button in header — sharp corners, monochrome, matches
+           the utilitarian devtool feel. */
+        .btn {
+            appearance: none;
+            background: var(--surface);
+            color: var(--text);
+            border: 1px solid var(--line-2);
+            border-radius: 0;
+            padding: 5px 12px;
+            font-family: var(--mono);
+            font-size: 10.5px;
+            font-weight: 600;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+            cursor: pointer;
+            transition: background 0.15s, color 0.15s, border-color 0.15s;
+        }
+        .btn:hover { background: var(--accent); color: #fff; border-color: var(--accent); }
+        .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+        /* ─── Stats table (per-model_uri token totals) ──────────
+           One row per `provider/model` so cost accounting is trivial:
+           different models on the same provider are billed separately, and
+           mixed-model conversations (failover, router, agent handoff) show
+           each price point on its own line. */
+        .stats-wrap {
+            /* ``.top-bar`` above owns the separator now, so no border-top
+               here — would double up as two 1px lines. */
+            overflow-x: auto;
+            max-height: 260px;
+            overflow-y: auto;
+        }
+        .stats-empty {
+            padding: 10px 28px;
+            font-family: var(--mono);
+            font-size: 11px;
+            color: var(--text-4);
+            letter-spacing: 0.04em;
+        }
+        table.stats {
+            width: 100%;
+            border-collapse: collapse;
+            font-family: var(--mono);
+            font-size: 11.5px;
+        }
+        table.stats thead th {
+            background: var(--bg);
+            font-size: 9.5px;
+            font-weight: 600;
+            letter-spacing: 0.16em;
+            text-transform: uppercase;
+            color: var(--text-3);
+            text-align: left;
+            padding: 8px 16px;
+            border-bottom: 1px solid var(--line);
+            white-space: nowrap;
+        }
+        table.stats thead th.num { text-align: right; }
+        table.stats tbody td {
+            padding: 8px 16px;
+            border-bottom: 1px solid var(--line);
+            white-space: nowrap;
+            color: var(--text);
+        }
+        table.stats tbody tr:last-child td { border-bottom: none; }
+        table.stats tbody tr.total td {
+            background: #fafafa;
+            font-weight: 600;
+            color: var(--text);
+            border-top: 1px solid var(--line-2);
+        }
+        table.stats td.num { text-align: right; font-variant-numeric: tabular-nums; }
+        table.stats td.dim { color: var(--text-3); }
+        table.stats td:first-child { padding-left: 28px; }
+        table.stats td:last-child, table.stats th:last-child { padding-right: 28px; }
+        table.stats .model-uri {
+            color: var(--text);
+            font-weight: 500;
+        }
+        table.stats .zero { color: var(--text-4); }
+
+        /* ─── Main (fullscreen) ─────────────────────────────────── */
+        main {
+            width: 100%;
+            padding: 28px 28px 96px;
+        }
+
+        /* ─── Turn grouping ─────────────────────────────────────── */
+        .turn { margin-bottom: 40px; }
+        .turn-header {
+            display: flex; align-items: baseline; gap: 14px;
+            padding-bottom: 10px;
+            margin-bottom: 16px;
+            border-bottom: 1px solid var(--line);
+        }
+        .turn-header .turn-num {
+            font-family: var(--mono);
+            font-size: 22px;
+            font-weight: 500;
+            letter-spacing: -0.02em;
+            color: var(--text);
+            line-height: 1;
+        }
+        .turn-header .turn-label {
+            font-size: 11px;
+            font-weight: 600;
+            letter-spacing: 0.14em;
+            text-transform: uppercase;
+            color: var(--text);
+        }
+        .turn-header .turn-id {
+            font-family: var(--mono);
+            font-size: 11px;
+            color: var(--text-3);
+        }
+        .turn-header .turn-count {
+            margin-left: auto;
+            font-family: var(--mono);
+            font-size: 11px;
+            color: var(--text-3);
+        }
+        .turn.ungrouped .turn-header .turn-num {
+            font-size: 11px;
+            font-weight: 600;
+            letter-spacing: 0.14em;
+            text-transform: uppercase;
+            color: var(--text-2);
+        }
+
+        /* ─── Message card ──────────────────────────────────────────
+           All cards share the same neutral surface (pure white). The left
+           edge carries the role color (solid, matches the badge). Sharp
+           corners everywhere. */
+        .msg {
+            background: var(--surface);
+            border: 1px solid var(--line);
+            border-left-width: 3px;
+            border-left-style: solid;
+            border-radius: 0;
+            margin-bottom: 12px;
+            padding: 14px 18px;
+            font-size: 13.5px;
+            line-height: 1.7;
+        }
+        .msg.role-user       { border-left-color: var(--role-user); }
+        .msg.role-assistant  { border-left-color: var(--role-assist); }
+        .msg.tool-call-msg   { border-left-color: var(--role-req); }
+        .msg.tool-result     { border-left-color: var(--role-resp); }
+        .msg.system-msg      { border-left-color: var(--role-system); }
+
+        .msg .head {
+            display: flex; align-items: center; gap: 10px;
+            flex-wrap: wrap;
+            margin-bottom: 10px;
+        }
+
+        /* Every role uses a solid, filled badge whose color matches the
+           card's left border. Text is white for contrast. */
+        .badge {
+            display: inline-flex; align-items: center; gap: 6px;
+            padding: 3px 10px;
+            border-radius: 0;
+            font-size: 10px;
+            font-weight: 600;
+            letter-spacing: 0.14em;
+            text-transform: uppercase;
+            font-family: var(--mono);
+            color: #ffffff;
+            background: var(--accent);
+            border: 1px solid var(--accent);
+        }
+        .badge.role-system {
+            background: var(--role-system); border-color: var(--role-system);
+        }
+        .badge.role-user {
+            background: var(--role-user); border-color: var(--role-user);
+        }
+        .badge.role-assistant {
+            background: var(--role-assist); border-color: var(--role-assist);
+        }
+        .badge.role-req {
+            background: var(--role-req); border-color: var(--role-req);
+        }
+        .badge.role-resp {
+            background: var(--role-resp); border-color: var(--role-resp);
+        }
+
+        .subtle {
+            color: var(--text-3);
+            font-family: var(--mono);
+            font-size: 11px;
+        }
+        .model-tag {
+            font-family: var(--mono);
+            font-size: 11px;
+            color: var(--text-2);
+            padding: 2px 8px;
+            border: 1px solid var(--line);
+        }
+        .tok {
+            font-family: var(--mono);
+            font-size: 11px;
+            color: var(--text-3);
+            white-space: nowrap;
+        }
+        .tok .arrow { color: var(--text-4); }
+        .tok .num { color: var(--text-2); }
+        .tok + .tok { margin-left: 4px; }
+
+        .ts {
+            margin-left: auto;
+            color: var(--text-4);
+            font-family: var(--mono);
+            font-size: 10.5px;
+        }
+
+        /* ─── Content (markdown rendered) ────────────────────────── */
+        .content {
+            color: var(--text);
+            font-size: 14px;
+            line-height: 1.75;
+        }
+        .content.empty {
+            color: var(--text-4);
+            font-style: italic;
+            font-size: 12.5px;
+        }
+        .content > *:first-child { margin-top: 0; }
+        .content > *:last-child  { margin-bottom: 0; }
+        .content p { margin: 0 0 10px; }
+        .content ul, .content ol { margin: 8px 0 8px 22px; padding: 0; }
+        .content li { margin: 3px 0; }
+        .content strong { font-weight: 600; color: var(--text); }
+        .content code {
+            background: transparent;
+            border: 1px solid var(--line);
+            padding: 1px 6px;
+            border-radius: 0;
+            font-family: var(--mono);
+            font-size: 12px;
+            color: var(--text);
+        }
+        .content pre {
+            background: var(--accent);
+            color: #f0f0f0;
+            padding: 12px 14px;
+            border-radius: 0;
+            overflow-x: auto;
+            font-size: 12px;
+            line-height: 1.6;
+            margin: 10px 0;
+        }
+        .content pre code {
+            background: transparent;
+            border: none;
+            padding: 0;
+            color: inherit;
+        }
+        .content h1, .content h2, .content h3, .content h4 {
+            margin: 16px 0 8px;
+            font-weight: 600;
+            letter-spacing: -0.01em;
+        }
+        .content h1 { font-size: 18px; }
+        .content h2 { font-size: 16px; }
+        .content h3 { font-size: 14.5px; }
+        .content h4 { font-size: 13.5px; color: var(--text-2); }
+        .content table {
+            border-collapse: collapse;
+            margin: 10px 0;
+            font-size: 12.5px;
+        }
+        .content th, .content td {
+            border: 1px solid var(--line);
+            padding: 6px 10px;
+            text-align: left;
+        }
+        .content th { font-weight: 600; }
+        .content blockquote {
+            margin: 10px 0;
+            padding: 4px 14px;
+            border-left: 2px solid var(--line-2);
+            color: var(--text-2);
+        }
+        .content a { color: var(--text); text-decoration: underline; text-underline-offset: 2px; }
+
+        /* ─── Reasoning block ────────────────────────────────────── */
+        .reasoning {
+            margin-top: 10px;
+            padding: 10px 12px;
+            border: 1px solid var(--line);
+            border-radius: 0;
+            font-size: 12px;
+            color: var(--text-2);
+            white-space: pre-wrap;
+            font-family: var(--mono);
+            line-height: 1.6;
+        }
+        .reasoning-label {
+            font-weight: 600;
+            color: var(--text-4);
+            font-size: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.14em;
+            margin-bottom: 6px;
+        }
+
+        /* ─── Tool calls (nested inside assistant tool-call msg) ─ */
+        .tool-calls { margin-top: 6px; }
+        .tool-call {
+            border: 1px solid var(--line);
+            border-radius: 0;
+            padding: 10px 12px;
+            margin-top: 8px;
+        }
+        .tool-call .fn-line {
+            display: flex; align-items: center; gap: 10px;
+            margin-bottom: 6px;
+        }
+        .tool-call .fn {
+            font-weight: 600;
+            font-family: var(--mono);
+            font-size: 12.5px;
+            color: var(--text);
+        }
+        .tool-call .call-id {
+            font-family: var(--mono);
+            font-size: 10.5px;
+            color: var(--text-4);
+        }
+        .tool-call pre {
+            margin: 0;
+            padding: 8px 10px;
+            border: 1px solid var(--line);
+            border-radius: 0;
+            font-family: var(--mono);
+            font-size: 11.5px;
+            line-height: 1.6;
+            color: var(--text);
+            white-space: pre-wrap;
+            word-break: break-word;
+            overflow-x: auto;
+        }
+
+        /* ─── Tool result body ────────────────────────────────────── */
+        .tool-body {
+            border: 1px solid var(--line);
+            border-radius: 0;
+            padding: 10px 12px;
+            font-family: var(--mono);
+            font-size: 11.5px;
+            color: var(--text);
+            white-space: pre-wrap;
+            word-break: break-word;
+            max-height: 340px;
+            overflow-y: auto;
+            line-height: 1.6;
+        }
+
+        .attachments {
+            margin-top: 10px;
+            display: flex; flex-wrap: wrap; gap: 6px;
+        }
+        .att {
+            padding: 3px 9px;
+            border: 1px solid var(--line);
+            border-radius: 0;
+            color: var(--text-2);
+            font-size: 11px;
+            font-family: var(--mono);
+        }
+
+        .multipart {
+            margin-top: 8px;
+            padding-left: 12px;
+            border-left: 1px solid var(--line);
+        }
+        .part-type {
+            font-size: 10px;
+            color: var(--text-4);
+            text-transform: uppercase;
+            letter-spacing: 0.14em;
+            margin-bottom: 6px;
+            font-family: var(--mono);
+        }
+
+        .empty-state {
+            text-align: center;
+            color: var(--text-4);
+            padding: 80px 20px;
+            font-size: 12px;
+            font-family: var(--mono);
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+        }
+
+        /* Sharp, minimal scrollbars. */
+        ::-webkit-scrollbar { width: 10px; height: 10px; }
+        ::-webkit-scrollbar-thumb {
+            background: var(--line-2);
+            border: 2px solid var(--bg);
+        }
+        ::-webkit-scrollbar-thumb:hover { background: var(--text-3); }
+
+        /* ─── Conv switcher (vertical list inside the sidebar) ──── */
+        .conv-tabs {
+            display: flex;
+            flex-direction: column;
+            /* No border-top: the .brand block above already has a
+               border-bottom that acts as the visual seam. */
+        }
+        .conv-tabs.hidden {
+            /* Legacy: kept so a single-conv session in an older cached
+               tab doesn't blow up. Current render logic always shows
+               the list even for a single conv so the sidebar always
+               has content and the layout never jumps. */
+            display: none;
+        }
+        .conv-tab {
+            appearance: none;
+            background: transparent;
+            border: none;
+            border-bottom: 1px solid var(--line);
+            padding: 12px 20px 12px 22px;
+            font-family: var(--mono);
+            font-size: 11px;
+            letter-spacing: 0.04em;
+            color: var(--text-3);
+            cursor: pointer;
+            white-space: nowrap;
+            text-align: left;
+            display: flex;
+            flex-direction: column;
+            align-items: flex-start;
+            gap: 3px;
+            transition: color 0.1s, background 0.1s;
+            position: relative;
+            width: 100%;
+        }
+        .conv-tab:hover { color: var(--text); background: #fafafa; }
+        .conv-tab.active {
+            color: var(--text);
+            background: #fafafa;
+        }
+        /* Active indicator: solid strip on the LEFT edge (used to live
+           on the bottom when tabs were a horizontal bar). */
+        .conv-tab.active::after {
+            content: '';
+            position: absolute;
+            left: 0; top: 0; bottom: 0;
+            width: 2px;
+            background: var(--text);
+        }
+        .conv-tab .cid {
+            font-size: 10.5px;
+            font-weight: 600;
+            letter-spacing: 0.06em;
+            color: inherit;
+        }
+        .conv-tab .uri {
+            font-size: 10px;
+            color: var(--text-4);
+            letter-spacing: 0.02em;
+            /* URIs can be long — clip with ellipsis rather than wrap. */
+            max-width: 100%;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .conv-tab.active .uri { color: var(--text-3); }
+
+        /* Running-state spinner. Shown inline next to the cid when the
+           server's ``_infer_running`` heuristic thinks the conv is
+           mid-turn (unanswered user prompt, pending tool_calls, or a
+           tool result awaiting the next assistant hop). */
+        .conv-tab .spinner {
+            display: inline-block;
+            width: 9px;
+            height: 9px;
+            margin-left: 8px;
+            border: 1.5px solid var(--line-2);
+            border-top-color: var(--text);
+            border-radius: 50%;
+            vertical-align: -1px;
+            animation: chak-spin 0.75s linear infinite;
+        }
+        @keyframes chak-spin {
+            to { transform: rotate(360deg); }
+        }
+        /* ``.badge-count`` was removed from the tab template but the
+           CSS is kept in case we bring back a labeled indicator later.
+           No selectors reference it in the current markup, so it's
+           dead-but-harmless. */
+    </style>
+</head>
+<body>
+    <aside class="sidebar">
+        <span class="brand">chak inspector</span>
+        <div class="conv-tabs" id="convTabs"></div>
+    </aside>
+    <div class="main-col">
+        <header class="top">
+            <div class="top-bar">
+                <div class="top-meta">
+                    <span id="count">0 msgs</span>
+                    <span class="sep">·</span>
+                    <span class="dot" id="dot"></span>
+                    <span id="status">connecting</span>
+                    <span class="sep">·</span>
+                    <button class="btn" id="exportBtn" title="Download conversation as JSON">export</button>
+                </div>
+            </div>
+            <div class="stats-wrap" id="stats">
+                <div class="stats-empty">no llm calls yet</div>
+            </div>
+        </header>
+        <main id="root">
+            <div class="empty-state">waiting for messages…</div>
+        </main>
+    </div>
+
+    <script>
+        const root = document.getElementById('root');
+        const countEl = document.getElementById('count');
+        const statusEl = document.getElementById('status');
+        const dotEl = document.getElementById('dot');
+        const statsEl = document.getElementById('stats');
+
+        // Markdown rendering: use marked.js when available, otherwise degrade
+        // to escaped-plaintext so restricted networks don't break the viewer.
+        const md = (typeof marked !== 'undefined')
+            ? (s) => marked.parse(s, { breaks: true, gfm: true })
+            : (s) => `<pre>${escapeHtml(s)}</pre>`;
+
+        function escapeHtml(s) {
+            return String(s ?? '')
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;');
+        }
+
+        function fmtTs(iso) {
+            if (!iso) return '';
+            try { return new Date(iso).toLocaleTimeString('en-GB'); }
+            catch { return ''; }
+        }
+
+        function shortId(id) {
+            return id ? String(id).slice(0, 8) : '';
+        }
+
+        function fmtNum(n) {
+            if (n == null) return '0';
+            n = Number(n) || 0;
+            return n.toLocaleString('en-US');
+        }
+
+        function renderContent(content) {
+            if (content == null || content === '') {
+                return '<div class="content empty">(no content)</div>';
+            }
+            if (typeof content === 'string') {
+                return `<div class="content">${md(content)}</div>`;
+            }
+            if (Array.isArray(content)) {
+                return content.map(part => {
+                    const type = part.type || 'unknown';
+                    let body = '';
+                    if (type === 'text') {
+                        body = md(part.text || '');
+                    } else if (type === 'image_url') {
+                        const url = (part.image_url && part.image_url.url) || '';
+                        body = escapeHtml(url.slice(0, 200)) + (url.length > 200 ? '…' : '');
+                    } else {
+                        body = `<pre>${escapeHtml(JSON.stringify(part, null, 2))}</pre>`;
+                    }
+                    return `<div class="multipart">
+                        <div class="part-type">${escapeHtml(type)}</div>
+                        <div class="content">${body}</div>
+                    </div>`;
+                }).join('');
+            }
+            return `<div class="content">${escapeHtml(JSON.stringify(content))}</div>`;
+        }
+
+        function renderToolCalls(tcs) {
+            if (!tcs || !tcs.length) return '';
+            const items = tcs.map(tc => {
+                const fn = (tc.function && tc.function.name) || '?';
+                const args = (tc.function && tc.function.arguments) || '';
+                let pretty = args;
+                try { pretty = JSON.stringify(JSON.parse(args), null, 2); } catch {}
+                return `<div class="tool-call">
+                    <div class="fn-line">
+                        <span class="fn">${escapeHtml(fn)}</span>
+                        <span class="call-id">${escapeHtml(shortId(tc.id))}</span>
+                    </div>
+                    <pre>${escapeHtml(pretty)}</pre>
+                </div>`;
+            }).join('');
+            return `<div class="tool-calls">${items}</div>`;
+        }
+
+        function renderAttachments(atts) {
+            if (!atts || !atts.length) return '';
+            const items = atts.map(a => {
+                const label = a.filename || a.mime_type || 'attachment';
+                return `<span class="att">${escapeHtml(label)}</span>`;
+            }).join('');
+            return `<div class="attachments">${items}</div>`;
+        }
+
+        /* Extract "provider/model / usage" from message metadata for the
+         * head strip. Missing values are silently dropped so head stays tidy. */
+        function renderModelAndTokens(m) {
+            const md_ = m.metadata || {};
+            const uri = modelUri(md_);
+            const usage = md_.usage || {};
+            const parts = [];
+            if (uri) {
+                parts.push(`<span class="model-tag">${escapeHtml(uri)}</span>`);
+            }
+            const pt = usage.prompt_tokens || 0;
+            const ct = usage.completion_tokens || 0;
+            const cr = usage.cache_read_input_tokens || 0;
+            const cc = usage.cache_creation_input_tokens || 0;
+            if (pt || ct) {
+                parts.push(
+                    `<span class="tok"><span class="arrow">↓</span> <span class="num">${fmtNum(pt)}</span></span>`
+                    + `<span class="tok"><span class="arrow">↑</span> <span class="num">${fmtNum(ct)}</span></span>`
+                );
+            }
+            if (cr || cc) {
+                parts.push(
+                    `<span class="tok"><span class="arrow">⇢</span> cache <span class="num">${fmtNum(cr + cc)}</span></span>`
+                );
+            }
+            return parts.join('');
+        }
+
+        /* Build chak-style `provider/model` URI from metadata.
+         *
+         * Data source priority:
+         *   1. metadata.provider_trace.resolved_{provider,model}  ← truth
+         *   2. metadata.{provider, model}                          ← fallback
+         *
+         * Rationale: for resilient / failover providers, the top-level
+         * ``metadata.provider`` and ``metadata.model`` reflect the
+         * conversation's *configured entry point* (e.g. what you asked
+         * chak for), while ``provider_trace.resolved_*`` records the
+         * upstream that actually served the request. Cost accounting
+         * has to use the resolved pair — that's what got billed.
+         *
+         * ``provider_trace`` is populated by chak itself for every
+         * assistant message, so it's the most reliable source even for
+         * providers whose SDK doesn't echo the model back (DashScope,
+         * some Ollama models, …).
+         *
+         * Returns null when neither source has anything usable, so
+         * callers can skip rendering the tag entirely.
+         */
+        function modelUri(md_) {
+            if (!md_) return null;
+            const pt = md_.provider_trace || {};
+            const p = pt.resolved_provider || md_.provider;
+            const m = pt.resolved_model    || md_.model;
+            if (p && m) return `${p}/${m}`;
+            return m || p || null;
+        }
+
+        /* Distinguish the two flavors of AIMessage:
+         *   1. content-only  → normal answer, render markdown
+         *   2. has tool_calls → the model is requesting tools, highlight it */
+        function renderMessage(m) {
+            const role = m.role || 'unknown';
+            const ts = fmtTs(m.timestamp);
+            const hasToolCalls = Array.isArray(m.tool_calls) && m.tool_calls.length > 0;
+
+            // ── Assistant requesting tool calls ─────────────────────
+            if (role === 'assistant' && hasToolCalls) {
+                const names = m.tool_calls.map(tc => (tc.function && tc.function.name) || '?').join(', ');
+                return `<div class="msg tool-call-msg">
+                    <div class="head">
+                        <span class="badge role-req">tool call request</span>
+                        ${renderModelAndTokens(m)}
+                        <span class="subtle">→ ${escapeHtml(names)}</span>
+                        <span class="ts">${escapeHtml(ts)}</span>
+                    </div>
+                    ${m.content ? renderContent(m.content) : ''}
+                    ${m.reasoning_content ? `<div class="reasoning">
+                        <div class="reasoning-label">reasoning</div>${escapeHtml(m.reasoning_content)}
+                    </div>` : ''}
+                    ${renderToolCalls(m.tool_calls)}
+                </div>`;
+            }
+
+            // ── Tool response ───────────────────────────────────────
+            if (role === 'tool') {
+                const body = (typeof m.content === 'string')
+                    ? m.content
+                    : JSON.stringify(m.content, null, 2);
+                return `<div class="msg tool-result">
+                    <div class="head">
+                        <span class="badge role-resp">tool call response</span>
+                        <span class="subtle">${escapeHtml(shortId(m.tool_call_id))}</span>
+                        <span class="ts">${escapeHtml(ts)}</span>
+                    </div>
+                    <div class="tool-body">${escapeHtml(body || '')}</div>
+                    ${renderAttachments(m.attachments)}
+                </div>`;
+            }
+
+            // ── System / User / Assistant answer (markdown) ─────────
+            const cls = role === 'system' ? 'system-msg' : `role-${role}`;
+            const badgeCls = role === 'system'    ? 'badge role-system'
+                          :  role === 'user'      ? 'badge role-user'
+                          :  role === 'assistant' ? 'badge role-assistant'
+                          :                         'badge';
+            return `<div class="msg ${cls}">
+                <div class="head">
+                    <span class="${badgeCls}">${escapeHtml(role)}</span>
+                    ${role === 'assistant' ? renderModelAndTokens(m) : ''}
+                    <span class="ts">${escapeHtml(ts)}</span>
+                </div>
+                ${renderContent(m.content)}
+                ${m.reasoning_content ? `<div class="reasoning">
+                    <div class="reasoning-label">reasoning</div>${escapeHtml(m.reasoning_content)}
+                </div>` : ''}
+                ${renderAttachments(m.attachments)}
+            </div>`;
+        }
+
+        function groupByTurn(messages) {
+            const groups = [];
+            let current = null;
+            for (const m of messages) {
+                const tid = m.turn_id || null;
+                if (!current || current.turn_id !== tid) {
+                    current = { turn_id: tid, messages: [] };
+                    groups.push(current);
+                }
+                current.messages.push(m);
+            }
+            return groups;
+        }
+
+        function renderGroups(groups) {
+            let turnNum = 0;
+            return groups.map(g => {
+                const isTurn = !!g.turn_id;
+                let header;
+                if (isTurn) {
+                    turnNum += 1;
+                    const nn = String(turnNum).padStart(2, '0');
+                    header = `<div class="turn-header">
+                         <span class="turn-num">${nn}</span>
+                         <span class="turn-label">turn</span>
+                         <span class="turn-id">${escapeHtml(shortId(g.turn_id))}</span>
+                         <span class="turn-count">${g.messages.length} msg${g.messages.length === 1 ? '' : 's'}</span>
+                       </div>`;
+                } else {
+                    header = `<div class="turn-header">
+                         <span class="turn-num">setup</span>
+                         <span class="turn-count">${g.messages.length} msg${g.messages.length === 1 ? '' : 's'}</span>
+                       </div>`;
+                }
+                const body = g.messages.map(renderMessage).join('');
+                return `<div class="turn ${isTurn ? '' : 'ungrouped'}">${header}${body}</div>`;
+            }).join('');
+        }
+
+        /* Aggregate token usage across all assistant messages, bucketed by
+         * `provider/model` (a full model_uri). Cost is model-specific, so
+         * summing per-model — not per-provider — is what actually matches a
+         * billing line item. Failover/router runs show each model on its own
+         * row instead of collapsing under one provider bucket. */
+        function aggregateStats(messages) {
+            const byUri = new Map();
+            for (const m of messages) {
+                if (m.role !== 'assistant') continue;
+                const md_ = m.metadata || {};
+                const usage = md_.usage;
+                if (!usage) continue;
+                const key = modelUri(md_) || 'unknown';
+                const b = byUri.get(key) || {
+                    uri: key, calls: 0,
+                    prompt: 0, completion: 0, cache: 0, total: 0,
+                };
+                b.calls += 1;
+                b.prompt     += usage.prompt_tokens || 0;
+                b.completion += usage.completion_tokens || 0;
+                b.cache      += (usage.cache_read_input_tokens || 0)
+                              + (usage.cache_creation_input_tokens || 0);
+                b.total      += usage.total_tokens
+                              || ((usage.prompt_tokens || 0) + (usage.completion_tokens || 0));
+                byUri.set(key, b);
+            }
+            return [...byUri.values()].sort((a, b) => b.total - a.total);
+        }
+
+        function renderStats(messages) {
+            const buckets = aggregateStats(messages);
+            if (!buckets.length) {
+                statsEl.innerHTML = '<div class="stats-empty">no llm calls yet</div>';
+                return;
+            }
+            const nz = (n) => n > 0
+                ? `<span>${fmtNum(n)}</span>`
+                : `<span class="zero">0</span>`;
+            const rows = buckets.map(b => `
+                <tr>
+                    <td><span class="model-uri">${escapeHtml(b.uri)}</span></td>
+                    <td class="num dim">${fmtNum(b.calls)}</td>
+                    <td class="num">${nz(b.prompt)}</td>
+                    <td class="num">${nz(b.completion)}</td>
+                    <td class="num">${nz(b.cache)}</td>
+                    <td class="num">${nz(b.total)}</td>
+                </tr>`).join('');
+            // Grand-total row — useful when multiple model_uris are in play.
+            const totals = buckets.reduce((a, b) => ({
+                calls: a.calls + b.calls,
+                prompt: a.prompt + b.prompt,
+                completion: a.completion + b.completion,
+                cache: a.cache + b.cache,
+                total: a.total + b.total,
+            }), { calls: 0, prompt: 0, completion: 0, cache: 0, total: 0 });
+            const totalRow = buckets.length > 1 ? `
+                <tr class="total">
+                    <td>total</td>
+                    <td class="num">${fmtNum(totals.calls)}</td>
+                    <td class="num">${fmtNum(totals.prompt)}</td>
+                    <td class="num">${fmtNum(totals.completion)}</td>
+                    <td class="num">${fmtNum(totals.cache)}</td>
+                    <td class="num">${fmtNum(totals.total)}</td>
+                </tr>` : '';
+            statsEl.innerHTML = `<table class="stats">
+                <thead>
+                    <tr>
+                        <th>model_uri</th>
+                        <th class="num">calls</th>
+                        <th class="num">in</th>
+                        <th class="num">out</th>
+                        <th class="num">cache</th>
+                        <th class="num">total</th>
+                    </tr>
+                </thead>
+                <tbody>${rows}${totalRow}</tbody>
+            </table>`;
+        }
+
+        let lastCount = 0;
+        function render(messages) {
+            renderStats(messages);
+            if (!messages.length) {
+                root.innerHTML = '<div class="empty-state">waiting for messages…</div>';
+                countEl.textContent = '0 msgs';
+                return;
+            }
+            // Deliberately no auto-scroll on new messages — users found it
+            // disruptive when reading upthread while the agent kept
+            // producing tool calls. Reading position stays put; the msg
+            // counter in the header signals new activity.
+            const groups = groupByTurn(messages);
+            root.innerHTML = renderGroups(groups);
+            countEl.textContent = messages.length + ' msg' + (messages.length === 1 ? '' : 's');
+            lastCount = messages.length;
+        }
+
+        /* ─── Multi-conversation client ────────────────────────────
+         * The server hosts N convs and exposes one SSE stream per conv at
+         * /stream/{conv_id}. This client keeps track of the currently
+         * selected conv, opens exactly one EventSource for it, and swaps
+         * the connection when the user clicks a tab.
+         *
+         * The server also stamps every SSE payload with `server_id` (per-
+         * process fingerprint) and `roster_version` (bumped whenever a
+         * new conv is attached). We use these to:
+         *   1. force a full reload when the backing process restarts, so
+         *      the browser never renders against stale HTML/CSS;
+         *   2. refresh the tab bar in-place when a sibling conv appears
+         *      after the page was loaded — no manual refresh needed.
+         */
+        const tabsEl = document.getElementById('convTabs');
+        const exportBtn = document.getElementById('exportBtn');
+
+        let currentConvId = null;
+        let currentEs = null;
+        let lastRosterVersion = -1;
+
+        function shortId(cid) {
+            return typeof cid === 'string' ? cid.slice(0, 8) : String(cid);
+        }
+
+        function renderTabs(convs) {
+            // Always show the switcher, even for a single conv — the
+            // sidebar's whole reason for existing is to give the user a
+            // consistent "where am I" anchor. Hiding it on 1-conv sessions
+            // just makes the layout jump when a second conv attaches.
+            tabsEl.classList.remove('hidden');
+            if (!convs || !convs.length) {
+                tabsEl.innerHTML = '';
+                return;
+            }
+            tabsEl.innerHTML = convs.map(c => {
+                const active = c.id === currentConvId ? ' active' : '';
+                const uri = c.model_uri ? escapeHtml(c.model_uri) : '\u2014';
+                // ``msg_count`` used to render here as a bare ``[N]`` badge,
+                // but the meaning wasn't obvious at a glance. Dropped in
+                // favor of a title tooltip so the tab stays uncluttered;
+                // the selected conv's message count is already shown
+                // prominently in the top-right ``count`` element.
+                const runStr = c.running ? ' · running' : '';
+                const title = `${c.id} · ${c.msg_count} msg${c.msg_count === 1 ? '' : 's'}${runStr}`;
+                const spinner = c.running ? '<span class="spinner" aria-label="running"></span>' : '';
+                return `
+                    <button class="conv-tab${active}" data-cid="${escapeHtml(c.id)}" title="${escapeHtml(title)}">
+                        <span class="cid">${escapeHtml(shortId(c.id))}${spinner}</span>
+                        <span class="uri">${uri}</span>
+                    </button>`;
+            }).join('');
+            tabsEl.querySelectorAll('.conv-tab').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    const cid = btn.getAttribute('data-cid');
+                    if (cid && cid !== currentConvId) switchConv(cid);
+                });
+            });
+        }
+
+        async function refreshRoster() {
+            try {
+                const resp = await fetch('/convs');
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                const data = await resp.json();
+                lastRosterVersion = data.roster_version;
+                // First-time boot: pick the first conv.
+                if (!currentConvId && data.convs && data.convs.length) {
+                    currentConvId = data.convs[0].id;
+                }
+                renderTabs(data.convs || []);
+                return data;
+            } catch (e) {
+                console.error('refreshRoster failed:', e);
+                return null;
+            }
+        }
+
+        function switchConv(cid) {
+            currentConvId = cid;
+            // Reset per-conv view state so the new conv doesn't inherit
+            // scroll/count artifacts from the previous one.
+            lastCount = 0;
+            root.innerHTML = '<div class="empty-state">loading…</div>';
+            statsEl.innerHTML = '<div class="stats-empty">no llm calls yet</div>';
+            // Re-render tabs so the active indicator moves.
+            // (Cheaper than a full /convs refetch; roster hasn't changed.)
+            tabsEl.querySelectorAll('.conv-tab').forEach(btn => {
+                btn.classList.toggle('active', btn.getAttribute('data-cid') === cid);
+            });
+            if (currentEs) {
+                currentEs.close();
+                currentEs = null;
+            }
+            connect();
+        }
+
+        function connect() {
+            if (!currentConvId) return;
+            statusEl.textContent = 'connecting';
+            dotEl.classList.remove('live');
+            const cid = currentConvId;
+            const es = new EventSource('/stream/' + encodeURIComponent(cid));
+            currentEs = es;
+            es.onopen = () => {
+                statusEl.textContent = 'live';
+                dotEl.classList.add('live');
+            };
+            es.onmessage = (evt) => {
+                try {
+                    const data = JSON.parse(evt.data);
+                    // Stale-process guard: if server_id changed since first
+                    // seen, the underlying uvicorn was restarted (possibly
+                    // with a new viewer.html). Reload to avoid mixing
+                    // client-side state with a fresh backend.
+                    if (data.server_id) {
+                        if (window.__server_id && window.__server_id !== data.server_id) {
+                            location.reload();
+                            return;
+                        }
+                        window.__server_id = data.server_id;
+                    }
+                    // Server told us a sibling conv was attached — refresh
+                    // the tab bar so the user can see it without reloading.
+                    if (typeof data.roster_version === 'number'
+                            && data.roster_version !== lastRosterVersion) {
+                        refreshRoster();
+                    }
+                    // Every SSE tick that carries a change now piggybacks the
+                    // full roster snapshot (msg_count + running per conv), so
+                    // we can update sidebar spinners in-place without another
+                    // ``/convs`` round-trip. Fall back to no-op if the payload
+                    // is older-shape (older server behind an in-place restart).
+                    if (Array.isArray(data.roster)) {
+                        renderTabs(data.roster);
+                    }
+                    // Only ignore this stream if it's for a conv we've since
+                    // switched away from — es may still fire once before close().
+                    if (currentEs !== es) return;
+                    // messages: null means "no change, keep last render".
+                    if (data.messages) render(data.messages);
+                } catch (e) { console.error(e); }
+            };
+            es.onerror = () => {
+                statusEl.textContent = 'disconnected';
+                dotEl.classList.remove('live');
+                es.close();
+                if (currentEs === es) currentEs = null;
+                setTimeout(connect, 1000);
+            };
+        }
+
+        /* Export the *currently selected* conversation as JSON. Filename
+         * comes from Content-Disposition (server = source of truth for
+         * conv.id → filename mapping). */
+        exportBtn.addEventListener('click', async () => {
+            if (!currentConvId) return;
+            exportBtn.disabled = true;
+            const orig = exportBtn.textContent;
+            exportBtn.textContent = '…';
+            try {
+                const resp = await fetch('/dump/' + encodeURIComponent(currentConvId));
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                const blob = await resp.blob();
+                let filename = 'conversation.json';
+                const cd = resp.headers.get('Content-Disposition') || '';
+                const m = cd.match(/filename="([^"]+)"/);
+                if (m) filename = m[1];
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url; a.download = filename;
+                document.body.appendChild(a); a.click(); a.remove();
+                URL.revokeObjectURL(url);
+            } catch (e) {
+                console.error('export failed:', e);
+                alert('Export failed: ' + e.message);
+            } finally {
+                exportBtn.textContent = orig;
+                exportBtn.disabled = false;
+            }
+        });
+
+        // Boot: fetch the conv roster first (which picks the initial
+        // currentConvId), then open the SSE stream for it.
+        (async () => {
+            const data = await refreshRoster();
+            if (!currentConvId) {
+                // No convs attached yet — poll roster until one shows up.
+                statusEl.textContent = 'waiting';
+                const iv = setInterval(async () => {
+                    const d = await refreshRoster();
+                    if (currentConvId) { clearInterval(iv); connect(); }
+                }, 800);
+                return;
+            }
+            connect();
+        })();
+    </script>
+</body>
+</html>

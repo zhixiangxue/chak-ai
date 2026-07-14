@@ -1344,14 +1344,17 @@ class Conversation:
         if not self._tool_manager:
             raise RuntimeError("Tool manager not initialized")
         
-        final_message, new_messages = await self._tool_manager.execute_loop(
+        final_message, _ = await self._tool_manager.execute_loop(
             provider=self.provider,
             messages=messages,
             model_uri=self.model_uri,
             round_context_fn=self._make_round_context_fn(),
+            history=self.messages,
         )
-        # Add all new messages (including intermediate AIMessage + ToolMessage) to conversation history
-        self.messages.extend(new_messages)
+        # ``history=self.messages`` above makes the tool loop append every
+        # intermediate AIMessage/ToolMessage directly into conv.messages as it
+        # runs, so external observers (inspector, hooks, debuggers) see them
+        # arrive one by one instead of all at once at the end.
         return final_message
     
     async def _run_extraction_loop(
@@ -1679,19 +1682,17 @@ class Conversation:
                 self._tool_manager.executor = self._get_executor(tool_executor)
             
             try:
-                # Has tools: use tool manager's streaming loop
-                final_messages = []
-                async for chunk, new_messages in self._tool_manager.execute_loop_stream(
+                # Has tools: use tool manager's streaming loop.
+                # ``history=self.messages`` makes intermediate messages surface
+                # in conv.messages as they are produced (see execute_loop docs).
+                async for chunk, _ in self._tool_manager.execute_loop_stream(
                     provider=self.provider,
                     messages=messages_to_send,
                     model_uri=self.model_uri,
                     round_context_fn=self._make_round_context_fn(),
+                    history=self.messages,
                 ):
-                    final_messages = new_messages  # Keep updating with latest
                     yield chunk
-                
-                # Save all messages after streaming completes
-                self.messages.extend(final_messages)
             finally:
                 # Restore original executor
                 if original_executor is not None:
@@ -1753,23 +1754,24 @@ class Conversation:
                 self._tool_manager.executor = self._get_executor(tool_executor)
             
             try:
-                # Has tools: return full event stream from tool manager
-                all_new_messages = []
+                # Has tools: return full event stream from tool manager.
+                # ``history=self.messages`` lets intermediate messages appear
+                # in conv.messages incrementally as the tool loop progresses.
                 async for event in self._tool_manager.execute_loop_with_events(
                     provider=self.provider,
                     messages=messages_to_send,
                     model_uri=self.model_uri,
                     round_context_fn=self._make_round_context_fn(),
+                    history=self.messages,
                 ):
                     # Intercept ConversationCompleteEvent (internal use only)
                     if isinstance(event, ConversationCompleteEvent):
-                        all_new_messages = event.messages
-                        # Do NOT yield this event to external users
+                        # Messages were already appended live via history; the
+                        # event still fires as an end-of-turn marker for any
+                        # internal consumers that care about it.
+                        pass
                     else:
                         yield event
-                
-                # Save all messages to conversation history
-                self.messages.extend(all_new_messages)
             finally:
                 # Restore original executor
                 if original_executor is not None:

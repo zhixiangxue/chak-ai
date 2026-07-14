@@ -426,6 +426,7 @@ class ToolManager:
         messages: List["Message"],
         model_uri: str,
         round_context_fn: Optional[Callable[[List["Message"], int], List["Message"]]] = None,
+        history: Optional[List["Message"]] = None,
     ) -> tuple["Message", List["Message"]]:
         """
         Execute LLM + MCP tool calling loop (non-streaming).
@@ -464,7 +465,12 @@ class ToolManager:
         self._method_to_skill = {}
         
         current_messages = messages.copy()
-        new_messages = []  # Track all new messages added during this loop
+        # ``history`` (when provided by the caller) is used as the append-only
+        # store so intermediate AIMessage/ToolMessage entries surface to
+        # observers (hooks, inspector, etc.) as soon as they are created,
+        # rather than after the whole tool loop finishes. Default: fresh list,
+        # preserving pre-existing behavior for direct callers.
+        new_messages = history if history is not None else []
         all_attachments: List[_Attachment] = []  # Accumulate Attachment objects across all tool calls
 
         # Convert tools to OpenAI format
@@ -578,7 +584,7 @@ class ToolManager:
             "The conversation may be stuck in a loop."
         )
     
-    async def execute_loop_stream(self, provider: Any, messages: List["Message"], model_uri: str, round_context_fn: Optional[Callable[[List["Message"], int], List["Message"]]] = None):
+    async def execute_loop_stream(self, provider: Any, messages: List["Message"], model_uri: str, round_context_fn: Optional[Callable[[List["Message"], int], List["Message"]]] = None, history: Optional[List["Message"]] = None):
         """
         Execute LLM + MCP tool calling loop with streaming support.
         
@@ -612,7 +618,10 @@ class ToolManager:
         self._method_to_skill = {}
         
         current_messages = messages.copy()
-        new_messages = []  # Track all new messages added during this loop
+        # See execute_loop() for the rationale: when ``history`` is supplied,
+        # newly-created messages are appended to it directly so external
+        # observers see them incrementally.
+        new_messages = history if history is not None else []
         
         # Convert tools to OpenAI format (same as execute_loop)
         openai_tools = self._get_openai_tools()
@@ -806,6 +815,7 @@ class ToolManager:
         messages: List["Message"],
         model_uri: str,
         round_context_fn: Optional[Callable[[List["Message"], int], List["Message"]]] = None,
+        history: Optional[List["Message"]] = None,
     ):
         """
         Execute LLM + tool calling loop with event stream support.
@@ -848,7 +858,8 @@ class ToolManager:
         self._method_to_skill = {}
         
         current_messages = messages.copy()
-        new_messages = []  # Track all messages created during this turn
+        # See execute_loop() for the rationale behind ``history``.
+        new_messages = history if history is not None else []
         all_attachments: List[_Attachment] = []  # Accumulate Attachment objects across all tool calls
         
         # Convert tools to OpenAI format (same as execute_loop)

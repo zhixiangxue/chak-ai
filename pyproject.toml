@@ -127,7 +127,7 @@ Documentation = "https://github.com/zhixiangxue/chak-ai/blob/main/README.md"
 where = ["."]
 
 [tool.setuptools.package-data]
-chak = ["server/playground.html"]
+chak = ["server/playground.html", "inspector/viewer.html"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

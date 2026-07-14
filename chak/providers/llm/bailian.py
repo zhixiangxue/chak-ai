@@ -301,6 +301,11 @@ class BailianMessageConverter(BaseMessageConverter):
         
         return Metadata(
             provider="bailian",
+            # DashScope's GenerationResponse doesn't include a top-level
+            # ``model`` field, so ``response_dict.get('model')`` is almost
+            # always None. The provider layer (which has access to the
+            # configured model name via ``self.config.model``) fills this
+            # in after the fact — see ``BailianProvider.send``.
             model=response_dict.get('model', None),
             usage=usage,
             request_id=response_dict.get('request_id', None),
@@ -310,6 +315,8 @@ class BailianMessageConverter(BaseMessageConverter):
         """Build metadata from DashScope streaming chunk."""
         metadata = {
             "provider": "bailian",
+            # DashScope chunks also lack a top-level model field. The
+            # provider layer fills it in after streaming (see send_stream).
         }
         
         # Add request_id if available
@@ -471,16 +478,42 @@ class BailianProvider(Provider):
             
             if stream:
                 return self._wrap_stream_errors(
-                    self._send_stream(provider_messages, is_multimodal=is_multimodal, **kwargs)
+                    self._patch_stream_model(
+                        self._send_stream(provider_messages, is_multimodal=is_multimodal, **kwargs)
+                    )
                 )
             else:
                 response = self._send_complete(provider_messages, is_multimodal=is_multimodal, **kwargs)
                 result = self.converter.from_provider_response(response, is_multimodal=is_multimodal)
+                # DashScope responses don't carry a top-level ``model``
+                # field, so ``converter._build_metadata`` left it None.
+                # The provider owns the configured model name, so patch
+                # it here — downstream tooling (cost accounting,
+                # chak.inspector's per-model stats table) relies on
+                # metadata.model being populated.
+                if result.metadata is not None and not result.metadata.model:
+                    result.metadata.model = self.config.model
                 self._ensure_provider_trace(result)
                 return result
         
         except Exception as e:
             raise self._normalize_error(e) from e
+
+    def _patch_stream_model(self, gen):
+        """Wrap a chunk generator to back-fill ``metadata['model']``.
+
+        DashScope streaming chunks don't include the model name, so
+        ``_build_chunk_metadata`` produces ``{'provider': 'bailian'}``
+        without a model. Yield each chunk with the configured model
+        name spliced into its metadata dict so downstream consumers see
+        a fully-populated ``provider/model`` identifier.
+        """
+        model = self.config.model
+        for chunk in gen:
+            md = getattr(chunk, "metadata", None)
+            if isinstance(md, dict) and not md.get("model"):
+                md["model"] = model
+            yield chunk
     
     def _convert_to_multimodal_messages(self, provider_messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Convert message content from OpenAI format to DashScope multimodal format."""
