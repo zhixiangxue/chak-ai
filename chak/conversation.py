@@ -26,6 +26,10 @@ def _merge_stream_metadata(base: Dict[str, Any], incoming: Dict[str, Any]) -> Di
     Token counts are summed so that prompt_tokens (from message_start) and
     completion_tokens (from message_delta) are both captured correctly even
     though they arrive in separate content-less chunks.
+
+    Since chak normalizes all providers into the canonical disjoint-bucket
+    contract (see chak.metadata.Usage), total_tokens is recomputed from the
+    four disjoint sums here — no provider-specific branching needed.
     """
     merged = {**base, **incoming}
     old_usage = (base.get('usage') or {})
@@ -38,7 +42,7 @@ def _merge_stream_metadata(base: Dict[str, Any], incoming: Dict[str, Any]) -> Di
         merged['usage'] = {
             'prompt_tokens': pt,
             'completion_tokens': ct,
-            'total_tokens': pt + ct,
+            'total_tokens': pt + ct + cc + cr,
             'cache_creation_input_tokens': cc,
             'cache_read_input_tokens': cr,
         }

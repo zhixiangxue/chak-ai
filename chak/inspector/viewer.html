@@ -1037,7 +1037,18 @@
          * `provider/model` (a full model_uri). Cost is model-specific, so
          * summing per-model — not per-provider — is what actually matches a
          * billing line item. Failover/router runs show each model on its own
-         * row instead of collapsing under one provider bucket. */
+         * row instead of collapsing under one provider bucket.
+         *
+         * chak normalizes all provider usage into four disjoint buckets
+         * (see chak/metadata.py Usage docstring):
+         *   prompt_tokens                = fresh input tokens (billed at Input rate)
+         *   completion_tokens            = output tokens
+         *   cache_creation_input_tokens  = cache WRITE (Anthropic ~1.25× input)
+         *   cache_read_input_tokens      = cache READ  (Anthropic ~0.1× input)
+         * so total_tokens = pt + ct + cc + cr with no double-counting. We
+         * surface cache_w / cache_r as separate columns because their unit
+         * prices differ by an order of magnitude — collapsing them hides
+         * where the money actually goes. */
         function aggregateStats(messages) {
             const byUri = new Map();
             for (const m of messages) {
@@ -1048,15 +1059,23 @@
                 const key = modelUri(md_) || 'unknown';
                 const b = byUri.get(key) || {
                     uri: key, calls: 0,
-                    prompt: 0, completion: 0, cache: 0, total: 0,
+                    prompt: 0, completion: 0,
+                    cache_w: 0, cache_r: 0,
+                    total: 0,
                 };
-                b.calls += 1;
-                b.prompt     += usage.prompt_tokens || 0;
-                b.completion += usage.completion_tokens || 0;
-                b.cache      += (usage.cache_read_input_tokens || 0)
-                              + (usage.cache_creation_input_tokens || 0);
-                b.total      += usage.total_tokens
-                              || ((usage.prompt_tokens || 0) + (usage.completion_tokens || 0));
+                const pt = usage.prompt_tokens || 0;
+                const ct = usage.completion_tokens || 0;
+                const cc = usage.cache_creation_input_tokens || 0;
+                const cr = usage.cache_read_input_tokens || 0;
+                b.calls      += 1;
+                b.prompt     += pt;
+                b.completion += ct;
+                b.cache_w    += cc;
+                b.cache_r    += cr;
+                // Fallback matches chak's canonical invariant
+                // (total == pt + ct + cc + cr) for defensive handling of
+                // stale dumps produced before the disjoint-normalization fix.
+                b.total      += usage.total_tokens || (pt + ct + cc + cr);
                 byUri.set(key, b);
             }
             return [...byUri.values()].sort((a, b) => b.total - a.total);
@@ -1077,7 +1096,8 @@
                     <td class="num dim">${fmtNum(b.calls)}</td>
                     <td class="num">${nz(b.prompt)}</td>
                     <td class="num">${nz(b.completion)}</td>
-                    <td class="num">${nz(b.cache)}</td>
+                    <td class="num">${nz(b.cache_w)}</td>
+                    <td class="num">${nz(b.cache_r)}</td>
                     <td class="num">${nz(b.total)}</td>
                 </tr>`).join('');
             // Grand-total row — useful when multiple model_uris are in play.
@@ -1085,16 +1105,18 @@
                 calls: a.calls + b.calls,
                 prompt: a.prompt + b.prompt,
                 completion: a.completion + b.completion,
-                cache: a.cache + b.cache,
+                cache_w: a.cache_w + b.cache_w,
+                cache_r: a.cache_r + b.cache_r,
                 total: a.total + b.total,
-            }), { calls: 0, prompt: 0, completion: 0, cache: 0, total: 0 });
+            }), { calls: 0, prompt: 0, completion: 0, cache_w: 0, cache_r: 0, total: 0 });
             const totalRow = buckets.length > 1 ? `
                 <tr class="total">
                     <td>total</td>
                     <td class="num">${fmtNum(totals.calls)}</td>
                     <td class="num">${fmtNum(totals.prompt)}</td>
                     <td class="num">${fmtNum(totals.completion)}</td>
-                    <td class="num">${fmtNum(totals.cache)}</td>
+                    <td class="num">${fmtNum(totals.cache_w)}</td>
+                    <td class="num">${fmtNum(totals.cache_r)}</td>
                     <td class="num">${fmtNum(totals.total)}</td>
                 </tr>` : '';
             statsEl.innerHTML = `<table class="stats">
@@ -1102,10 +1124,11 @@
                     <tr>
                         <th>model_uri</th>
                         <th class="num">calls</th>
-                        <th class="num">in</th>
-                        <th class="num">out</th>
-                        <th class="num">cache</th>
-                        <th class="num">total</th>
+                        <th class="num" title="prompt_tokens — fresh input (billed at Input rate)">in</th>
+                        <th class="num" title="completion_tokens — output (billed at Output rate)">out</th>
+                        <th class="num" title="cache_creation_input_tokens — cache WRITE (Anthropic ~1.25× input)">cache_w</th>
+                        <th class="num" title="cache_read_input_tokens — cache READ (Anthropic ~0.1× input)">cache_r</th>
+                        <th class="num" title="in + out + cache_w + cache_r (four disjoint buckets)">total</th>
                     </tr>
                 </thead>
                 <tbody>${rows}${totalRow}</tbody>

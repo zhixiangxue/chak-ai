@@ -111,6 +111,12 @@ class OpenAICompatibleMessageConverter(BaseMessageConverter):
         - Chat Completions: ``usage.prompt_tokens_details.{cached_tokens, cache_write_tokens}``
         - Responses API:    ``usage.input_tokens_details.{cached_tokens, cache_write_tokens}``
 
+        Note on semantics: on OpenAI-compat APIs cached_tokens and
+        cache_write_tokens are SUBSETS of the raw ``prompt_tokens``. Callers
+        that store into :class:`chak.metadata.Usage` should subtract these
+        values from prompt_tokens to keep chak's canonical "four disjoint
+        buckets" invariant; see :meth:`_build_metadata`.
+
         Returns:
             (cache_read_tokens, cache_write_tokens) — both 0 if absent.
         """
@@ -137,11 +143,10 @@ class OpenAICompatibleMessageConverter(BaseMessageConverter):
 
         if raw_usage is not None:
             if isinstance(raw_usage, dict):
-                prompt_tokens = int(raw_usage.get("prompt_tokens") or raw_usage.get("input_tokens") or 0)
+                raw_prompt = int(raw_usage.get("prompt_tokens") or raw_usage.get("input_tokens") or 0)
                 completion_tokens = int(raw_usage.get("completion_tokens") or raw_usage.get("output_tokens") or 0)
-                total_tokens = int(raw_usage.get("total_tokens") or (prompt_tokens + completion_tokens))
             else:
-                prompt_tokens = int(
+                raw_prompt = int(
                     getattr(raw_usage, "prompt_tokens", None)
                     or getattr(raw_usage, "input_tokens", 0)
                     or 0
@@ -151,17 +156,22 @@ class OpenAICompatibleMessageConverter(BaseMessageConverter):
                     or getattr(raw_usage, "output_tokens", 0)
                     or 0
                 )
-                total_tokens = int(
-                    getattr(raw_usage, "total_tokens", None)
-                    or (prompt_tokens + completion_tokens)
-                )
 
             cache_read, cache_write = self._extract_cache_tokens(raw_usage)
 
+            # Normalize into chak's canonical disjoint-bucket contract
+            # (see chak.metadata.Usage). Raw OpenAI ``prompt_tokens`` counts
+            # cached and cache-write tokens as subsets; strip them out so
+            # ``prompt_tokens`` represents *fresh* input only. ``total_tokens``
+            # is then computed from the four disjoint buckets, keeping the
+            # invariant ``total = pt + ct + cc + cr`` uniform with Anthropic.
+            fresh_prompt = max(raw_prompt - cache_read - cache_write, 0)
+            total_tokens = fresh_prompt + completion_tokens + cache_read + cache_write
+
             usage = Usage(
-                prompt_tokens=max(prompt_tokens, 0),
+                prompt_tokens=fresh_prompt,
                 completion_tokens=max(completion_tokens, 0),
-                total_tokens=max(total_tokens, 0),
+                total_tokens=total_tokens,
                 cache_creation_input_tokens=max(cache_write, 0),
                 cache_read_input_tokens=max(cache_read, 0),
             )
@@ -228,11 +238,10 @@ class OpenAICompatibleMessageConverter(BaseMessageConverter):
         if hasattr(chunk, "usage") and chunk.usage:
             raw_usage = chunk.usage
             if isinstance(raw_usage, dict):
-                prompt_tokens = int(raw_usage.get("prompt_tokens") or raw_usage.get("input_tokens") or 0)
+                raw_prompt = int(raw_usage.get("prompt_tokens") or raw_usage.get("input_tokens") or 0)
                 completion_tokens = int(raw_usage.get("completion_tokens") or raw_usage.get("output_tokens") or 0)
-                total_tokens = int(raw_usage.get("total_tokens") or (prompt_tokens + completion_tokens))
             else:
-                prompt_tokens = int(
+                raw_prompt = int(
                     getattr(raw_usage, "prompt_tokens", None)
                     or getattr(raw_usage, "input_tokens", 0)
                     or 0
@@ -242,17 +251,17 @@ class OpenAICompatibleMessageConverter(BaseMessageConverter):
                     or getattr(raw_usage, "output_tokens", 0)
                     or 0
                 )
-                total_tokens = int(
-                    getattr(raw_usage, "total_tokens", None)
-                    or (prompt_tokens + completion_tokens)
-                )
 
             cache_read, cache_write = self._extract_cache_tokens(raw_usage)
 
+            # Same disjoint-bucket normalization as _build_metadata.
+            fresh_prompt = max(raw_prompt - cache_read - cache_write, 0)
+            total_tokens = fresh_prompt + completion_tokens + cache_read + cache_write
+
             metadata["usage"] = {
-                "prompt_tokens": max(prompt_tokens, 0),
+                "prompt_tokens": fresh_prompt,
                 "completion_tokens": max(completion_tokens, 0),
-                "total_tokens": max(total_tokens, 0),
+                "total_tokens": total_tokens,
                 "cache_creation_input_tokens": max(cache_write, 0),
                 "cache_read_input_tokens": max(cache_read, 0),
             }

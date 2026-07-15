@@ -65,17 +65,31 @@ def print_usage_details(message):
     if usage:
         print(f"  Provider: {message.metadata.provider}")
         print(f"  Model: {message.metadata.model}")
-        print(f"  Prompt tokens: {usage.prompt_tokens}")
-        print(f"  Completion tokens: {usage.completion_tokens}")
-        print(f"  Total tokens: {usage.total_tokens}")
+        # In chak's canonical Usage semantics all four buckets are disjoint:
+        # prompt_tokens is fresh (non-cached) input only, and total_tokens is
+        # the sum of the four disjoint buckets — the same shape on OpenAI and
+        # Anthropic alike. See chak/metadata.py::Usage for details.
+        print(f"  Prompt tokens (fresh input): {usage.prompt_tokens}")
+        print(f"  Completion tokens:           {usage.completion_tokens}")
+        print(f"  Cache write tokens:          {usage.cache_creation_input_tokens}")
+        print(f"  Cache read tokens:           {usage.cache_read_input_tokens}")
+        print(f"  Total tokens:                {usage.total_tokens}")
         
-        # Calculate approximate cost (example rates, adjust as needed)
+        # Uniform cost formula across providers: pass per-MTok unit prices
+        # and Usage.estimate_cost multiplies each disjoint bucket for you.
+        # Example rates below are GPT-4o-mini's; swap in real numbers per model.
         if message.metadata.provider == "openai":
-            # GPT-4o-mini pricing (example)
-            input_cost = usage.prompt_tokens * 0.15 / 1_000_000  # $0.15 per 1M tokens
-            output_cost = usage.completion_tokens * 0.6 / 1_000_000  # $0.60 per 1M tokens
-            total_cost = input_cost + output_cost
-            print(f"  Estimated cost: ${total_cost:.6f}")
+            cost = usage.estimate_cost(
+                input_price=0.15,
+                output_price=0.60,
+                # OpenAI's automatic prompt caching: cache_read is 50% off.
+                cache_read_price=0.075,
+                currency="USD",
+            )
+            # ``cost`` is a Money object — str(cost) prints as
+            # "0.000123 USD"; cost.amount is the raw float; sum([...]) works
+            # across a list of Money as long as currencies match.
+            print(f"  Estimated cost: {cost}")
     else:
         print("  No usage information available")
 

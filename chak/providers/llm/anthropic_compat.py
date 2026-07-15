@@ -307,10 +307,15 @@ class AnthropicCompatibleMessageConverter(BaseMessageConverter):
             out = int(getattr(raw, "output_tokens", 0) or 0)
             cache_create = int(getattr(raw, "cache_creation_input_tokens", 0) or 0)
             cache_read = int(getattr(raw, "cache_read_input_tokens", 0) or 0)
+            # Anthropic returns the four buckets already disjoint, matching
+            # chak's canonical Usage semantics (see chak.metadata.Usage).
+            # Anthropic does not send total_tokens itself, so compute it from
+            # the disjoint sum to satisfy the invariant
+            # total = pt + ct + cc + cr.
             usage = Usage(
                 prompt_tokens=inp,
                 completion_tokens=out,
-                total_tokens=inp + out,
+                total_tokens=inp + out + cache_create + cache_read,
                 cache_creation_input_tokens=cache_create,
                 cache_read_input_tokens=cache_read,
             )
@@ -327,12 +332,13 @@ class AnthropicCompatibleMessageConverter(BaseMessageConverter):
         out = int(getattr(usage, "output_tokens", 0) or 0)
         cache_create = int(getattr(usage, "cache_creation_input_tokens", 0) or 0)
         cache_read = int(getattr(usage, "cache_read_input_tokens", 0) or 0)
+        # Same disjoint-bucket contract as _build_metadata; see there.
         return {
             "provider": "anthropic",
             "usage": {
                 "prompt_tokens": inp,
                 "completion_tokens": out,
-                "total_tokens": inp + out,
+                "total_tokens": inp + out + cache_create + cache_read,
                 "cache_creation_input_tokens": cache_create,
                 "cache_read_input_tokens": cache_read,
             },
