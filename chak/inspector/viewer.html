@@ -69,6 +69,7 @@
             width: 232px;
             height: 100vh;
             overflow-y: auto;
+            overscroll-behavior: contain;
             border-right: 1px solid var(--line);
             background: var(--bg);
             display: flex;
@@ -1162,16 +1163,82 @@
 
         let lastCount = 0;
 
-        // ─── Client-side message cache ─────────────────────────────
+        // ─── Client-side message cache (localStorage-backed) ────────
         // Keeps the full messages array per conv so the UI survives
-        // server disconnection. Export falls back to this when the
-        // /dump endpoint is unreachable (process already exited).
+        // server disconnection AND page refresh. Export falls back to
+        // this when the /dump endpoint is unreachable.
+        //
+        // Storage keys
+        const _STORAGE_KEY = 'chak_inspector_cache';
+        const _SERVER_ID_KEY = 'chak_inspector_server_id';
+        // Format: { _ts: epoch_ms, convs: { [conv_id]: messages[] } }
+        // _ts is updated on every persist so we can evict stale data.
+        const _CACHE_TTL_MS = 24 * 60 * 60 * 1000;  // 24 hours
+
         const _msgCache = new Map();  // conv_id → messages[]
 
+        // Hydrate from localStorage on boot, discarding expired data.
+        (function _hydrateCache() {
+            try {
+                const raw = localStorage.getItem(_STORAGE_KEY);
+                if (!raw) return;
+                const obj = JSON.parse(raw);
+                // TTL check: if the cache is older than threshold, discard.
+                const ts = obj._ts || 0;
+                if (Date.now() - ts > _CACHE_TTL_MS) {
+                    localStorage.removeItem(_STORAGE_KEY);
+                    return;
+                }
+                const convs = obj.convs || obj;  // backward compat
+                for (const [cid, msgs] of Object.entries(convs)) {
+                    if (cid.startsWith('_')) continue;  // skip meta keys
+                    if (Array.isArray(msgs) && msgs.length) {
+                        _msgCache.set(cid, msgs);
+                    }
+                }
+            } catch (e) {
+                console.warn('[chak] failed to hydrate cache from localStorage:', e);
+            }
+        })();
+
+        // Clear stale cache when a new server process is detected.
+        // Called from the SSE handler when server_id arrives.
+        function _invalidateCacheIfNewServer(serverId) {
+            const prev = localStorage.getItem(_SERVER_ID_KEY);
+            if (prev && prev !== serverId) {
+                // New server session — old conv data is irrelevant.
+                _msgCache.clear();
+                localStorage.removeItem(_STORAGE_KEY);
+            }
+            localStorage.setItem(_SERVER_ID_KEY, serverId);
+        }
+
+        // Persist cache to localStorage. Called on every cache update.
+        // Debounced to avoid thrashing on rapid SSE ticks.
+        let _persistTimer = null;
+        function _persistCache() {
+            if (_persistTimer) return;
+            _persistTimer = setTimeout(() => {
+                _persistTimer = null;
+                try {
+                    const obj = { _ts: Date.now(), convs: {} };
+                    for (const [cid, msgs] of _msgCache) {
+                        obj.convs[cid] = msgs;
+                    }
+                    localStorage.setItem(_STORAGE_KEY, JSON.stringify(obj));
+                } catch (e) {
+                    // Likely QuotaExceededError — log but don't crash.
+                    console.warn('[chak] localStorage persist failed:', e);
+                }
+            }, 500);
+        }
+
         function render(messages) {
-            // Persist into client-side cache so data survives disconnect.
+            // Persist into client-side cache so data survives disconnect
+            // AND page refresh (backed by localStorage).
             if (currentConvId && messages && messages.length) {
                 _msgCache.set(currentConvId, messages);
+                _persistCache();
             }
             buildToolCallIndex(messages);
             renderStats(messages);
@@ -1311,6 +1378,97 @@
         let _reconnectAttempts = 0;
         let _offline = false;  // true once we give up reconnecting
 
+        // ─── Eager pre-fetch on disconnect ────────────────────────
+        // On first connection error, immediately try to dump ALL convs
+        // from the server before it fully dies. This fills _msgCache
+        // for convs the user never visited, eliminating the
+        // "no cached data" problem.
+        let _eagerFetchDone = false;
+        async function _eagerFetchAllConvs() {
+            if (_eagerFetchDone) return;
+            _eagerFetchDone = true;
+            try {
+                const resp = await fetch('/convs');
+                if (!resp.ok) return;
+                const data = await resp.json();
+                const convs = data.convs || [];
+                // Fetch each conv's messages in parallel.
+                await Promise.allSettled(convs.map(async (c) => {
+                    if (_msgCache.has(c.id) && _msgCache.get(c.id).length) return;
+                    try {
+                        const dr = await fetch('/dump/' + encodeURIComponent(c.id));
+                        if (!dr.ok) return;
+                        const dump = await dr.json();
+                        const msgs = dump.messages || dump;
+                        if (Array.isArray(msgs) && msgs.length) {
+                            _msgCache.set(c.id, msgs);
+                        }
+                    } catch {}
+                }));
+                _persistCache();
+            } catch (e) {
+                // Server already dead — nothing we can do.
+            }
+        }
+
+        // ─── Proactive background caching ─────────────────────────────
+        // While the server is alive, periodically fetch messages for ALL
+        // conversations we haven't cached yet. This ensures that by the
+        // time the server dies, we already have everything in localStorage.
+        let _bgCacheTimer = null;
+        async function _backgroundCacheAll() {
+            if (_offline) return;
+            try {
+                const resp = await fetch('/convs');
+                if (!resp.ok) return;
+                const data = await resp.json();
+                const convs = data.convs || [];
+                let cached = false;
+                await Promise.allSettled(convs.map(async (c) => {
+                    // Skip if already cached with same or more messages.
+                    const existing = _msgCache.get(c.id);
+                    if (existing && existing.length >= c.msg_count) return;
+                    try {
+                        const dr = await fetch('/dump/' + encodeURIComponent(c.id));
+                        if (!dr.ok) return;
+                        const dump = await dr.json();
+                        const msgs = dump.messages || dump;
+                        if (Array.isArray(msgs) && msgs.length) {
+                            _msgCache.set(c.id, msgs);
+                            cached = true;
+                        }
+                    } catch {}
+                }));
+                if (cached) _persistCache();
+            } catch {}
+        }
+
+        function _startBackgroundCache() {
+            // Run once immediately after first successful connect,
+            // then every 10 seconds to pick up new messages.
+            if (_bgCacheTimer) return;
+            _backgroundCacheAll();
+            _bgCacheTimer = setInterval(_backgroundCacheAll, 10000);
+        }
+
+        function _stopBackgroundCache() {
+            if (_bgCacheTimer) {
+                clearInterval(_bgCacheTimer);
+                _bgCacheTimer = null;
+            }
+        }
+
+        // ─── beforeunload guard ───────────────────────────────────
+        // When offline, ALWAYS warn before refresh/close. Even though
+        // localStorage should have the data, the user deserves a
+        // conscious choice — accidental refresh loses live DOM state
+        // and any cache that failed to persist.
+        window.addEventListener('beforeunload', (e) => {
+            if (!_offline) return;
+            e.preventDefault();
+            e.returnValue = '';
+        });
+
         function connect() {
             if (!currentConvId) return;
             if (_offline) return;  // already gave up
@@ -1323,6 +1481,8 @@
                 _reconnectAttempts = 0;  // reset on successful connection
                 statusEl.textContent = 'live';
                 dotEl.classList.add('live');
+                // Start background caching of all convs while server is alive.
+                _startBackgroundCache();
             };
             es.onmessage = (evt) => {
                 try {
@@ -1337,6 +1497,8 @@
                             return;
                         }
                         window.__server_id = data.server_id;
+                        // Invalidate stale localStorage if server restarted.
+                        _invalidateCacheIfNewServer(data.server_id);
                     }
                     // Server told us a sibling conv was attached — refresh
                     // the tab bar so the user can see it without reloading.
@@ -1364,12 +1526,20 @@
                 if (currentEs === es) currentEs = null;
                 dotEl.classList.remove('live');
                 _reconnectAttempts++;
+                // On first failure, eagerly fetch all convs while server
+                // might still be reachable (race the shutdown).
+                if (_reconnectAttempts === 1) {
+                    _eagerFetchAllConvs();
+                }
                 if (_reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
                     // Server is gone — enter offline mode but keep all data.
                     _offline = true;
+                    _stopBackgroundCache();
                     statusEl.textContent = 'offline (data preserved)';
                     dotEl.classList.remove('live');
                     dotEl.classList.add('offline');
+                    // Kill all spinners — nothing is running if server is dead.
+                    tabsEl.querySelectorAll('.spinner').forEach(el => el.remove());
                 } else {
                     statusEl.textContent = `reconnecting (${_reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`;
                     setTimeout(connect, 1500);
@@ -1466,9 +1636,28 @@
 
         // Boot: fetch the conv roster first (which picks the initial
         // currentConvId), then open the SSE stream for it.
+        // If server is already dead on boot, fall back to localStorage.
         (async () => {
             const data = await refreshRoster();
             if (!currentConvId) {
+                // Server unreachable but we have cached data — enter
+                // offline mode and render from localStorage.
+                if (_msgCache.size > 0 && !data) {
+                    _offline = true;
+                    statusEl.textContent = 'offline (restored from cache)';
+                    dotEl.classList.add('offline');
+                    // Reconstruct tab bar from cached conv IDs.
+                    const cachedConvs = [..._msgCache.keys()].map(cid => ({
+                        id: cid,
+                        model_uri: null,
+                        msg_count: _msgCache.get(cid).length,
+                        running: false,
+                    }));
+                    currentConvId = cachedConvs[0].id;
+                    renderTabs(cachedConvs);
+                    render(_msgCache.get(currentConvId));
+                    return;
+                }
                 // No convs attached yet — poll roster until one shows up.
                 statusEl.textContent = 'waiting';
                 const iv = setInterval(async () => {
