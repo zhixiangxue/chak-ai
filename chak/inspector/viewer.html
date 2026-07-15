@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <title>Chak Inspector</title>
-    <script src="/marked.min.js"></script>
+    <script src="/markdown-it.min.js"></script>
     <style>
         /* ─── Monochrome palette ────────────────────────────────────
            Design intent: pure grayscale. Structure comes from spacing,
@@ -762,9 +762,20 @@
         const dotEl = document.getElementById('dot');
         const statsEl = document.getElementById('stats');
 
-        // Markdown rendering with graceful fallback.
+        // Markdown rendering via markdown-it. Handles tables with inline
+        // code, nested lists, and mixed HTML more robustly than marked.js.
+        // Instantiate once (parsing config is stateless per-render).
+        const _mdParser = (typeof window.markdownit !== 'undefined')
+            ? window.markdownit({
+                html: false,      // don't allow raw HTML — avoid XSS from LLM output
+                breaks: true,     // treat single \n as <br>
+                linkify: true,    // auto-link bare URLs
+                typographer: false,
+            })
+            : null;
         const md = (s) => {
-            try { return marked.parse(s, { breaks: true, gfm: true }); }
+            if (!_mdParser) return escapeHtml(s);
+            try { return _mdParser.render(s); }
             catch { return escapeHtml(s); }
         };
 
