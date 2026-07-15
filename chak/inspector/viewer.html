@@ -145,6 +145,10 @@
             background: var(--text);
             box-shadow: 0 0 0 3px rgba(0,0,0,0.06);
         }
+        .dot.offline {
+            background: #dc2626;
+            box-shadow: 0 0 0 3px rgba(220,38,38,0.1);
+        }
 
         /* Export button in header — sharp corners, monochrome, matches
            the utilitarian devtool feel. */
@@ -1157,7 +1161,18 @@
         }
 
         let lastCount = 0;
+
+        // ─── Client-side message cache ─────────────────────────────
+        // Keeps the full messages array per conv so the UI survives
+        // server disconnection. Export falls back to this when the
+        // /dump endpoint is unreachable (process already exited).
+        const _msgCache = new Map();  // conv_id → messages[]
+
         function render(messages) {
+            // Persist into client-side cache so data survives disconnect.
+            if (currentConvId && messages && messages.length) {
+                _msgCache.set(currentConvId, messages);
+            }
             buildToolCallIndex(messages);
             renderStats(messages);
             if (!messages.length) {
@@ -1258,13 +1273,27 @@
             // Reset per-conv view state so the new conv doesn't inherit
             // scroll/count artifacts from the previous one.
             lastCount = 0;
-            root.innerHTML = '<div class="empty-state">loading…</div>';
-            statsEl.innerHTML = '<div class="stats-empty">no llm calls yet</div>';
             // Re-render tabs so the active indicator moves.
             // (Cheaper than a full /convs refetch; roster hasn't changed.)
             tabsEl.querySelectorAll('.conv-tab').forEach(btn => {
                 btn.classList.toggle('active', btn.getAttribute('data-cid') === cid);
             });
+
+            // If offline, restore from client-side cache instead of
+            // trying to reconnect to a dead server.
+            if (_offline) {
+                const cached = _msgCache.get(cid);
+                if (cached && cached.length) {
+                    render(cached);
+                } else {
+                    root.innerHTML = '<div class="empty-state">no cached data for this conversation</div>';
+                    statsEl.innerHTML = '<div class="stats-empty">no llm calls yet</div>';
+                }
+                return;
+            }
+
+            root.innerHTML = '<div class="empty-state">loading…</div>';
+            statsEl.innerHTML = '<div class="stats-empty">no llm calls yet</div>';
             if (currentEs) {
                 currentEs.close();
                 currentEs = null;
@@ -1272,14 +1301,26 @@
             connect();
         }
 
+        // ─── Reconnect logic with bounded retries ─────────────
+        // After the server process exits, infinite retries just burn
+        // CPU and spam the console. We allow a few attempts (enough to
+        // ride out a momentary network hiccup) then stop gracefully,
+        // keeping all rendered data intact so the user can still browse
+        // and export.
+        const MAX_RECONNECT_ATTEMPTS = 5;
+        let _reconnectAttempts = 0;
+        let _offline = false;  // true once we give up reconnecting
+
         function connect() {
             if (!currentConvId) return;
+            if (_offline) return;  // already gave up
             statusEl.textContent = 'connecting';
             dotEl.classList.remove('live');
             const cid = currentConvId;
             const es = new EventSource('/stream/' + encodeURIComponent(cid));
             currentEs = es;
             es.onopen = () => {
+                _reconnectAttempts = 0;  // reset on successful connection
                 statusEl.textContent = 'live';
                 dotEl.classList.add('live');
             };
@@ -1319,23 +1360,37 @@
                 } catch (e) { console.error(e); }
             };
             es.onerror = () => {
-                statusEl.textContent = 'disconnected';
-                dotEl.classList.remove('live');
                 es.close();
                 if (currentEs === es) currentEs = null;
-                setTimeout(connect, 1000);
+                dotEl.classList.remove('live');
+                _reconnectAttempts++;
+                if (_reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+                    // Server is gone — enter offline mode but keep all data.
+                    _offline = true;
+                    statusEl.textContent = 'offline (data preserved)';
+                    dotEl.classList.remove('live');
+                    dotEl.classList.add('offline');
+                } else {
+                    statusEl.textContent = `reconnecting (${_reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`;
+                    setTimeout(connect, 1500);
+                }
             };
         }
 
-        /* Export the *currently selected* conversation as JSON. Filename
-         * comes from Content-Disposition (server = source of truth for
-         * conv.id → filename mapping). */
+        /* Export the *currently selected* conversation as JSON.
+         *
+         * Strategy: try the server's /dump endpoint first (it may include
+         * richer data via conv.dump()). If the server is unreachable
+         * (process exited), fall back to the client-side message cache so
+         * the user can ALWAYS export — even after the process is long gone.
+         */
         exportBtn.addEventListener('click', async () => {
             if (!currentConvId) return;
             exportBtn.disabled = true;
             const orig = exportBtn.textContent;
             exportBtn.textContent = '…';
             try {
+                // Attempt server-side export first.
                 const resp = await fetch('/dump/' + encodeURIComponent(currentConvId));
                 if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
                 const blob = await resp.blob();
@@ -1349,8 +1404,26 @@
                 document.body.appendChild(a); a.click(); a.remove();
                 URL.revokeObjectURL(url);
             } catch (e) {
-                console.error('export failed:', e);
-                alert('Export failed: ' + e.message);
+                // Server unreachable — fall back to client-side cache.
+                const cached = _msgCache.get(currentConvId);
+                if (cached && cached.length) {
+                    const payload = {
+                        conversation_id: currentConvId,
+                        messages: cached,
+                        _exported_from: 'client_cache',
+                        _exported_at: new Date().toISOString(),
+                    };
+                    const json = JSON.stringify(payload, null, 2);
+                    const blob = new Blob([json], { type: 'application/json' });
+                    const filename = currentConvId.slice(0, 8) + '_offline.json';
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url; a.download = filename;
+                    document.body.appendChild(a); a.click(); a.remove();
+                    URL.revokeObjectURL(url);
+                } else {
+                    alert('Export failed: server unreachable and no cached data available.');
+                }
             } finally {
                 exportBtn.textContent = orig;
                 exportBtn.disabled = false;

@@ -214,7 +214,9 @@ async def main():
     print("=" * 70)
     print()
     print("The browser page stays open — you can review the full message stream.")
-    print("Press Ctrl+C to exit (the inspector will shut down with the process).")
+    print("Data is cached client-side: even after this process exits, you can")
+    print("still browse and export from the inspector page.")
+    print("Press Ctrl+C to exit.")
     print()
 
     # Hold the process open so the user can inspect the final state in browser.

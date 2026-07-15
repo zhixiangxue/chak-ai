@@ -1504,10 +1504,79 @@ class Conversation:
                             pass
                     return obj
 
+                def _validate_with_string_decode(candidate):
+                    """Validate ``candidate`` directly, falling back to a
+                    recursive JSON-string decode. Encapsulates the
+                    Anthropic-style "nested objects as strings" fallback so we
+                    can reuse it inside the envelope-unwrap loop below.
+                    """
+                    try:
+                        return returns.model_validate(candidate)
+                    except PydanticValidationError:
+                        return returns.model_validate(_decode_json_strings(candidate))
+
                 try:
-                    result = returns.model_validate(arguments)
-                except PydanticValidationError:
-                    result = returns.model_validate(_decode_json_strings(arguments))
+                    result = _validate_with_string_decode(arguments)
+                except PydanticValidationError as outer_err:
+                    # Envelope-unwrap fallback.
+                    #
+                    # Some providers -- observed with DeepSeek on complex
+                    # nested schemas under long contexts -- return the tool
+                    # payload wrapped inside an envelope, e.g.
+                    #
+                    #   {"requirement": {...actual payload...}}
+                    #   {"data": {...actual payload...}, "file": "unknown"}
+                    #
+                    # The wrap key is *not* reliably the tool function name.
+                    # In practice it often echoes the Pydantic-generated JSON
+                    # Schema ``title`` (which defaults to the model class
+                    # name), and sometimes it is a generic word like "data".
+                    # We therefore avoid hardcoding key names and instead try
+                    # each top-level dict value; the first one that validates
+                    # wins. This only fires after direct validation has
+                    # already failed, so it never affects the happy path.
+                    #
+                    # When we succeed via this path we surface a WARNING with
+                    # the outer key set so operators know the model is not
+                    # conforming to the schema. When we fail we log the raw
+                    # arguments string (truncated) so post-hoc investigation
+                    # doesn't require re-instrumenting chak.
+                    from .utils.logger import logger
+
+                    result = None
+                    unwrapped_key: Optional[str] = None
+                    if isinstance(arguments, dict):
+                        for _k, _v in arguments.items():
+                            if not isinstance(_v, dict):
+                                continue
+                            try:
+                                result = _validate_with_string_decode(_v)
+                                unwrapped_key = _k
+                                break
+                            except PydanticValidationError:
+                                continue
+
+                    if result is None:
+                        _raw = tool_call.function.arguments
+                        logger.warning(
+                            f"Structured output validation failed for tool "
+                            f"{tool_name!r}. Raw arguments ({len(_raw)} chars, "
+                            f"truncated to 2000): {_raw[:2000]}"
+                        )
+                        # Preserve the original error so the retry-feedback
+                        # message the LLM sees describes the actual field-
+                        # level mismatch rather than a spurious secondary
+                        # failure from the unwrap probe.
+                        raise outer_err
+
+                    logger.warning(
+                        f"Structured output: recovered from envelope wrap "
+                        f"for tool {tool_name!r}. Provider returned outer "
+                        f"keys={list(arguments.keys())}, unwrapped "
+                        f"key={unwrapped_key!r}. The model is not conforming "
+                        f"to the schema; consider tightening the prompt or "
+                        f"switching model."
+                    )
 
                 # Unwrap internal wrappers for generic returns
                 if unwrap_field is not None:
@@ -1607,10 +1676,16 @@ class Conversation:
         
         schema = model.model_json_schema()
         
-        # Extract description from model docstring or use default
-        # For RootModel, extract from the wrapped type
-        if hasattr(model, '__pydantic_generic_metadata__'):
-            # This is a RootModel, use generic description
+        # Extract description from model docstring or use default.
+        # Previously this branched on ``hasattr(model, '__pydantic_generic_metadata__')``
+        # as a RootModel probe, but that attribute exists on every Pydantic v2
+        # BaseModel subclass, so the check was tautological and every structured
+        # output ended up advertised to the LLM as a generic ``ExtractedData``
+        # tool. That erased useful semantic hints (e.g. ``Requirement``,
+        # ``UserProfile``) from the tool name and description. We now dispatch
+        # on ``issubclass(model, RootModel)`` instead, which is the actual
+        # distinguishing property.
+        if isinstance(model, type) and issubclass(model, RootModel):
             model_name = "ExtractedData"
             description = "Correctly extracted structured data with all required parameters"
         else:
