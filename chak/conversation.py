@@ -364,6 +364,7 @@ class Conversation:
         self.model_uri = model_uri
         self.api_key = api_key
         self.id = id or str(uuid.uuid4())
+        self.title: Optional[str] = None
         self.messages = []
         self.attachments: List[Attachment] = []  # Session-level attachment tracking
         

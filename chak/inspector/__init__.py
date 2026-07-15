@@ -359,12 +359,20 @@ def _build_app(FastAPI, HTMLResponse, JSONResponse, StreamingResponse, HTTPExcep
     app = FastAPI(title="Chak Inspector")
     html_path = Path(__file__).parent / "viewer.html"
     html_content = html_path.read_text(encoding="utf-8")
+    # Serve marked.min.js from the same origin so the viewer has zero
+    # external dependencies.
+    marked_path = Path(__file__).parent / "marked.min.js"
+    marked_content = marked_path.read_text(encoding="utf-8") if marked_path.exists() else ""
 
     poll_interval = _REG.poll_interval
 
     @app.get("/")
     async def _index() -> HTMLResponse:
         return HTMLResponse(html_content)
+
+    @app.get("/marked.min.js")
+    async def _marked() -> HTMLResponse:
+        return HTMLResponse(marked_content, media_type="text/javascript")
 
     @app.get("/convs")
     async def _convs() -> JSONResponse:

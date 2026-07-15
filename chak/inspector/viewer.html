@@ -3,9 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <title>Chak Inspector</title>
-    <!-- Markdown renderer for message content. Falls back gracefully to plain
-         text when the CDN is unreachable (offline / restricted networks). -->
-    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="/marked.min.js"></script>
     <style>
         /* ─── Monochrome palette ────────────────────────────────────
            Design intent: pure grayscale. Structure comes from spacing,
@@ -28,7 +26,8 @@
                Kept saturation low to avoid the "toy" look. */
             --role-system:   #737373;  /* neutral gray */
             --role-user:     #0a0a0a;  /* near-black */
-            --role-assist:   #1e40af;  /* deep blue */
+            --role-assist:   #a16207;  /* deep gold — sticky-note vibe */
+            --assist-bg:    #fefce8;  /* warm cream surface for AI answers */
             --role-req:      #b45309;  /* deep amber — outgoing tool call */
             --role-resp:     #15803d;  /* deep green — tool call result   */
 
@@ -231,7 +230,11 @@
         /* ─── Main (fullscreen) ─────────────────────────────────── */
         main {
             width: 100%;
-            padding: 28px 28px 96px;
+            /* Right padding is permanently wider to make room for the
+               floating scroll buttons. This keeps content width stable
+               regardless of whether the buttons are visible — no
+               layout shift / reflow on scroll. */
+            padding: 28px 72px 96px 28px;
         }
 
         /* ─── Turn grouping ─────────────────────────────────────── */
@@ -292,7 +295,11 @@
             line-height: 1.7;
         }
         .msg.role-user       { border-left-color: var(--role-user); }
-        .msg.role-assistant  { border-left-color: var(--role-assist); }
+        .msg.role-assistant  {
+            border-left-color: var(--role-assist);
+            background: var(--assist-bg);
+            border-color: #fde68a;
+        }
         .msg.tool-call-msg   { border-left-color: var(--role-req); }
         .msg.tool-result     { border-left-color: var(--role-resp); }
         .msg.system-msg      { border-left-color: var(--role-system); }
@@ -325,7 +332,7 @@
             background: var(--role-user); border-color: var(--role-user);
         }
         .badge.role-assistant {
-            background: var(--role-assist); border-color: var(--role-assist);
+            background: #eab308; border-color: #ca8a04; color: #422006;
         }
         .badge.role-req {
             background: var(--role-req); border-color: var(--role-req);
@@ -492,6 +499,40 @@
         }
 
         /* ─── Tool result body ────────────────────────────────────── */
+        /* ─── Tool request echo (inside response card) ─────────── */
+        .tool-req-echo {
+            border: 1px solid var(--line);
+            background: #fafafa;
+            padding: 8px 12px;
+            margin-bottom: 8px;
+            font-family: var(--mono);
+            font-size: 11.5px;
+        }
+        .tool-req-echo .echo-fn {
+            font-weight: 600;
+            color: var(--text);
+            margin-bottom: 4px;
+        }
+        .tool-req-echo pre {
+            margin: 0;
+            padding: 0;
+            border: none;
+            background: none;
+            font-family: var(--mono);
+            font-size: 11.5px;
+            line-height: 1.6;
+            color: var(--text-2);
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+        .tool-req-echo .echo-sep {
+            text-align: center;
+            color: var(--text-4);
+            font-size: 10px;
+            letter-spacing: 0.1em;
+            margin: 6px 0;
+        }
+
         .tool-body {
             border: 1px solid var(--line);
             border-radius: 0;
@@ -639,6 +680,47 @@
            CSS is kept in case we bring back a labeled indicator later.
            No selectors reference it in the current markup, so it's
            dead-but-harmless. */
+
+        /* ─── Floating scroll buttons (right edge) ────────────────
+           Quick-jump affordances pinned to the right side of the
+           viewport. Hidden until the user scrolls away from the very
+           top / bottom so they don't clutter a short page. */
+        .scroll-rail {
+            position: fixed;
+            right: 20px;
+            bottom: 28px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            z-index: 20;
+        }
+        .scroll-btn {
+            appearance: none;
+            width: 36px; height: 36px;
+            display: flex; align-items: center; justify-content: center;
+            background: var(--surface);
+            border: 1px solid var(--line-2);
+            border-radius: 0;
+            color: var(--text);
+            font-family: var(--mono);
+            font-size: 16px;
+            line-height: 1;
+            cursor: pointer;
+            opacity: 0;
+            pointer-events: none;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+            transition: opacity 0.2s, background 0.15s, color 0.15s,
+                        border-color 0.15s;
+        }
+        .scroll-btn.visible {
+            opacity: 1;
+            pointer-events: auto;
+        }
+        .scroll-btn:hover {
+            background: var(--accent);
+            color: #fff;
+            border-color: var(--accent);
+        }
     </style>
 </head>
 <body>
@@ -667,6 +749,12 @@
         </main>
     </div>
 
+    <!-- Floating scroll-to-top / scroll-to-bottom buttons -->
+    <div class="scroll-rail">
+        <button class="scroll-btn" id="scrollTopBtn" title="Scroll to top" aria-label="Scroll to top">&#9650;</button>
+        <button class="scroll-btn" id="scrollBottomBtn" title="Scroll to bottom" aria-label="Scroll to bottom">&#9660;</button>
+    </div>
+
     <script>
         const root = document.getElementById('root');
         const countEl = document.getElementById('count');
@@ -674,11 +762,11 @@
         const dotEl = document.getElementById('dot');
         const statsEl = document.getElementById('stats');
 
-        // Markdown rendering: use marked.js when available, otherwise degrade
-        // to escaped-plaintext so restricted networks don't break the viewer.
-        const md = (typeof marked !== 'undefined')
-            ? (s) => marked.parse(s, { breaks: true, gfm: true })
-            : (s) => `<pre>${escapeHtml(s)}</pre>`;
+        // Markdown rendering with graceful fallback.
+        const md = (s) => {
+            try { return marked.parse(s, { breaks: true, gfm: true }); }
+            catch { return escapeHtml(s); }
+        };
 
         function escapeHtml(s) {
             return String(s ?? '')
@@ -842,17 +930,34 @@
                 </div>`;
             }
 
-            // ── Tool response ───────────────────────────────────────
+            // ── Tool response (with echoed request) ──────────────
             if (role === 'tool') {
                 const body = (typeof m.content === 'string')
                     ? m.content
                     : JSON.stringify(m.content, null, 2);
+
+                // Look up the original request for this call_id so we can
+                // echo the function name + arguments inline, saving the
+                // user from scrolling up to find the request card.
+                const req = _toolCallIndex.get(m.tool_call_id);
+                let echoHtml = '';
+                if (req) {
+                    let prettyArgs = req.arguments;
+                    try { prettyArgs = JSON.stringify(JSON.parse(req.arguments), null, 2); } catch {}
+                    echoHtml = `<div class="tool-req-echo">
+                        <div class="echo-fn">${escapeHtml(req.name)}</div>
+                        <pre>${escapeHtml(prettyArgs)}</pre>
+                        <div class="echo-sep">▼ result</div>
+                    </div>`;
+                }
+
                 return `<div class="msg tool-result">
                     <div class="head">
                         <span class="badge role-resp">tool call response</span>
                         <span class="subtle">${escapeHtml(shortId(m.tool_call_id))}</span>
                         <span class="ts">${escapeHtml(ts)}</span>
                     </div>
+                    ${echoHtml}
                     <div class="tool-body">${escapeHtml(body || '')}</div>
                     ${renderAttachments(m.attachments)}
                 </div>`;
@@ -996,8 +1101,30 @@
             </table>`;
         }
 
+        // Index of tool_call_id → { name, arguments } built from all
+        // assistant tool-call-request messages, so tool response cards
+        // can echo the original request inline.
+        let _toolCallIndex = new Map();
+
+        function buildToolCallIndex(messages) {
+            _toolCallIndex = new Map();
+            for (const m of messages) {
+                if (m.role === 'assistant' && Array.isArray(m.tool_calls)) {
+                    for (const tc of m.tool_calls) {
+                        if (tc.id) {
+                            _toolCallIndex.set(tc.id, {
+                                name: (tc.function && tc.function.name) || '?',
+                                arguments: (tc.function && tc.function.arguments) || '',
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
         let lastCount = 0;
         function render(messages) {
+            buildToolCallIndex(messages);
             renderStats(messages);
             if (!messages.length) {
                 root.innerHTML = '<div class="empty-state">waiting for messages…</div>';
@@ -1195,6 +1322,40 @@
                 exportBtn.disabled = false;
             }
         });
+
+        /* ─── Floating scroll buttons logic ───────────────────────
+           Show/hide based on scroll position: the "top" button appears
+           when scrolled away from the very top; the "bottom" button
+           appears when not at the very bottom. On a short page neither
+           shows, keeping the UI uncluttered. */
+        const scrollTopBtn = document.getElementById('scrollTopBtn');
+        const scrollBottomBtn = document.getElementById('scrollBottomBtn');
+
+        function updateScrollBtns() {
+            const y = window.scrollY;
+            const max = document.documentElement.scrollHeight - window.innerHeight;
+            // Show top button when scrolled more than a viewport-quarter down
+            scrollTopBtn.classList.toggle('visible', y > window.innerHeight * 0.25);
+            // Show bottom button when there's meaningful content below
+            scrollBottomBtn.classList.toggle('visible', max - y > window.innerHeight * 0.25);
+        }
+
+        function smoothScrollTo(target) {
+            window.scrollTo({ top: target, behavior: 'smooth' });
+        }
+
+        scrollTopBtn.addEventListener('click', () => smoothScrollTo(0));
+        scrollBottomBtn.addEventListener('click', () =>
+            smoothScrollTo(document.documentElement.scrollHeight));
+        window.addEventListener('scroll', updateScrollBtns, { passive: true });
+        // Re-evaluate after content renders (new messages may grow the page)
+        const _origRender = render;
+        render = function(messages) {
+            _origRender(messages);
+            // Defer until the DOM reflects the new innerHTML
+            requestAnimationFrame(updateScrollBtns);
+        };
+        updateScrollBtns();
 
         // Boot: fetch the conv roster first (which picks the initial
         // currentConvId), then open the SSE stream for it.
