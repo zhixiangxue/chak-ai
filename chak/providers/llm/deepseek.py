@@ -37,6 +37,35 @@ class DeepSeekMessageConverter(OpenAICompatibleMessageConverter):
                     formatted["reasoning_content"] = rc
         return result
 
+    @staticmethod
+    def _extract_cache_tokens(raw_usage: Any) -> tuple[int, int]:
+        """Read DeepSeek's officially-documented cache fields.
+
+        Per https://api-docs.deepseek.com/zh-cn/guides/kv_cache/, DeepSeek's
+        usage payload carries ``prompt_cache_hit_tokens`` and
+        ``prompt_cache_miss_tokens``. These are the official contract.
+
+        DeepSeek's SDK currently also mirrors the value into
+        ``prompt_tokens_details.cached_tokens`` for OpenAI SDK compatibility,
+        but that mirror is undocumented and could disappear. We fall back to
+        the OpenAI-standard fields only if the official ones are absent, so
+        chak keeps working across future API tweaks.
+
+        DeepSeek does not report cache-write tokens (context caching on disk
+        is free), so ``cache_write`` is always 0.
+        """
+        if isinstance(raw_usage, dict):
+            hit = raw_usage.get("prompt_cache_hit_tokens")
+        else:
+            hit = getattr(raw_usage, "prompt_cache_hit_tokens", None)
+
+        if hit is not None:
+            return int(hit or 0), 0
+
+        # Fallback: DeepSeek historically mirrors the hit count into the
+        # OpenAI-compat details struct. Delegate to the base extractor.
+        return OpenAICompatibleMessageConverter._extract_cache_tokens(raw_usage)
+
     def _build_metadata(self, response: Any, choice: Any) -> Metadata:
         """Build metadata with 'deepseek' as provider name."""
         metadata = super()._build_metadata(response, choice)
