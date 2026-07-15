@@ -103,6 +103,33 @@ class OpenAICompatibleMessageConverter(BaseMessageConverter):
 
         return normalized_content, reasoning
 
+    @staticmethod
+    def _extract_cache_tokens(raw_usage: Any) -> tuple[int, int]:
+        """Extract cache token counts from OpenAI usage objects.
+
+        OpenAI returns cached tokens in a nested details object:
+        - Chat Completions: ``usage.prompt_tokens_details.{cached_tokens, cache_write_tokens}``
+        - Responses API:    ``usage.input_tokens_details.{cached_tokens, cache_write_tokens}``
+
+        Returns:
+            (cache_read_tokens, cache_write_tokens) — both 0 if absent.
+        """
+        cache_read = 0
+        cache_write = 0
+
+        if isinstance(raw_usage, dict):
+            details = raw_usage.get("prompt_tokens_details") or raw_usage.get("input_tokens_details")
+            if isinstance(details, dict):
+                cache_read = int(details.get("cached_tokens") or 0)
+                cache_write = int(details.get("cache_write_tokens") or 0)
+        else:
+            details = getattr(raw_usage, "prompt_tokens_details", None) or getattr(raw_usage, "input_tokens_details", None)
+            if details is not None:
+                cache_read = int(getattr(details, "cached_tokens", 0) or 0)
+                cache_write = int(getattr(details, "cache_write_tokens", 0) or 0)
+
+        return cache_read, cache_write
+
     def _build_metadata(self, response: Any, choice: Any) -> Metadata:
         """Build metadata - subclasses can override to change provider name."""
         raw_usage = getattr(response, "usage", None)
@@ -129,10 +156,14 @@ class OpenAICompatibleMessageConverter(BaseMessageConverter):
                     or (prompt_tokens + completion_tokens)
                 )
 
+            cache_read, cache_write = self._extract_cache_tokens(raw_usage)
+
             usage = Usage(
                 prompt_tokens=max(prompt_tokens, 0),
                 completion_tokens=max(completion_tokens, 0),
                 total_tokens=max(total_tokens, 0),
+                cache_creation_input_tokens=max(cache_write, 0),
+                cache_read_input_tokens=max(cache_read, 0),
             )
 
         return Metadata(
@@ -216,10 +247,14 @@ class OpenAICompatibleMessageConverter(BaseMessageConverter):
                     or (prompt_tokens + completion_tokens)
                 )
 
+            cache_read, cache_write = self._extract_cache_tokens(raw_usage)
+
             metadata["usage"] = {
                 "prompt_tokens": max(prompt_tokens, 0),
                 "completion_tokens": max(completion_tokens, 0),
                 "total_tokens": max(total_tokens, 0),
+                "cache_creation_input_tokens": max(cache_write, 0),
+                "cache_read_input_tokens": max(cache_read, 0),
             }
 
         return metadata

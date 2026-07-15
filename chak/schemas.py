@@ -38,7 +38,22 @@ class Cache(BaseModel):
     Controls which parts of the request are cached and for how long.
     Each provider translates these settings into its own wire format.
 
-    Currently supported by: Anthropic.
+    Supported by: Anthropic, OpenAI.
+
+    Anthropic behavior:
+        - ``system_prompt``: attach ``cache_control`` to the system prompt block.
+        - ``tools``: attach ``cache_control`` to the last tool definition.
+        - ``ttl``: 300 s (default, 5-min ephemeral) or 3600 s (1-hour).
+        - ``key``: not used (Anthropic has no equivalent).
+
+    OpenAI behavior:
+        Caching is **automatic** for prompts ≥ 1024 tokens — no markers needed.
+        - ``key``: passed as ``prompt_cache_key`` to improve cache hit rates
+          across requests that share long prefixes.
+        - ``system_prompt``: on GPT-5.6+ models, wraps the system prompt with
+          an explicit ``prompt_cache_breakpoint``. On older models this is
+          ignored (caching is still automatic).
+        - ``ttl``: not directly used (OpenAI manages retention internally).
 
     Attributes:
         system_prompt: Cache the system prompt block.
@@ -46,15 +61,28 @@ class Cache(BaseModel):
         ttl: Cache time-to-live in **seconds**.
             Common values: 300 (5 min, default) or 3600 (1 hour).
             Each provider maps this to its nearest supported duration.
+        key: Optional cache routing key (OpenAI ``prompt_cache_key``).
+            Reuse the same key across requests that share a common prefix
+            to improve cache hit rates.
 
     Example::
 
-        # Default 5-minute cache
+        # Anthropic — default 5-minute cache
         Cache(system_prompt=True, tools=True)
 
-        # 1-hour cache — better for chat products with sporadic requests
+        # Anthropic — 1-hour cache
         Cache(system_prompt=True, tools=True, ttl=3600)
+
+        # OpenAI — improve hit rate with a routing key
+        Cache(key="tenant:acme:assistant-v1")
+
+        # OpenAI — GPT-5.6+ explicit breakpoint + routing key
+        Cache(system_prompt=True, key="tenant:acme:assistant-v1")
     """
     system_prompt: bool = False
     tools: bool = False
     ttl: int = Field(default=300, description="Cache TTL in seconds (300 or 3600)")
+    key: Optional[str] = Field(
+        default=None,
+        description="Cache routing key for OpenAI prompt_cache_key",
+    )

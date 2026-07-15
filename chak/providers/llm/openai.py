@@ -11,6 +11,8 @@ Supported models:
 """
 from typing import Optional, Any, Union, get_args
 
+import re
+
 from pydantic import field_validator
 from openai.types.responses import (
     ResponseReasoningSummaryTextDeltaEvent,
@@ -23,13 +25,14 @@ from openai.types.responses import (
 from .openai_compat import OpenAICompatibleMessageConverter, OpenAICompatibleProvider
 from .base import BaseProviderConfig
 from ...message import AIMessage, MessageChunk, ReasoningChunk, UnifiedStreamChunk
-from ...schemas import Reasoning
+from ...schemas import Reasoning, Cache
 
 
 class OpenAIConfig(BaseProviderConfig):
     """Configuration for OpenAI provider."""
     base_url: Optional[str] = "https://api.openai.com/v1"
-    
+    cache: Optional[Cache] = None  # Prompt caching settings
+
     @field_validator('base_url', mode='before')
     @classmethod
     def set_default_base_url(cls, v):
@@ -202,8 +205,94 @@ class OpenAIMessageConverter(OpenAICompatibleMessageConverter):
 
 
 class OpenAIProvider(OpenAICompatibleProvider):
-    """OpenAI provider implementation."""
-    
+    """OpenAI provider implementation.
+
+    Supports prompt caching via ``OpenAIConfig.cache``. Unlike Anthropic,
+    OpenAI caching is automatic for prompts ≥ 1024 tokens. The cache config
+    adds two things:
+    - ``prompt_cache_key``: improves hit rate across requests sharing a prefix.
+    - Explicit breakpoints on GPT-5.6+ models when ``cache.system_prompt`` is set.
+    """
+
+    # ------------------------------------------------------------------ #
+    # Cache helpers                                                       #
+    # ------------------------------------------------------------------ #
+
+    def _apply_cache_params(self, messages: list, kwargs: dict) -> None:
+        """Inject OpenAI prompt-caching parameters into kwargs.
+
+        - ``cache.key`` → ``prompt_cache_key`` (routing hint, all models).
+        - ``cache.system_prompt`` → wrap system message with explicit
+          ``prompt_cache_breakpoint``. Only injected on GPT-5.6+ models;
+          older models reject the parameter with HTTP 400
+          (``prompt_cache_breakpoint is not supported on this model``)
+          and are left untouched so automatic caching keeps working.
+        """
+        cache: Optional[Cache] = getattr(self.config, "cache", None)
+        if cache is None:
+            return
+
+        # prompt_cache_key: pass-through routing key (supported on all models
+        # gpt-4o and newer)
+        if cache.key:
+            kwargs["prompt_cache_key"] = cache.key
+
+        # Explicit breakpoint on system prompt (Chat Completions API only,
+        # GPT-5.6+ only). Silently skipped on older models — automatic
+        # caching still works for them, so nothing is lost.
+        if cache.system_prompt and self._supports_explicit_breakpoint(self.config.model):
+            self._inject_system_breakpoint(messages)
+
+    @staticmethod
+    def _supports_explicit_breakpoint(model: str) -> bool:
+        """Whether the model accepts ``prompt_cache_breakpoint``.
+
+        Per OpenAI docs, only GPT-5.6 and later model families support
+        explicit breakpoints. Older models (gpt-4o, gpt-4.1, gpt-5,
+        gpt-5.5, o1, o3, etc.) reject the parameter with a 400
+        invalid_request_error. Those models still benefit from automatic
+        prompt caching for prompts ≥ 1024 tokens.
+        """
+        m = (model or "").lower()
+        # GPT-5.6 through 5.9 (any patch variant like gpt-5.6-mini also matches)
+        for minor in ("5.6", "5.7", "5.8", "5.9"):
+            if m.startswith(f"gpt-{minor}"):
+                return True
+        # GPT-6 and later major versions
+        match = re.match(r"gpt-(\d+)", m)
+        if match and int(match.group(1)) >= 6:
+            return True
+        return False
+
+    @staticmethod
+    def _inject_system_breakpoint(messages: list) -> None:
+        """Wrap the first system message's string content with a breakpoint.
+
+        Mutates *messages* in place. Only converts plain-string ``content``
+        to the structured list form; already-structured content is left as-is
+        to avoid clobbering multimodal blocks.
+        """
+        for msg in messages:
+            if not isinstance(msg, dict):
+                continue
+            if msg.get("role") != "system":
+                continue
+            content = msg.get("content")
+            if not isinstance(content, str):
+                continue  # Already structured or empty — skip
+            msg["content"] = [
+                {
+                    "type": "text",
+                    "text": content,
+                    "prompt_cache_breakpoint": {"mode": "explicit"},
+                }
+            ]
+            break  # Only the first system message
+
+    # ------------------------------------------------------------------ #
+    # Reasoning helpers                                                   #
+    # ------------------------------------------------------------------ #
+
     def _apply_reasoning_params(self, kwargs: dict) -> None:
         """Apply reasoning parameters for OpenAI.
         
@@ -266,10 +355,15 @@ class OpenAIProvider(OpenAICompatibleProvider):
         """
         model = self.config.model
         has_reasoning = 'reasoning' in kwargs
-        
+
         # Route 1: Responses API (for reasoning)
         if has_reasoning:
             try:
+                # Apply cache key for Responses API too
+                cache = getattr(self.config, "cache", None)
+                if cache and cache.key:
+                    kwargs.setdefault("prompt_cache_key", cache.key)
+
                 response = self._client.responses.create(
                     model=model,
                     input=messages,
@@ -288,18 +382,21 @@ class OpenAIProvider(OpenAICompatibleProvider):
                     ) from e
                 # Other errors: fallback to Chat Completions without reasoning
                 kwargs.pop('reasoning', None)
-        
+
         # Route 2: Chat Completions API (default, supports function calling)
+        # Apply cache params (prompt_cache_key + system breakpoint)
+        self._apply_cache_params(messages, kwargs)
+
         # Apply provider-specific reasoning parameter transformations
         self._apply_reasoning_params(kwargs)
-        
+
         # Call Chat Completions API
         raw_response = self._client.chat.completions.create(
             model=model,
             messages=messages,
             **kwargs
         )
-        
+
         # Return raw Chat Completions response
         return raw_response
     
@@ -320,6 +417,11 @@ class OpenAIProvider(OpenAICompatibleProvider):
         # Route 1: Responses API streaming (for reasoning)
         if has_reasoning:
             try:
+                # Apply cache key for Responses API too
+                cache = getattr(self.config, "cache", None)
+                if cache and cache.key:
+                    kwargs.setdefault("prompt_cache_key", cache.key)
+
                 return self._client.responses.create(
                     model=model,
                     input=messages,
@@ -337,20 +439,23 @@ class OpenAIProvider(OpenAICompatibleProvider):
                     ) from e
                 # Other errors: fallback to Chat Completions without reasoning
                 kwargs.pop('reasoning', None)
-        
+
         # Route 2: Chat Completions API streaming (default, supports function calling)
+        # Apply cache params (prompt_cache_key + system breakpoint)
+        self._apply_cache_params(messages, kwargs)
+
         # Apply provider-specific reasoning parameter transformations
         self._apply_reasoning_params(kwargs)
-        
+
         # Add stream_options to include usage in streaming mode (if not already set)
         if 'stream_options' not in kwargs:
             kwargs['stream_options'] = {"include_usage": True}
-        
+
         stream = self._client.chat.completions.create(
             model=model,
             messages=messages,
             stream=True,
             **kwargs
         )
-        
+
         return stream
