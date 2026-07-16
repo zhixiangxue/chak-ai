@@ -11,7 +11,7 @@ Task design:
   the Turn 1 / Turn 2 / Turn 3 group structure.
 
 Prerequisites:
-    export DASHSCOPE_API_KEY=sk-xxx      # Qwen (Bailian)
+    export DEEPSEEK_API_KEY=sk-xxx       # DeepSeek
     pip install 'chakpy[server]'         # inspector needs fastapi + uvicorn
 
 Usage:
@@ -138,14 +138,14 @@ TURNS = [
 
 
 async def main():
-    api_key = os.getenv("DASHSCOPE_API_KEY") or os.getenv("BAILIAN_API_KEY")
+    api_key = os.getenv("DEEPSEEK_API_KEY")
     if not api_key:
-        print("ERROR: DASHSCOPE_API_KEY / BAILIAN_API_KEY not found.")
-        print("       Get a key at https://dashscope.aliyun.com/ and add it to .env")
+        print("ERROR: DEEPSEEK_API_KEY not found.")
+        print("       Get a key at https://platform.deepseek.com/ and add it to .env")
         return
 
     conv = chak.Conversation(
-        "bailian/qwen-plus",
+        "deepseek/deepseek-v4-pro",
         api_key=api_key,
         system_prompt=(
             "You are a rigorous technical research assistant conducting a "
@@ -156,24 +156,28 @@ async def main():
         ),
         tools=[fetch_url, count_chars, get_current_time],
     )
+    # Give the conv a human-readable title so the inspector sidebar
+    # shows something meaningful instead of the default "Untitled".
+    conv.title = "Asyncio deep-dive (3-turn research)"
 
     # Secondary conv: another conversation in the same process with a different
     # model, to demonstrate multi-conv support. The sidebar tab bar will show
     # it as a second tab, and the stats table will display two distinct
     # model_uri rows (qwen-plus vs qwen-turbo).
     conv2 = chak.Conversation(
-        "bailian/qwen-turbo",
+        "deepseek/deepseek-v4-flash",
         api_key=api_key,
         system_prompt="You are a lightweight QA assistant. Answer concisely.",
         tools=[get_current_time],
     )
+    conv2.title = "Quick QA (deepseek-v4-flash)"
 
     # Attach both convs to the same inspector (same port). The first watch()
     # starts the server and opens the browser; subsequent watch() calls simply
     # register the new conv onto the running server — a new tab appears
     # automatically in the sidebar.
-    watch(conv)
-    watch(conv2)
+    watch(conv, port=9797)
+    watch(conv2, port=9797)
 
     print()
     print("=" * 70)
@@ -182,8 +186,8 @@ async def main():
     print()
     print("Browser opened at http://127.0.0.1:7878")
     print("Every new message the agent appends will refresh the page.")
-    print(f"  Main conv: {len(TURNS)} turns of asyncio research (qwen-plus)")
-    print("  Side conv: a quick question (qwen-turbo) — switch via sidebar tabs")
+    print(f"  Main conv: {len(TURNS)} turns of asyncio research (deepseek-v4-pro)")
+    print("  Side conv: a quick question (deepseek-v4-flash) — switch via sidebar tabs")
     print("  Starting in 3 seconds — switch to the browser and watch.")
     print()
     await asyncio.sleep(3)

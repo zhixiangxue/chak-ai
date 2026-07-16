@@ -62,11 +62,21 @@
                no matter how tall the message stream grows. */
             min-height: 100vh;
         }
+        /* ``--sidebar-w`` drives both the fixed sidebar width and the
+           main column's left margin, so the drag handle only needs to
+           mutate one CSS custom property. It's declared on ``:root``
+           (not ``body``) because we mutate it via JS on
+           ``document.documentElement``; declaring it on ``body`` would
+           create a more-specific stop that shadows the JS override and
+           makes the sidebar appear "stuck". */
+        :root {
+            --sidebar-w: 232px;
+        }
         aside.sidebar {
             position: fixed;
             top: 0;
             left: 0;
-            width: 232px;
+            width: var(--sidebar-w);
             height: 100vh;
             overflow-y: auto;
             overscroll-behavior: contain;
@@ -80,8 +90,50 @@
         }
         .main-col {
             /* Reserve horizontal space for the fixed sidebar. */
-            margin-left: 232px;
+            margin-left: var(--sidebar-w);
             min-width: 0;
+        }
+
+        /* ─── Sidebar resizer ─────────────────────────────────
+           Thin vertical hit-strip sitting on the sidebar's right edge.
+           The strip is placed entirely *outside* the sidebar (starting at
+           ``left: var(--sidebar-w)``) so the browser-drawn scrollbar
+           inside ``aside.sidebar`` — which is a hit-tested overlay in
+           some browsers — can't swallow pointer events on the divider.
+           An 8px wide hot zone is grabbable without pixel-hunting.
+
+           On hover / active state we paint a 1px line the color of
+           ``--text-2`` to make the affordance discoverable. During drag,
+           ``body`` gets ``.resizing`` which forces the col-resize cursor
+           and disables text selection so a fast drag off the strip
+           doesn't leave a text-highlight streak. We deliberately do NOT
+           blanket-set ``pointer-events: none`` on the page while
+           dragging — that would break ``setPointerCapture`` on some
+           browsers and cause the drag to freeze after ``pointerdown``. */
+        .sidebar-resizer {
+            position: fixed;
+            top: 0;
+            left: var(--sidebar-w);
+            width: 8px;
+            /* Nudge the visible strip back onto the border so hover shows
+               a hairline sitting on the edge, not floating in gutter. */
+            margin-left: -4px;
+            height: 100vh;
+            cursor: col-resize;
+            background: transparent;
+            z-index: 20;
+            transition: background 0.15s;
+            /* Touch devices: prevent the browser from hijacking horizontal
+               drags for pan/zoom. */
+            touch-action: none;
+        }
+        .sidebar-resizer:hover,
+        .sidebar-resizer.dragging {
+            background: var(--text-2);
+        }
+        body.resizing {
+            cursor: col-resize !important;
+            user-select: none;
         }
 
         /* ─── Header (sticky) ───────────────────────────────────── */
@@ -89,26 +141,38 @@
             /* Header flows with the page instead of ``position: sticky``.
                A pinned banner felt heavy once the stats table grew to
                several rows; letting it scroll away restores focus to the
-               message stream. */
+               message stream.
+
+               The row that used to live here (``.top-bar`` with msg
+               count + connection status + export button) is gone — its
+               contents were split into two more natural homes: identity
+               & controls into ``.conv-info-bar``, connection status
+               into the sidebar's ``.brand`` block. That gives the main
+               column's right edge a single focus (the conv) instead of
+               two competing header rows. */
             background: var(--bg);
             border-bottom: 1px solid var(--line);
         }
-        .top-bar {
-            /* Fixed height so this row visually aligns with the sidebar's
-               ``.brand`` block — both are the "page header row" and their
-               bottom borders must land on the same pixel to avoid the
-               tell-tale mis-aligned seam. */
-            display: flex; align-items: center; gap: 16px;
-            height: 52px;
-            padding: 0 28px;
-            border-bottom: 1px solid var(--line);
-        }
         .brand {
-            /* Match .top-bar height exactly so the bottom borders align
-               across the sidebar / main-col boundary. */
+            /* Row layout: brand name on the left, connection status
+               (dot + label) pushed to the right. Fixed 52px height
+               keeps the bottom-border seam aligned with the
+               ``.conv-info-bar`` above the main column so the sidebar /
+               main-col divide still looks tidy.
+
+               ``flex: 0 0 52px`` (rather than a plain ``height: 52px``)
+               is load-bearing here: ``aside.sidebar`` is a
+               ``flex-direction: column`` container, and when the conv
+               list below grows past ``100vh`` the browser will
+               *first* try to compress every shrinkable flex child
+               proportionally — not immediately fall back to the
+               sidebar's ``overflow-y: auto``. Without pinning the
+               shrink factor to 0, ``.brand`` gets crushed down to a
+               ~15px sliver when there are many conversations. */
+            flex: 0 0 52px;
             display: flex;
             align-items: center;
-            height: 52px;
+            gap: 10px;
             padding: 0 20px;
             border-bottom: 1px solid var(--line);
             font-size: 12px;
@@ -123,19 +187,169 @@
             display: inline-block;
             width: 8px; height: 8px;
             background: var(--accent);
-            margin-right: 10px;
             vertical-align: middle;
             transform: translateY(-1px);
+            flex: 0 0 auto;
         }
-        .top-meta {
+        .brand .brand-name {
+            /* Truncate the product name gracefully when a very narrow
+               sidebar squeezes the row — the status chip on the right
+               is more actionable than the label, so keep it visible. */
+            flex: 1 1 auto;
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .brand .brand-status {
+            /* Connection indicator, moved here from the removed top-bar.
+               Mono-cased + lowercase so it reads as "instrumentation"
+               metadata rather than a UI label competing with the
+               product name above. */
+            flex: 0 0 auto;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            font-family: var(--mono);
+            font-size: 10px;
+            font-weight: 500;
+            letter-spacing: 0.04em;
+            text-transform: lowercase;
+            color: var(--text-3);
+        }
+
+        /* Current-conversation identity strip.
+           Two stacked lines: the title row (title + right-aligned
+           control cluster: elapsed / msg count / export) and a mono meta
+           row with the full id + model_uri. This is the only header
+           block in the main column now — the earlier ``.top-bar`` was
+           folded into here (msg count, export button) and into
+           ``.brand`` (connection status), so the right edge of the main
+           column is dedicated to "what am I looking at" instead of
+           being split across two competing rows.
+
+           Text is naturally selectable (no ``<button>`` wrapper, no
+           user-select override needed) so drag-select + Cmd/Ctrl+C
+           "just works". */
+        .conv-info-bar {
+            padding: 12px 28px 14px;
+            border-bottom: 1px solid var(--line);
+        }
+        .conv-info-bar:empty {
+            /* Suppress the border-bottom on cold boot when no conv info
+               has been rendered yet, so we don't paint a stray divider. */
+            display: none;
+        }
+        /* Flex row: title grows on the left, the right cluster (elapsed
+           chip, msg count, export button) sits on the far right and
+           stays vertically aligned to the title's first line even when
+           the title wraps to multiple lines. */
+        .conv-info-bar .ci-title-row {
+            display: flex;
+            align-items: baseline;
+            gap: 14px;
+        }
+        .conv-info-bar .ci-title {
+            font-family: -apple-system, BlinkMacSystemFont, "Inter",
+                         "Segoe UI", Roboto, sans-serif;
+            font-size: 15px;
+            font-weight: 600;
+            color: var(--text);
+            line-height: 1.35;
+            /* Wrap rather than ellipsize — no width constraints in the
+               main column, and the user asked specifically to be able to
+               see the whole title. */
+            word-break: break-word;
+            flex: 1 1 auto;
+            min-width: 0;
+        }
+        .conv-info-bar .ci-title.untitled {
+            color: var(--text-4);
+            font-weight: 500;
+            font-style: italic;
+        }
+        /* Compact runtime chip next to the msg count. Mono digits so
+           the value doesn't jitter as it ticks up, muted so it never
+           competes with the title text itself. Order-wise this is the
+           second (right-most) member of the metrics cluster — mirrors
+           the ``.turn-header`` layout so users get the same left-to-right
+           reading (count then elapsed) at both scopes. */
+        .conv-info-bar .ci-duration {
+            flex: 0 0 auto;
             margin-left: auto;
+            font-family: var(--mono);
             font-size: 11px;
             color: var(--text-3);
-            display: flex; align-items: center; gap: 12px;
-            font-family: var(--mono);
-            letter-spacing: 0.02em;
+            letter-spacing: 0.04em;
+            white-space: nowrap;
+            font-variant-numeric: tabular-nums;
         }
-        .top-meta .sep { color: var(--line-2); }
+        .conv-info-bar .ci-duration .lbl {
+            color: var(--text-4);
+            text-transform: uppercase;
+            letter-spacing: 0.14em;
+            font-size: 9.5px;
+            margin-right: 6px;
+        }
+        /* Msg count chip — same styling family as ``.ci-duration`` so
+           the right-side cluster reads as one coherent metrics block.
+           Owns the ``margin-left: auto`` push (it's the leftmost member
+           of the right cluster), which lets ``.ci-duration`` fall back
+           to its own auto push when count is somehow absent. */
+        .conv-info-bar .ci-count,
+        .conv-info-bar .ci-turns {
+            flex: 0 0 auto;
+            margin-left: auto;
+            font-family: var(--mono);
+            font-size: 11px;
+            color: var(--text-3);
+            letter-spacing: 0.04em;
+            white-space: nowrap;
+            font-variant-numeric: tabular-nums;
+        }
+        /* When multiple metric chips are rendered, the leftmost one
+           owns the ``margin-left: auto`` push — the rest just abut it
+           via the parent flex ``gap``. Zeroing the fallback ``auto``
+           on trailing chips prevents a doubled push that would leave
+           an unwanted gap. Order in the DOM is turns → count → duration,
+           so we override on the two "not leftmost" positions. */
+        .conv-info-bar .ci-turns + .ci-count,
+        .conv-info-bar .ci-turns + .ci-duration,
+        .conv-info-bar .ci-count + .ci-duration {
+            margin-left: 0;
+        }
+        .conv-info-bar .ci-count .lbl,
+        .conv-info-bar .ci-turns .lbl {
+            color: var(--text-4);
+            text-transform: uppercase;
+            letter-spacing: 0.14em;
+            font-size: 9.5px;
+            margin-right: 6px;
+        }
+        /* Export button rides on the far right of the title row. Sized
+           down slightly from the old ``.top-bar`` variant so it doesn't
+           dominate the title. */
+        .conv-info-bar .ci-export {
+            flex: 0 0 auto;
+            align-self: center;
+        }
+        .conv-info-bar .ci-meta {
+            margin-top: 5px;
+            font-family: var(--mono);
+            font-size: 11px;
+            color: var(--text-3);
+            letter-spacing: 0.02em;
+            /* IDs (UUIDs) don't have wrap opportunities; break on any
+               char so the whole id shows without horizontal scroll on a
+               narrow window. */
+            word-break: break-all;
+        }
+        .conv-info-bar .ci-meta .sep {
+            color: var(--line-2);
+            padding: 0 8px;
+            /* Never break the separator onto its own line. */
+            word-break: keep-all;
+        }
         .dot {
             display: inline-block;
             width: 6px; height: 6px;
@@ -177,8 +391,20 @@
            mixed-model conversations (failover, router, agent handoff) show
            each price point on its own line. */
         .stats-wrap {
-            /* ``.top-bar`` above owns the separator now, so no border-top
-               here — would double up as two 1px lines. */
+            /* No border-top: ``.conv-info-bar`` above already draws the
+               separator between it and this stats block. Adding another
+               here would double up as two 1px lines.
+
+               No horizontal padding on the wrapper: the surrounding
+               header dividers (``.conv-info-bar`` bottom, ``header.top``
+               bottom) are drawn at 100% width, so the stats table's own
+               row separators must also span 100% to avoid a visual
+               mismatch (the earlier layout had 100% outer lines but
+               narrower middle lines because the wrapper's padding
+               constrained the table). The 28px/72px inset that keeps
+               cell text aligned with the message stream below is
+               applied per-cell via ``th:first-child`` / ``th:last-child``
+               (and the same on ``td``) instead. */
             overflow-x: auto;
             max-height: 260px;
             overflow-y: auto;
@@ -215,6 +441,14 @@
             white-space: nowrap;
             color: var(--text);
         }
+        /* Edge-cell insets: match the message stream's 28px left / 72px
+           right so column text still aligns with the ``.turn`` blocks
+           below, while the row separators themselves span 100% (see the
+           ``.stats-wrap`` comment for why this matters). */
+        table.stats thead th:first-child,
+        table.stats tbody td:first-child { padding-left: 28px; }
+        table.stats thead th:last-child,
+        table.stats tbody td:last-child  { padding-right: 72px; }
         table.stats tbody tr:last-child td { border-bottom: none; }
         table.stats tbody tr.total td {
             background: #fafafa;
@@ -224,8 +458,6 @@
         }
         table.stats td.num { text-align: right; font-variant-numeric: tabular-nums; }
         table.stats td.dim { color: var(--text-3); }
-        table.stats td:first-child { padding-left: 28px; }
-        table.stats td:last-child, table.stats th:last-child { padding-right: 28px; }
         table.stats .model-uri {
             color: var(--text);
             font-weight: 500;
@@ -270,11 +502,42 @@
             font-size: 11px;
             color: var(--text-3);
         }
+        /* Elapsed wall-clock span for a single turn (first-msg -> last-msg
+           timestamps). Sits on the far right of the header — metrics on
+           the right, identity on the left. Order in the DOM is
+           ``.turn-count`` then ``.turn-duration``; ``.turn-count`` owns
+           the ``margin-left: auto`` push, and ``.turn-duration`` just
+           abuts it with a small left margin (see the adjacent-sibling
+           override below). */
+        .turn-header .turn-duration {
+            margin-left: auto;
+            font-family: var(--mono);
+            font-size: 11px;
+            color: var(--text-2);
+            font-variant-numeric: tabular-nums;
+            letter-spacing: 0.02em;
+        }
+        .turn-header .turn-duration .lbl {
+            color: var(--text-4);
+            text-transform: uppercase;
+            letter-spacing: 0.14em;
+            font-size: 9.5px;
+            margin-right: 5px;
+        }
         .turn-header .turn-count {
             margin-left: auto;
             font-family: var(--mono);
             font-size: 11px;
             color: var(--text-3);
+        }
+        /* When both count and duration are rendered, count comes first
+           and owns the ``margin-left: auto`` push; duration just abuts
+           it with a small gap. Using the adjacent-sibling combinator
+           means single-element fallbacks (count-only for the ``setup``
+           pseudo-turn, or duration-only for hypothetical future groups)
+           still get pushed right on their own via the base rule. */
+        .turn-header .turn-count + .turn-duration {
+            margin-left: 14px;
         }
         .turn.ungrouped .turn-header .turn-num {
             font-size: 11px;
@@ -603,6 +866,13 @@
             flex-direction: column;
             /* No border-top: the .brand block above already has a
                border-bottom that acts as the visual seam. */
+            /* Same rationale as ``.brand``: opt out of flex-shrink so
+               the list keeps its natural height and any overflow is
+               handled by ``aside.sidebar``'s own ``overflow-y: auto``
+               scrollbar. Without this the conv rows also get squeezed
+               (each row ends up ~half its designed height) when many
+               conversations are attached. */
+            flex: 0 0 auto;
         }
         .conv-tabs.hidden {
             /* Legacy: kept so a single-conv session in an older cached
@@ -646,12 +916,49 @@
             width: 2px;
             background: var(--text);
         }
-        .conv-tab .cid {
-            font-size: 10.5px;
+        .conv-tab .title {
+            /* Primary label — first visual anchor on each tab. Uses the
+               UI font (not mono) so multi-word titles read naturally;
+               truncates to a single line with ellipsis so long titles
+               don't wrap and inflate row height. */
+            font-family: -apple-system, BlinkMacSystemFont, "Inter",
+                         "Segoe UI", Roboto, sans-serif;
+            font-size: 12px;
             font-weight: 600;
-            letter-spacing: 0.06em;
+            letter-spacing: 0.01em;
             color: inherit;
+            max-width: 100%;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            width: 100%;
         }
+        .conv-tab .title-text {
+            /* Nested so the spinner (sibling) doesn't force the ellipsis
+               to eat the spinner too. flex:1 lets the text shrink while
+               the spinner keeps its fixed size. */
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            flex: 1 1 auto;
+            min-width: 0;
+        }
+        .conv-tab .title.untitled { color: var(--text-4); font-weight: 500; font-style: italic; }
+        .conv-tab.active .title.untitled { color: var(--text-3); }
+        .conv-tab .cid {
+            font-size: 10px;
+            font-weight: 500;
+            letter-spacing: 0.06em;
+            color: var(--text-3);
+            max-width: 100%;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .conv-tab.active .cid { color: var(--text-2); }
         .conv-tab .uri {
             font-size: 10px;
             color: var(--text-4);
@@ -660,22 +967,23 @@
             max-width: 100%;
             overflow: hidden;
             text-overflow: ellipsis;
+            white-space: nowrap;
         }
         .conv-tab.active .uri { color: var(--text-3); }
 
-        /* Running-state spinner. Shown inline next to the cid when the
-           server's ``_infer_running`` heuristic thinks the conv is
-           mid-turn (unanswered user prompt, pending tool_calls, or a
-           tool result awaiting the next assistant hop). */
+        /* Running-state spinner. Shown inline inside the ``.title`` row
+           when chak's turn-lifecycle hooks report a turn in flight. The
+           spinner is a sibling of ``.title-text`` inside a flex container,
+           so no manual margin is needed — the row's ``gap`` handles
+           spacing. */
         .conv-tab .spinner {
             display: inline-block;
             width: 9px;
             height: 9px;
-            margin-left: 8px;
+            flex: 0 0 auto;
             border: 1.5px solid var(--line-2);
             border-top-color: var(--text);
             border-radius: 50%;
-            vertical-align: -1px;
             animation: chak-spin 0.75s linear infinite;
         }
         @keyframes chak-spin {
@@ -726,25 +1034,131 @@
             color: #fff;
             border-color: var(--accent);
         }
+
+        /* ─── Turn quick-nav (right rail) ───────────────────────────
+           A vertical column of chips wedged between the two scroll
+           buttons on the right edge. Each chip is a click-to-jump
+           anchor for one turn; the DOM order matches the render order
+           of the ``.turn`` groups below (setup / ungrouped groups are
+           deliberately excluded — they aren't numbered turns and
+           chipping them would introduce off-by-one indices in the
+           labels). Hidden entirely when there are fewer than two
+           turns — a single-turn conv doesn't need navigation. */
+        .turn-rail {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 2px;
+            /* Bound the column so a long agent run (40+ turns) doesn't
+               push past the viewport; the chip list gains an internal
+               scrollbar instead of stealing the whole right rail. */
+            max-height: 60vh;
+            overflow-y: auto;
+            /* Firefox thin-scrollbar; other engines fall back to auto. */
+            scrollbar-width: thin;
+            scrollbar-color: var(--line-2) transparent;
+        }
+        .turn-rail:empty { display: none; }
+        /* WebKit scrollbar styling to match the thin/muted Firefox look
+           so the chip list doesn't get a chunky OS-default scrollbar. */
+        .turn-rail::-webkit-scrollbar { width: 4px; }
+        .turn-rail::-webkit-scrollbar-thumb {
+            background: var(--line-2);
+        }
+        .turn-chip {
+            appearance: none;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 36px;
+            min-height: 22px;
+            padding: 0 4px;
+            background: var(--surface);
+            border: 1px solid var(--line);
+            border-radius: 0;
+            color: var(--text-2);
+            font-family: var(--mono);
+            font-size: 10.5px;
+            font-variant-numeric: tabular-nums;
+            font-weight: 500;
+            letter-spacing: 0.02em;
+            cursor: pointer;
+            transition: background 0.12s, color 0.12s, border-color 0.12s;
+        }
+        .turn-chip:hover {
+            background: var(--accent);
+            color: #fff;
+            border-color: var(--accent);
+        }
+
+        /* ─── Per-card copy button ────────────────────────────────
+           Small ghost button pinned to the top-right of every message
+           card. Copies the *raw* source (unformatted markdown, raw
+           tool-call arguments, raw tool-result body) — never the
+           rendered HTML — so pasting elsewhere preserves the exact
+           bytes the model produced/consumed.
+
+           Lives as the last flex child inside ``.head`` (after ``.ts``
+           which already uses ``margin-left: auto``), so it naturally
+           lands at the far right without needing absolute positioning
+           and without overlapping the timestamp. Always visible so the
+           affordance is discoverable at a glance — muted styling keeps
+           it from competing with the message content. */
+        .copy-btn {
+            appearance: none;
+            background: transparent;
+            border: 1px solid var(--line-2);
+            border-radius: 0;
+            color: var(--text-3);
+            padding: 2px 8px;
+            margin-left: 6px;
+            font-family: var(--mono);
+            font-size: 9.5px;
+            font-weight: 600;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+            cursor: pointer;
+            transition: background 0.15s, color 0.15s, border-color 0.15s;
+        }
+        .copy-btn:hover {
+            background: var(--accent);
+            color: #fff;
+            border-color: var(--accent);
+        }
+        .copy-btn.copied {
+            background: var(--role-resp);
+            color: #fff;
+            border-color: var(--role-resp);
+        }
     </style>
 </head>
 <body>
     <aside class="sidebar">
-        <span class="brand">chak inspector</span>
+        <div class="brand">
+            <!-- Product name on the left, live-connection status on the
+                 right. Status moved here from the removed main-column
+                 top-bar so the wide right side is dedicated to
+                 conv identity. -->
+            <span class="brand-name">chak inspector</span>
+            <span class="brand-status">
+                <span class="dot" id="dot"></span>
+                <span id="status">connecting</span>
+            </span>
+        </div>
         <div class="conv-tabs" id="convTabs"></div>
     </aside>
+    <div class="sidebar-resizer" id="sidebarResizer"
+         role="separator" aria-orientation="vertical"
+         aria-label="Resize sidebar"></div>
     <div class="main-col">
         <header class="top">
-            <div class="top-bar">
-                <div class="top-meta">
-                    <span id="count">0 msgs</span>
-                    <span class="sep">·</span>
-                    <span class="dot" id="dot"></span>
-                    <span id="status">connecting</span>
-                    <span class="sep">·</span>
-                    <button class="btn" id="exportBtn" title="Download conversation as JSON">export</button>
-                </div>
-            </div>
+            <!-- Current-conv identity strip. Placed here (not in the
+                 sidebar tab) so the full title / id / model_uri are
+                 always visible on the wide main column and are freely
+                 selectable for copy — no special affordance needed.
+                 Also hosts the per-conv controls (msg count chip + JSON
+                 export) previously in ``.top-bar``. -->
+            <div class="conv-info-bar" id="convInfo"></div>
             <div class="stats-wrap" id="stats">
                 <div class="stats-empty">no llm calls yet</div>
             </div>
@@ -754,15 +1168,22 @@
         </main>
     </div>
 
-    <!-- Floating scroll-to-top / scroll-to-bottom buttons -->
+    <!-- Floating scroll-to-top / scroll-to-bottom buttons, with a
+         turn quick-nav column wedged between them. The nav's chips
+         are rendered dynamically by ``renderTurnRail`` — the container
+         starts empty so the ``:empty`` rule hides it on cold boot. -->
     <div class="scroll-rail">
         <button class="scroll-btn" id="scrollTopBtn" title="Scroll to top" aria-label="Scroll to top">&#9650;</button>
+        <div class="turn-rail" id="turnRail" role="navigation" aria-label="Jump to turn"></div>
         <button class="scroll-btn" id="scrollBottomBtn" title="Scroll to bottom" aria-label="Scroll to bottom">&#9660;</button>
     </div>
 
     <script>
         const root = document.getElementById('root');
-        const countEl = document.getElementById('count');
+        // ``countEl`` (formerly a stable ``#count`` span in the removed
+        // ``.top-bar``) is gone — msg count now lives inside
+        // ``.conv-info-bar`` as a chip that ``renderConvInfo`` rebuilds
+        // on every render, driven directly by ``_msgCache``.
         const statusEl = document.getElementById('status');
         const dotEl = document.getElementById('dot');
         const statsEl = document.getElementById('stats');
@@ -795,6 +1216,49 @@
             if (!iso) return '';
             try { return new Date(iso).toLocaleTimeString('en-GB'); }
             catch { return ''; }
+        }
+
+        /* Human-friendly duration for a wall-clock span (in ms).
+         *   < 1s   →  "<1s"          (avoid noisy "0s" while an assistant
+         *                             is still streaming its first chunk)
+         *   < 1m   →  "12s"
+         *   < 1h   →  "1m 23s"       (seconds dropped only when exactly 0)
+         *   ≥ 1h   →  "1h 23m 45s"
+         * Sub-second precision is not useful at this granularity — the
+         * inspector renders on message-level events, so anything faster
+         * than a full second is dominated by network/render jitter. */
+        function fmtDuration(ms) {
+            if (ms == null || !isFinite(ms) || ms < 0) return '';
+            if (ms < 1000) return '<1s';
+            const total = Math.floor(ms / 1000);
+            const h = Math.floor(total / 3600);
+            const m = Math.floor((total % 3600) / 60);
+            const s = total % 60;
+            if (h > 0) return `${h}h ${m}m ${s}s`;
+            if (m > 0) return s > 0 ? `${m}m ${s}s` : `${m}m`;
+            return `${s}s`;
+        }
+
+        /* Compute the wall-clock span across a list of messages by taking
+         * max(timestamp) - min(timestamp). Messages without a parsable
+         * timestamp are skipped. Returns null when fewer than two valid
+         * timestamps exist (span isn't meaningful with only one point).
+         * Note: this reflects elapsed real time between the first and
+         * last recorded message — for a conversation, this includes idle
+         * gaps between turns, which is the natural reading of "conv total
+         * runtime". */
+        function computeSpanMs(messages) {
+            if (!Array.isArray(messages) || messages.length === 0) return null;
+            let lo = Infinity, hi = -Infinity, seen = 0;
+            for (const m of messages) {
+                const t = m && m.timestamp ? Date.parse(m.timestamp) : NaN;
+                if (!isFinite(t)) continue;
+                if (t < lo) lo = t;
+                if (t > hi) hi = t;
+                seen += 1;
+            }
+            if (seen < 2) return null;
+            return hi - lo;
         }
 
         function shortId(id) {
@@ -920,6 +1384,62 @@
             return m || p || null;
         }
 
+        /* ─── Per-card "copy raw" support ──────────────────────
+         * Each message card gets a small button that copies the *raw*
+         * source (unformatted markdown, raw tool-call arguments, raw
+         * tool-result body) — not the rendered HTML. Users need the
+         * exact bytes the LLM produced/consumed when reproducing bugs,
+         * pasting into a diff, feeding another prompt, etc.
+         *
+         * We can't stash arbitrarily-large text into a DOM attribute
+         * (blows up escape logic and inflates the DOM), so raw payloads
+         * live in a Map keyed by an incrementing id. The button carries
+         * only that id via ``data-raw-id``. The map is reset on every
+         * render() so ids don't leak across renders. */
+        let _rawCounter = 0;
+        const _rawMap = new Map();
+
+        function _stashRaw(text) {
+            const id = String(_rawCounter++);
+            _rawMap.set(id, text);
+            return id;
+        }
+
+        // Flatten a message's ``content`` field (string | multipart list
+        // | object) into a raw string. For multipart, ``text`` parts are
+        // joined; ``image_url`` parts fall back to the URL string; anything
+        // exotic is dumped as pretty JSON so no information is lost.
+        function _contentToRaw(content) {
+            if (content == null) return '';
+            if (typeof content === 'string') return content;
+            if (Array.isArray(content)) {
+                return content.map(part => {
+                    if (!part || typeof part !== 'object') return String(part ?? '');
+                    if (part.type === 'text') return part.text || '';
+                    if (part.type === 'image_url') {
+                        return (part.image_url && part.image_url.url) || '';
+                    }
+                    return JSON.stringify(part, null, 2);
+                }).filter(s => s !== '').join('\n\n');
+            }
+            return JSON.stringify(content, null, 2);
+        }
+
+        // Raw payload for one message = the raw ``content`` field,
+        // unformatted. Reasoning / tool_calls / tool results are
+        // deliberately excluded — users only want to grab the source
+        // text of system / user / assistant messages (the parts that
+        // the viewer otherwise runs through markdown-it).
+        function extractRawText(m) {
+            return _contentToRaw(m.content);
+        }
+
+        function buildCopyBtn(m) {
+            const id = _stashRaw(extractRawText(m));
+            return `<button class="copy-btn" data-raw-id="${id}" `
+                + `title="Copy raw content" aria-label="Copy raw content">copy</button>`;
+        }
+
         /* Distinguish the two flavors of AIMessage:
          *   1. content-only  → normal answer, render markdown
          *   2. has tool_calls → the model is requesting tools, highlight it */
@@ -927,6 +1447,12 @@
             const role = m.role || 'unknown';
             const ts = fmtTs(m.timestamp);
             const hasToolCalls = Array.isArray(m.tool_calls) && m.tool_calls.length > 0;
+            // Copy affordance only applies to plain text messages (system /
+            // user / assistant answer). Tool-call-request and tool-result
+            // cards carry structured data whose raw form is already visible
+            // in the pre-formatted panels below, so a "copy" chip there
+            // would just be noise.
+            const copyBtn = (role !== 'tool' && !hasToolCalls) ? buildCopyBtn(m) : '';
 
             // ── Assistant requesting tool calls ─────────────────────
             if (role === 'assistant' && hasToolCalls) {
@@ -990,6 +1516,7 @@
                     <span class="${badgeCls}">${escapeHtml(role)}</span>
                     ${role === 'assistant' ? renderModelAndTokens(m) : ''}
                     <span class="ts">${escapeHtml(ts)}</span>
+                    ${copyBtn}
                 </div>
                 ${renderContent(m.content)}
                 ${m.reasoning_content ? `<div class="reasoning">
@@ -1017,15 +1544,32 @@
             let turnNum = 0;
             return groups.map(g => {
                 const isTurn = !!g.turn_id;
+                // Per-turn elapsed wall-clock. Only rendered when we have
+                // at least two timestamped messages inside the turn — a
+                // single-message turn (e.g. a lone system prompt in the
+                // "setup" group) has no meaningful span. The
+                // "setup" pseudo-turn also opts out because its
+                // messages are usually just seeding data, not a
+                // real interactive round.
+                const dur = isTurn ? fmtDuration(computeSpanMs(g.messages)) : '';
+                const durHtml = dur
+                    ? `<span class="turn-duration" title="Elapsed from first to last message in this turn"><span class="lbl">elapsed</span>${escapeHtml(dur)}</span>`
+                    : '';
                 let header;
                 if (isTurn) {
                     turnNum += 1;
                     const nn = String(turnNum).padStart(2, '0');
-                    header = `<div class="turn-header">
+                    // ``id="turn-N"`` is the anchor target for the
+                    // right-side turn quick-nav rail (``.turn-rail``).
+                    // N is the 1-based visible turn number, matching
+                    // the ``turn-num`` label so the chip "03" jumps to
+                    // the header that also reads "03".
+                    header = `<div class="turn-header" id="turn-${turnNum}">
                          <span class="turn-num">${nn}</span>
                          <span class="turn-label">turn</span>
                          <span class="turn-id">${escapeHtml(shortId(g.turn_id))}</span>
                          <span class="turn-count">${g.messages.length} msg${g.messages.length === 1 ? '' : 's'}</span>
+                         ${durHtml}
                        </div>`;
                 } else {
                     header = `<div class="turn-header">
@@ -1240,11 +1784,22 @@
                 _msgCache.set(currentConvId, messages);
                 _persistCache();
             }
+            // Reset the raw-text stash before rebuilding cards so id
+            // slots stay bounded to a single render and stale payloads
+            // don't accumulate across live-updating conversations.
+            _rawCounter = 0;
+            _rawMap.clear();
             buildToolCallIndex(messages);
             renderStats(messages);
             if (!messages.length) {
                 root.innerHTML = '<div class="empty-state">waiting for messages…</div>';
-                countEl.textContent = '0 msgs';
+                // Still refresh the conv-info strip so its msgs chip
+                // reads "0" instead of a stale count from a previously
+                // selected conv.
+                renderConvInfo();
+                // Empty conv → no turns → clear any leftover nav chips
+                // from the previously selected conv.
+                renderTurnRail([]);
                 return;
             }
             // Deliberately no auto-scroll on new messages — users found it
@@ -1253,8 +1808,29 @@
             // counter in the header signals new activity.
             const groups = groupByTurn(messages);
             root.innerHTML = renderGroups(groups);
-            countEl.textContent = messages.length + ' msg' + (messages.length === 1 ? '' : 's');
             lastCount = messages.length;
+            // The conv-info strip carries the total elapsed wall-clock
+            // and the msg count chip, both derived from message
+            // timestamps / length — refresh it on every render so the
+            // chips stay in sync as new messages stream in. Cheap: it
+            // only reads `_msgCache` + `_lastRosterConvs`.
+            renderConvInfo();
+            // Turn quick-nav rail: one chip per numbered turn, in the
+            // same order the ``renderGroups`` walker assigned them.
+            // Setup / ungrouped groups are skipped so chip labels
+            // match the ``turn-num`` labels 1:1.
+            const railItems = [];
+            let railN = 0;
+            for (const g of groups) {
+                if (!g.turn_id) continue;
+                railN += 1;
+                railItems.push({
+                    n: railN,
+                    msgs: g.messages.length,
+                    dur: fmtDuration(computeSpanMs(g.messages)),
+                });
+            }
+            renderTurnRail(railItems);
         }
 
         /* ─── Multi-conversation client ────────────────────────────
@@ -1272,17 +1848,117 @@
          *      after the page was loaded — no manual refresh needed.
          */
         const tabsEl = document.getElementById('convTabs');
-        const exportBtn = document.getElementById('exportBtn');
+        // Export button is now rendered inside ``.conv-info-bar`` by
+        // ``renderConvInfo`` and rebuilt on every message tick, so we
+        // can't hold a stable reference here — use delegation on the
+        // stable ``convInfoEl`` instead (see the click listener below).
+        const convInfoEl = document.getElementById('convInfo');
 
         let currentConvId = null;
         let currentEs = null;
         let lastRosterVersion = -1;
+        // Last-known roster from the server, cached here so ``switchConv``
+        // and the conv-info renderer don't need to refetch ``/convs`` on
+        // every tab click. Always mirrors what ``renderTabs`` was last
+        // called with.
+        let _lastRosterConvs = [];
 
         function shortId(cid) {
             return typeof cid === 'string' ? cid.slice(0, 8) : String(cid);
         }
 
+        /* Render the current-conv identity strip in the main-column
+         * header. Reads from the cached roster (populated by
+         * ``renderTabs``) so it works whether triggered by a live SSE
+         * roster update or a plain tab click.
+         *
+         * Also owns the per-conv controls that used to live in the
+         * removed ``.top-bar`` — the msg count chip and the JSON export
+         * button. Because ``convInfoEl.innerHTML`` is rebuilt in full on
+         * every render, any listeners must be attached via event
+         * delegation on ``convInfoEl`` (stable) rather than on the
+         * rebuilt children (throw-away). See the export handler below. */
+        function renderConvInfo() {
+            if (!convInfoEl) return;
+            const c = _lastRosterConvs.find(x => x.id === currentConvId);
+            if (!c) {
+                convInfoEl.innerHTML = '';
+                return;
+            }
+            const rawTitle = (typeof c.title === 'string' && c.title.trim())
+                ? c.title.trim()
+                : null;
+            const titleCls = rawTitle ? 'ci-title' : 'ci-title untitled';
+            const titleText = escapeHtml(rawTitle || 'Untitled');
+            const idText = escapeHtml(c.id || '');
+            const modelText = c.model_uri ? escapeHtml(c.model_uri) : '—';
+            // Elapsed wall-clock across every message we've cached for
+            // this conv — from the first message's timestamp up to the
+            // latest. We read from `_msgCache` (rather than the roster)
+            // because timestamps live on message objects; the roster only
+            // exposes conv-level identity metadata. Renders as "" when
+            // there aren't yet two timestamped messages to span between.
+            const cachedMsgs = _msgCache.get(c.id);
+            const dur = fmtDuration(computeSpanMs(cachedMsgs));
+            const durHtml = dur
+                ? `<div class="ci-duration" title="Elapsed from first to latest message in this conversation"><span class="lbl">elapsed</span>${escapeHtml(dur)}</div>`
+                : '';
+            // Msg count comes straight from the cached message list; the
+            // roster's ``msg_count`` field lags one SSE frame behind for
+            // an actively-streaming conv, and using the cache lets the
+            // chip tick up in perfect sync with the message stream
+            // below. Renders even when the count is 0 so users always
+            // have a definite "nothing yet" signal.
+            const nMsgs = Array.isArray(cachedMsgs) ? cachedMsgs.length : 0;
+            // Turn count — number of distinct ``turn_id`` values in the
+            // cached messages. Setup / ungrouped messages (turn_id ==
+            // null) are excluded so this matches the numbered ``turn``
+            // groups the user actually sees below. Rendered only when
+            // at least one real turn exists; a pure-setup conv would
+            // read as "0 turns" otherwise, which is noise.
+            let nTurns = 0;
+            if (Array.isArray(cachedMsgs) && cachedMsgs.length) {
+                const seen = new Set();
+                for (const m of cachedMsgs) {
+                    if (m && m.turn_id) seen.add(m.turn_id);
+                }
+                nTurns = seen.size;
+            }
+            const turnsHtml = nTurns > 0
+                ? `<div class="ci-turns" title="Number of turns in this conversation"><span class="lbl">turns</span>${fmtNum(nTurns)}</div>`
+                : '';
+            const countHtml =
+                `<div class="ci-count" title="Message count in this conversation">` +
+                    `<span class="lbl">msgs</span>${fmtNum(nMsgs)}` +
+                `</div>`;
+            const exportHtml =
+                `<button class="btn ci-export" type="button" title="Download conversation as JSON">export</button>`;
+            convInfoEl.innerHTML =
+                `<div class="ci-title-row">` +
+                    `<div class="${titleCls}">${titleText}</div>` +
+                    turnsHtml +
+                    countHtml +
+                    durHtml +
+                    exportHtml +
+                `</div>` +
+                `<div class="ci-meta">` +
+                    `<span class="ci-id">${idText}</span>` +
+                    `<span class="sep">·</span>` +
+                    `<span class="ci-model">${modelText}</span>` +
+                `</div>`;
+        }
+
+        /* The full conv id is written into the DOM verbatim and clipped
+         * visually via ``text-overflow: ellipsis`` on ``.cid`` — that
+         * way a drag-select yields the complete id, not the truncated
+         * ``6ad25e5a-4e0…`` prefix. Widening the sidebar (drag the
+         * divider) also reveals more of it without any DOM change. */
         function renderTabs(convs) {
+            // Cache the roster so ``renderConvInfo`` and ``switchConv``
+            // can look up per-conv metadata without another fetch. Always
+            // keep a defensive copy — callers may mutate the array we
+            // received.
+            _lastRosterConvs = Array.isArray(convs) ? convs.slice() : [];
             // Always show the switcher, even for a single conv — the
             // sidebar's whole reason for existing is to give the user a
             // consistent "where am I" anchor. Hiding it on 1-conv sessions
@@ -1290,22 +1966,37 @@
             tabsEl.classList.remove('hidden');
             if (!convs || !convs.length) {
                 tabsEl.innerHTML = '';
+                renderConvInfo();
                 return;
             }
             tabsEl.innerHTML = convs.map(c => {
                 const active = c.id === currentConvId ? ' active' : '';
                 const uri = c.model_uri ? escapeHtml(c.model_uri) : '\u2014';
+                // Title falls back to "Untitled" when ``conv.title`` was
+                // never set. Italic-muted styling on ``.title.untitled``
+                // signals "placeholder, not real title" without needing
+                // additional copy.
+                const rawTitle = (typeof c.title === 'string' && c.title.trim())
+                    ? c.title.trim()
+                    : null;
+                const titleCls = rawTitle ? 'title' : 'title untitled';
+                const titleText = escapeHtml(rawTitle || 'Untitled');
                 // ``msg_count`` used to render here as a bare ``[N]`` badge,
                 // but the meaning wasn't obvious at a glance. Dropped in
                 // favor of a title tooltip so the tab stays uncluttered;
                 // the selected conv's message count is already shown
                 // prominently in the top-right ``count`` element.
                 const runStr = c.running ? ' · running' : '';
-                const title = `${c.id} · ${c.msg_count} msg${c.msg_count === 1 ? '' : 's'}${runStr}`;
+                const tipPrefix = rawTitle ? `${rawTitle} — ` : '';
+                const tip = `${tipPrefix}${c.id} · ${c.msg_count} msg${c.msg_count === 1 ? '' : 's'}${runStr}`;
                 const spinner = c.running ? '<span class="spinner" aria-label="running"></span>' : '';
                 return `
-                    <button class="conv-tab${active}" data-cid="${escapeHtml(c.id)}" title="${escapeHtml(title)}">
-                        <span class="cid">${escapeHtml(shortId(c.id))}${spinner}</span>
+                    <button class="conv-tab${active}" data-cid="${escapeHtml(c.id)}" title="${escapeHtml(tip)}">
+                        <span class="${titleCls}">
+                            <span class="title-text">${titleText}</span>
+                            ${spinner}
+                        </span>
+                        <span class="cid">${escapeHtml(c.id)}</span>
                         <span class="uri">${uri}</span>
                     </button>`;
             }).join('');
@@ -1315,6 +2006,10 @@
                     if (cid && cid !== currentConvId) switchConv(cid);
                 });
             });
+            // Roster may have changed the title / model of the active
+            // conv (e.g. user set ``conv.title`` mid-session), so refresh
+            // the identity strip on every render.
+            renderConvInfo();
         }
 
         async function refreshRoster() {
@@ -1345,6 +2040,10 @@
             tabsEl.querySelectorAll('.conv-tab').forEach(btn => {
                 btn.classList.toggle('active', btn.getAttribute('data-cid') === cid);
             });
+            // Refresh the identity strip so the header reflects the newly
+            // selected conv immediately, without waiting for the next
+            // roster update to arrive.
+            renderConvInfo();
 
             // If offline, restore from client-side cache instead of
             // trying to reconnect to a dead server.
@@ -1553,12 +2252,19 @@
          * richer data via conv.dump()). If the server is unreachable
          * (process exited), fall back to the client-side message cache so
          * the user can ALWAYS export — even after the process is long gone.
+         *
+         * Delegation on ``convInfoEl``: the button element itself is
+         * rebuilt on every ``renderConvInfo`` call, so binding directly
+         * to it would leave a stale listener attached to a detached
+         * node. Delegation on the stable ancestor sidesteps that.
          */
-        exportBtn.addEventListener('click', async () => {
+        convInfoEl.addEventListener('click', async (ev) => {
+            const btn = ev.target && ev.target.closest && ev.target.closest('.ci-export');
+            if (!btn) return;
             if (!currentConvId) return;
-            exportBtn.disabled = true;
-            const orig = exportBtn.textContent;
-            exportBtn.textContent = '…';
+            btn.disabled = true;
+            const orig = btn.textContent;
+            btn.textContent = '…';
             try {
                 // Attempt server-side export first.
                 const resp = await fetch('/dump/' + encodeURIComponent(currentConvId));
@@ -1595,8 +2301,14 @@
                     alert('Export failed: server unreachable and no cached data available.');
                 }
             } finally {
-                exportBtn.textContent = orig;
-                exportBtn.disabled = false;
+                // ``btn`` may already have been detached and replaced by
+                // a fresh render during the async fetch above. Re-query
+                // via the (stable) delegated ancestor to reach whichever
+                // button is currently live — the old reference would
+                // silently mutate a stale, unmounted node.
+                const live = convInfoEl.querySelector('.ci-export') || btn;
+                live.textContent = orig;
+                live.disabled = false;
             }
         });
 
@@ -1625,6 +2337,101 @@
         scrollBottomBtn.addEventListener('click', () =>
             smoothScrollTo(document.documentElement.scrollHeight));
         window.addEventListener('scroll', updateScrollBtns, { passive: true });
+
+        /* ─── Turn quick-nav rail ────────────────────────────────────
+           Renders one clickable chip per numbered turn between the two
+           scroll buttons on the right rail. Hidden entirely when the
+           conv has fewer than two turns — a lone chip would just be
+           visual noise duplicating the sole ``turn-header`` on screen.
+           Chip labels are 2-digit padded (``01``, ``02``, …) so a run
+           of up to 99 turns keeps a stable column width; three digits
+           overflow naturally since the chip is width-bounded by CSS. */
+        const turnRailEl = document.getElementById('turnRail');
+
+        function renderTurnRail(items) {
+            if (!turnRailEl) return;
+            // < 2 turns: skip the rail entirely (the ``:empty`` CSS rule
+            // hides the container). Setup-only convs and single-turn
+            // convs both fall through here.
+            if (!Array.isArray(items) || items.length < 2) {
+                turnRailEl.innerHTML = '';
+                return;
+            }
+            turnRailEl.innerHTML = items.map(it => {
+                const nn = String(it.n).padStart(2, '0');
+                // Tooltip mirrors the per-turn metrics shown in the
+                // ``turn-header`` so hovering a chip previews "what's
+                // in there" before committing to the jump.
+                const parts = [`turn ${nn}`,
+                               `${it.msgs} msg${it.msgs === 1 ? '' : 's'}`];
+                if (it.dur) parts.push(it.dur);
+                const tip = escapeHtml(parts.join(' · '));
+                return `<button class="turn-chip" type="button" data-turn="${it.n}" title="${tip}" aria-label="Jump to ${tip}">${nn}</button>`;
+            }).join('');
+        }
+
+        // Delegated click handler so re-renders (which wipe the chip DOM)
+        // don't need to re-attach listeners.
+        turnRailEl.addEventListener('click', (ev) => {
+            const chip = ev.target && ev.target.closest && ev.target.closest('.turn-chip');
+            if (!chip) return;
+            const n = chip.getAttribute('data-turn');
+            if (!n) return;
+            const target = document.getElementById('turn-' + n);
+            if (!target) return;
+            // ``scrollIntoView`` puts the anchor flush with the viewport
+            // top; that would sit directly under the (non-sticky) header
+            // strip, which is fine here but we still request a smooth
+            // scroll for legibility rather than a jarring jump.
+            target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        });
+
+        /* ─── Copy-button click delegation ──────────────────────
+           Single delegated listener rather than per-button binding so
+           re-renders (which blow away the DOM) don't need to re-attach
+           handlers. Uses the async Clipboard API where available; falls
+           back to a hidden textarea + execCommand for older WebViews and
+           for pages loaded from ``file://`` where Clipboard API is
+           blocked. Visual confirmation swaps the label to "copied" for
+           ~1.2s, matching devtool conventions. */
+        document.addEventListener('click', (e) => {
+            const btn = e.target.closest('.copy-btn');
+            if (!btn) return;
+            const id = btn.getAttribute('data-raw-id');
+            const text = _rawMap.get(id);
+            if (text == null) return;
+            const flash = (ok) => {
+                const orig = btn.textContent;
+                btn.classList.add('copied');
+                btn.textContent = ok ? 'copied' : 'failed';
+                setTimeout(() => {
+                    btn.classList.remove('copied');
+                    btn.textContent = orig;
+                }, 1200);
+            };
+            const legacyCopy = () => {
+                const ta = document.createElement('textarea');
+                ta.value = text;
+                // Off-screen but still selectable; avoids scrolling.
+                ta.style.position = 'fixed';
+                ta.style.top = '-1000px';
+                ta.style.opacity = '0';
+                document.body.appendChild(ta);
+                ta.select();
+                let ok = false;
+                try { ok = document.execCommand('copy'); } catch { ok = false; }
+                ta.remove();
+                flash(ok);
+            };
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(text)
+                    .then(() => flash(true))
+                    .catch(() => legacyCopy());
+            } else {
+                legacyCopy();
+            }
+        });
+
         // Re-evaluate after content renders (new messages may grow the page)
         const _origRender = render;
         render = function(messages) {
@@ -1633,6 +2440,75 @@
             requestAnimationFrame(updateScrollBtns);
         };
         updateScrollBtns();
+
+        /* ─── Sidebar resize ────────────────────────────────────
+           Drag the divider between the sidebar and the main column to
+           adjust how much horizontal room the conv list gets. State is
+           deliberately not persisted — a page refresh resets to the
+           default, matching "transient tool" expectations.
+
+           Pointer Events are used (not separate mouse/touch) so trackpad
+           + touchscreen laptops work out of the box. */
+        const SIDEBAR_MIN = 160;
+        const SIDEBAR_DEFAULT = 232;
+        const resizerEl = document.getElementById('sidebarResizer');
+
+        function _clampSidebarWidth(px) {
+            // Cap at 60% of viewport so a wide drag on a narrow window
+            // can never push the divider off-screen. Lower bound keeps
+            // the tab labels legible.
+            const vpCap = Math.max(SIDEBAR_MIN, Math.floor(window.innerWidth * 0.6));
+            return Math.min(Math.max(SIDEBAR_MIN, px | 0), vpCap);
+        }
+
+        function _applySidebarWidth(px) {
+            document.documentElement.style.setProperty(
+                '--sidebar-w', _clampSidebarWidth(px) + 'px');
+        }
+
+        let _dragStartX = 0;
+        let _dragStartW = 0;
+        let _dragging = false;
+
+        // We attach ``pointermove`` / ``pointerup`` to ``window`` instead
+        // of the resizer element. That way even if the pointer leaves the
+        // 8px strip — which happens the instant a drag actually moves
+        // the sidebar boundary — we keep receiving events. This is more
+        // robust than ``setPointerCapture``, which has known quirks in
+        // some WebKit / Chromium versions where captured pointermove
+        // simply doesn't fire.
+        resizerEl.addEventListener('pointerdown', (e) => {
+            // Ignore non-primary mouse buttons; a right-click that starts
+            // a drag would have no matching pointerup.
+            if (e.button !== 0 && e.pointerType === 'mouse') return;
+            e.preventDefault();
+            _dragStartX = e.clientX;
+            const cssW = getComputedStyle(document.documentElement)
+                .getPropertyValue('--sidebar-w').trim();
+            _dragStartW = parseInt(cssW, 10) || SIDEBAR_DEFAULT;
+            _dragging = true;
+            resizerEl.classList.add('dragging');
+            document.body.classList.add('resizing');
+        });
+
+        window.addEventListener('pointermove', (e) => {
+            if (!_dragging) return;
+            _applySidebarWidth(_dragStartW + (e.clientX - _dragStartX));
+        });
+
+        function _endResizeDrag() {
+            if (!_dragging) return;
+            _dragging = false;
+            resizerEl.classList.remove('dragging');
+            document.body.classList.remove('resizing');
+        }
+        // ``pointerup`` catches the normal release; ``pointercancel`` fires
+        // if the OS interrupts (e.g. touch cancelled by a system gesture);
+        // ``blur`` handles alt-tab mid-drag so we don't get stuck in the
+        // resizing state after focus comes back.
+        window.addEventListener('pointerup', _endResizeDrag);
+        window.addEventListener('pointercancel', _endResizeDrag);
+        window.addEventListener('blur', _endResizeDrag);
 
         // Boot: fetch the conv roster first (which picks the initial
         // currentConvId), then open the SSE stream for it.

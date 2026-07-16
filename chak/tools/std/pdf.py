@@ -51,7 +51,18 @@ _HTML_CSS = """
 """
 
 
-def _require_pdf_libs(use_layout: bool = False):
+def _require_pdf_libs():
+    """Lazily import and return (pymupdf, pymupdf4llm).
+
+    IMPORTANT: pymupdf.layout must NEVER be imported in this process.
+    Its module-level activate() monkey-patches pymupdf._get_layout with an
+    ONNX model predictor.  This irreversibly changes PyMuPDF's internal
+    behaviour and causes pymupdf4llm 0.x to raise
+    ``ValueError: min() iterable argument is empty`` on pages with complex
+    tables, silently falling back to plain-text extraction.
+    pymupdf4llm already provides its own layout analysis; the external
+    pymupdf.layout package is neither needed nor safe to use here.
+    """
     try:
         import pymupdf  # noqa: PLC0415
     except ImportError:
@@ -61,12 +72,6 @@ def _require_pdf_libs(use_layout: bool = False):
         import pymupdf4llm  # noqa: PLC0415
     except ImportError:
         raise ImportError("pymupdf4llm is required. Run: pip install pymupdf4llm")
-
-    if use_layout:
-        try:
-            import pymupdf.layout  # noqa: F401, PLC0415
-        except ImportError:
-            raise ImportError("pymupdf-layout is required. Run: pip install pymupdf-layout")
 
     return pymupdf, pymupdf4llm
 
@@ -420,7 +425,8 @@ class Pdf:
                 ]
                 return _json({"source": source, "type": "toc", "items": items, "total_items": len(toc)})
 
-            _, lib = _require_pdf_libs(use_layout=True)
+            # See _require_pdf_libs() docstring for why pymupdf.layout is banned.
+            _, lib = _require_pdf_libs()
             try:
                 chunks = lib.to_markdown(doc, page_chunks=True)
                 headings = _headings_from_markdown_chunks(chunks)
@@ -525,7 +531,9 @@ class Pdf:
         if format not in valid_formats:
             raise ValueError(f"Unsupported format '{format}'. Choose from: {', '.join(sorted(valid_formats))}")
 
-        pymupdf, lib = _require_pdf_libs(use_layout=True)
+        # Do NOT import pymupdf.layout here — see _require_pdf_libs() docstring
+        # for the full explanation of why it is globally banned.
+        pymupdf, lib = _require_pdf_libs()
         local_path = _resolve_pdf(source)
         with pymupdf.open(local_path) as doc:
             pages = _page_numbers(start_page, end_page, doc.page_count)
@@ -598,7 +606,8 @@ class Pdf:
         if format not in valid_formats:
             raise ValueError(f"Unsupported format '{format}'. Choose from: {', '.join(sorted(valid_formats))}")
 
-        pymupdf, lib = _require_pdf_libs(use_layout=True)
+        # See _require_pdf_libs() docstring for why pymupdf.layout is banned.
+        pymupdf, lib = _require_pdf_libs()
         local_path = _resolve_pdf(source)
         with pymupdf.open(local_path) as doc:
             try:

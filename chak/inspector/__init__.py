@@ -104,8 +104,14 @@ class _Registry:
         out: List[dict] = []
         for cid, slot in self.slots.items():
             model_uri = _infer_model_uri(slot)
+            # ``conv.title`` is user-set (via ``conv.title = ...``) so the
+            # roster mirrors whatever is currently on the Conversation.
+            # ``getattr`` with a default keeps this backward-compatible
+            # for stubs / mocks that don't expose the attribute.
+            title = getattr(slot.conv, "title", None)
             out.append({
                 "id": cid,
+                "title": title,
                 "model_uri": model_uri,
                 "msg_count": len(slot.messages),
                 "attached_at": slot.attached_at,
@@ -449,7 +455,7 @@ def _build_app(FastAPI, HTMLResponse, JSONResponse, StreamingResponse, HTTPExcep
                     # deadlock, since ``threading.Lock`` isn't reentrant).
                     roster_snapshot = _REG._snapshot_roster_locked()
                     roster_sig = tuple(
-                        (r["id"], r["msg_count"], r["running"])
+                        (r["id"], r["title"], r["model_uri"], r["msg_count"], r["running"])
                         for r in roster_snapshot
                     )
                     changed_msgs = v != last_version
