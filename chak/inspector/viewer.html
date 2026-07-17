@@ -71,13 +71,24 @@
            makes the sidebar appear "stuck". */
         :root {
             --sidebar-w: 232px;
+            /* Height of the top offline banner. 0 by default; JS flips this
+               to a real value on the ``<html>`` element when the inspector
+               loses its server connection, and everything anchored to
+               ``top: 0`` (sidebar, resizer) plus the body padding shift
+               down in lockstep so the banner doesn't overlap content. */
+            --banner-h: 0px;
+        }
+        body {
+            /* Pushes the (non-fixed) main column down by the banner height.
+               Fixed elements below handle their own offset via ``top``. */
+            padding-top: var(--banner-h);
         }
         aside.sidebar {
             position: fixed;
-            top: 0;
+            top: var(--banner-h);
             left: 0;
             width: var(--sidebar-w);
-            height: 100vh;
+            height: calc(100vh - var(--banner-h));
             overflow-y: auto;
             overscroll-behavior: contain;
             border-right: 1px solid var(--line);
@@ -112,13 +123,13 @@
            browsers and cause the drag to freeze after ``pointerdown``. */
         .sidebar-resizer {
             position: fixed;
-            top: 0;
+            top: var(--banner-h);
             left: var(--sidebar-w);
             width: 8px;
             /* Nudge the visible strip back onto the border so hover shows
                a hairline sitting on the edge, not floating in gutter. */
             margin-left: -4px;
-            height: 100vh;
+            height: calc(100vh - var(--banner-h));
             cursor: col-resize;
             background: transparent;
             z-index: 20;
@@ -154,14 +165,22 @@
             border-bottom: 1px solid var(--line);
         }
         .brand {
-            /* Row layout: brand name on the left, connection status
-               (dot + label) pushed to the right. Fixed 52px height
-               keeps the bottom-border seam aligned with the
-               ``.conv-info-bar`` above the main column so the sidebar /
-               main-col divide still looks tidy.
+            /* Two-row column: brand name (with accent dot) on top, live
+               connection status underneath. Previously this was a single
+               row with ``flex-direction: row``, but on narrow sidebars
+               ``.brand-name`` got squeezed by ``.brand-status`` and
+               truncated to an ellipsis — you could see the status chip
+               but not the product name, which is exactly backwards.
+               Stacking them gives the name full row width and keeps the
+               status chip readable as a secondary line.
 
-               ``flex: 0 0 52px`` (rather than a plain ``height: 52px``)
-               is load-bearing here: ``aside.sidebar`` is a
+               ``min-height: 52px`` (not a fixed height) preserves the
+               seam alignment with ``.conv-info-bar`` on the main column
+               at normal widths, while still allowing the column to grow
+               when needed.
+
+               ``flex: 0 0 auto`` (rather than a plain ``height``) is
+               load-bearing here: ``aside.sidebar`` is a
                ``flex-direction: column`` container, and when the conv
                list below grows past ``100vh`` the browser will
                *first* try to compress every shrinkable flex child
@@ -169,11 +188,14 @@
                sidebar's ``overflow-y: auto``. Without pinning the
                shrink factor to 0, ``.brand`` gets crushed down to a
                ~15px sliver when there are many conversations. */
-            flex: 0 0 52px;
+            flex: 0 0 auto;
+            min-height: 52px;
             display: flex;
-            align-items: center;
-            gap: 10px;
-            padding: 0 20px;
+            flex-direction: column;
+            align-items: flex-start;
+            justify-content: center;
+            gap: 4px;
+            padding: 8px 20px;
             border-bottom: 1px solid var(--line);
             font-size: 12px;
             font-weight: 600;
@@ -182,20 +204,16 @@
             color: var(--text);
             font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif;
         }
-        .brand::before {
-            content: "";
-            display: inline-block;
-            width: 8px; height: 8px;
-            background: var(--accent);
-            vertical-align: middle;
-            transform: translateY(-1px);
-            flex: 0 0 auto;
-        }
         .brand .brand-name {
-            /* Truncate the product name gracefully when a very narrow
-               sidebar squeezes the row — the status chip on the right
-               is more actionable than the label, so keep it visible. */
-            flex: 1 1 auto;
+            /* Product name gets a slightly bumped font size (vs the
+               ``.brand`` container's 12px) so it reads as the primary
+               identity, with the status line below it clearly secondary.
+               The accent dot that used to live here (``::before``) was
+               removed — the connection dot in ``.brand-status`` right
+               below already carries that role, and two dots stacked
+               vertically looked like a bullet list. */
+            font-size: 14px;
+            max-width: 100%;
             min-width: 0;
             overflow: hidden;
             text-overflow: ellipsis;
@@ -357,12 +375,97 @@
             transition: background 0.2s, box-shadow 0.2s;
         }
         .dot.live {
-            background: var(--text);
-            box-shadow: 0 0 0 3px rgba(0,0,0,0.06);
+            /* Emerald green + a soft breathing halo when the SSE stream
+               is connected. The halo pulses via ``box-shadow`` (cheap,
+               composited on the GPU) rather than animating ``opacity``
+               or ``transform`` on the dot itself, so the 6px core stays
+               solid and easy to read at a glance — the "connected"
+               reading shouldn't fade in and out, only its aura should.
+               ``prefers-reduced-motion`` respects users who opt out of
+               ambient animation. */
+            background: #10b981;
+            box-shadow: 0 0 0 3px rgba(16,185,129,0.18);
+            animation: dot-breathe 2s ease-in-out infinite;
+        }
+        @keyframes dot-breathe {
+            0%, 100% { box-shadow: 0 0 0 2px rgba(16,185,129,0.15); }
+            50%      { box-shadow: 0 0 0 5px rgba(16,185,129,0.28); }
+        }
+        @media (prefers-reduced-motion: reduce) {
+            .dot.live { animation: none; }
         }
         .dot.offline {
             background: #dc2626;
             box-shadow: 0 0 0 3px rgba(220,38,38,0.1);
+        }
+
+        /* ─── Offline banner ─────────────────────────────────────
+           Full-width red strip pinned to the top of the viewport when
+           the inspector loses its server connection. Deliberately
+           heavier than the sidebar status dot: the user asked for
+           something they can't miss from anywhere on the page, since
+           the tiny dot in the sidebar corner is easy to overlook when
+           staring at the message stream. Dismissible via the ``×``
+           button — once acknowledged, hides for the rest of the page
+           lifecycle so it doesn't compete with content while browsing
+           cached data. */
+        .offline-banner {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 40px;
+            z-index: 100;
+            background: #dc2626;
+            color: #fff;
+            font-family: var(--mono);
+            font-size: 12px;
+            letter-spacing: 0.02em;
+            align-items: center;
+            justify-content: center;
+            gap: 12px;
+            padding: 0 16px;
+            box-shadow: 0 1px 0 rgba(0,0,0,0.08);
+        }
+        .offline-banner.visible {
+            display: flex;
+        }
+        .offline-banner .ob-text {
+            /* Center-aligned text stays put even when the sidebar is
+               resized, since the banner spans the full viewport. */
+            text-align: center;
+        }
+        .offline-banner .ob-text strong {
+            font-weight: 700;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+            margin-right: 6px;
+        }
+        .offline-banner .close {
+            position: absolute;
+            right: 12px;
+            top: 50%;
+            transform: translateY(-50%);
+            appearance: none;
+            background: transparent;
+            color: #fff;
+            border: 1px solid rgba(255,255,255,0.4);
+            border-radius: 0;
+            width: 24px;
+            height: 24px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-family: var(--mono);
+            font-size: 14px;
+            line-height: 1;
+            cursor: pointer;
+            transition: background 0.15s, border-color 0.15s;
+        }
+        .offline-banner .close:hover {
+            background: rgba(255,255,255,0.15);
+            border-color: rgba(255,255,255,0.7);
         }
 
         /* Export button in header — sharp corners, monochrome, matches
@@ -1241,12 +1344,21 @@
     </style>
 </head>
 <body>
+    <!-- Offline banner: hidden by default, revealed by JS when the SSE
+         stream is presumed dead. Placed as the first child of ``<body>``
+         so its ``position: fixed`` z-order and DOM order both put it
+         above every other panel. -->
+    <div class="offline-banner" id="offlineBanner" role="alert" aria-live="polite">
+        <span class="ob-text"><strong>disconnected</strong>inspector server is unreachable — showing cached data. refresh to reconnect.</span>
+        <button class="close" id="offlineBannerClose" type="button" aria-label="Dismiss">×</button>
+    </div>
     <aside class="sidebar">
         <div class="brand">
-            <!-- Product name on the left, live-connection status on the
-                 right. Status moved here from the removed main-column
-                 top-bar so the wide right side is dedicated to
-                 conv identity. -->
+            <!-- Two-row identity block: product name on top, live-
+                 connection status underneath. Stacked (rather than
+                 side-by-side) so a narrow sidebar can't ellipsis-
+                 truncate the product name away. See the ``.brand``
+                 CSS for the layout rationale. -->
             <span class="brand-name">chak inspector</span>
             <span class="brand-status">
                 <span class="dot" id="dot"></span>
@@ -1267,17 +1379,23 @@
                  Also hosts the per-conv controls (msg count chip + JSON
                  export) previously in ``.top-bar``. -->
             <div class="conv-info-bar" id="convInfo"></div>
-            <div class="stats-wrap" id="stats">
-                <div class="stats-empty">no llm calls yet</div>
-            </div>
             <!-- Tool contract panel. Shows the exact tool schema chak
                  handed to the LLM (Anthropic conversations show the
                  ``input_schema`` shape, everyone else shows the OpenAI
                  ``parameters`` shape — this mirrors what the model
                  actually received on the wire). Populated by
                  ``renderToolsPanel`` from the SSE ``tools`` field.
-                 Hidden when the conversation has no tools. -->
+                 Hidden when the conversation has no tools.
+                 Placed *above* the stats block on purpose: the tool
+                 contract is conversation-wide (one set of tools for
+                 the whole conv), while stats is a per-model-call
+                 breakdown. Keeping them adjacent used to invite the
+                 reading "these tools belong to the model in the
+                 stats row" — flipping the order removes that trap. -->
             <div class="tools-panel" id="toolsPanel" hidden></div>
+            <div class="stats-wrap" id="stats">
+                <div class="stats-empty">no llm calls yet</div>
+            </div>
         </header>
         <main id="root">
             <div class="empty-state">waiting for messages…</div>
@@ -1304,6 +1422,33 @@
         const dotEl = document.getElementById('dot');
         const statsEl = document.getElementById('stats');
         const toolsPanelEl = document.getElementById('toolsPanel');
+        const offlineBannerEl = document.getElementById('offlineBanner');
+        const offlineBannerCloseEl = document.getElementById('offlineBannerClose');
+
+        // Track user's dismiss decision so we don't re-show the banner
+        // after they've explicitly closed it. Scoped to this page load —
+        // a manual refresh resets it, which matches the mental model of
+        // "refresh to reconnect / re-check status".
+        let _offlineBannerDismissed = false;
+
+        function showOfflineBanner() {
+            if (_offlineBannerDismissed) return;
+            offlineBannerEl.classList.add('visible');
+            // Bump the CSS variable so the sidebar / resizer / main
+            // column all slide down by the banner's height in one shot,
+            // rather than each element carrying its own conditional.
+            document.documentElement.style.setProperty('--banner-h', '40px');
+        }
+
+        function hideOfflineBanner() {
+            offlineBannerEl.classList.remove('visible');
+            document.documentElement.style.setProperty('--banner-h', '0px');
+        }
+
+        offlineBannerCloseEl.addEventListener('click', () => {
+            _offlineBannerDismissed = true;
+            hideOfflineBanner();
+        });
 
         // Markdown rendering via markdown-it. Handles tables with inline
         // code, nested lists, and mixed HTML more robustly than marked.js.
@@ -2460,6 +2605,10 @@
                     dotEl.classList.add('offline');
                     // Kill all spinners — nothing is running if server is dead.
                     tabsEl.querySelectorAll('.spinner').forEach(el => el.remove());
+                    // Surface offline state prominently — the sidebar dot
+                    // alone is too easy to miss when the user is focused
+                    // on the message stream.
+                    showOfflineBanner();
                 } else {
                     statusEl.textContent = `reconnecting (${_reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`;
                     setTimeout(connect, 1500);
@@ -2743,6 +2892,7 @@
                     _offline = true;
                     statusEl.textContent = 'offline (restored from cache)';
                     dotEl.classList.add('offline');
+                    showOfflineBanner();
                     // Reconstruct tab bar from cached conv IDs.
                     const cachedConvs = [..._msgCache.keys()].map(cid => ({
                         id: cid,
