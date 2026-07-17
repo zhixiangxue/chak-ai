@@ -58,6 +58,20 @@ class ResilientProvider(Provider):
     def _send_stream(self, messages: Any, **kwargs) -> Iterator[Any]:
         raise NotImplementedError("ResilientProvider uses send() directly")
 
+    def supports_json_schema_response_format(self, model: str) -> bool:
+        """Delegate to the primary provider.
+
+        Structured-output dispatch happens at chak's Conversation layer
+        before we know which provider will actually serve the request
+        (fallback is decided per-call inside ``send``). We answer for the
+        primary because that's the request shape chak will attempt first;
+        if it fails and we fall back, the fallback provider's ``send``
+        just receives ``response_format`` in kwargs — a no-op for
+        providers that don't recognise it, or a working path for those
+        that do.
+        """
+        return self.primary_provider.supports_json_schema_response_format(model)
+
     # ------------------------------------------------------------------ #
     # Message sanitization for cross-provider fallback                     #
     # ------------------------------------------------------------------ #

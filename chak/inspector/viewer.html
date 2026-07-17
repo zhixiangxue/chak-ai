@@ -708,7 +708,13 @@
         }
         .content a { color: var(--text); text-decoration: underline; text-underline-offset: 2px; }
 
-        /* ─── Reasoning block ────────────────────────────────────── */
+        /* ─── Reasoning block ──────────────────────────────────────
+           NOTE: ``white-space: pre-wrap`` intentionally lives on
+           ``.reasoning-content`` (the inner text wrapper), NOT on
+           ``.reasoning`` itself. Putting it on the container would
+           preserve the template literal's own indentation as visible
+           whitespace between the opening tag and the label, pushing
+           the label down by a full line + a chunk of spaces. */
         .reasoning {
             margin-top: 10px;
             padding: 10px 12px;
@@ -716,7 +722,6 @@
             border-radius: 0;
             font-size: 12px;
             color: var(--text-2);
-            white-space: pre-wrap;
             font-family: var(--mono);
             line-height: 1.6;
         }
@@ -728,6 +733,109 @@
             letter-spacing: 0.14em;
             margin-bottom: 6px;
         }
+        .reasoning-content {
+            white-space: pre-wrap;
+        }
+
+        /* ─── Tool contract panel (top-of-conv, above msg stream) ─
+           Shows chak's current tool contract with the LLM — i.e. the
+           exact schema the model receives on the wire. Distinct from
+           ``.tool-calls`` (which lives inside assistant messages and
+           renders the model's *invocation* payload). This panel is the
+           forward direction (chak → model), that one is the reverse
+           (model → chak). Naming keeps them separate on purpose. */
+        .tools-panel {
+            border-bottom: 1px solid var(--line);
+            font-family: var(--mono);
+            font-size: 12px;
+            background: #fafafa;
+        }
+        .tools-panel-header {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 10px 28px;
+            cursor: pointer;
+            user-select: none;
+            color: var(--text-3);
+            font-size: 10px;
+            letter-spacing: 0.14em;
+            text-transform: uppercase;
+        }
+        .tools-panel-header:hover { color: var(--text); }
+        .tools-panel-header .caret {
+            display: inline-block;
+            width: 10px;
+            transition: transform 0.15s;
+        }
+        .tools-panel.open .tools-panel-header .caret { transform: rotate(90deg); }
+        .tools-panel-header .count {
+            font-weight: 600;
+            color: var(--text);
+            letter-spacing: 0;
+        }
+        .tools-panel-header .shape-tag {
+            /* Explicit label for the wire shape (``openai`` /
+               ``anthropic``) so users don't file "why is chak sending
+               OpenAI format to Anthropic?" bugs when the answer is
+               "it isn't — you're looking at the OpenAI-compatible
+               provider's tool list". */
+            font-size: 9.5px;
+            padding: 2px 6px;
+            border: 1px solid var(--line-2);
+            color: var(--text-4);
+            letter-spacing: 0.1em;
+            font-weight: 500;
+            text-transform: lowercase;
+        }
+        .tools-panel-body {
+            display: none;
+            padding: 4px 28px 16px 28px;
+        }
+        .tools-panel.open .tools-panel-body { display: block; }
+        .tool-def {
+            border: 1px solid var(--line);
+            background: #fff;
+            padding: 10px 12px;
+            margin-top: 8px;
+        }
+        .tool-def:first-child { margin-top: 0; }
+        .tool-def-name {
+            font-weight: 600;
+            font-family: var(--mono);
+            font-size: 12.5px;
+            color: var(--text);
+            margin-bottom: 4px;
+        }
+        .tool-def-desc {
+            font-size: 11.5px;
+            color: var(--text-3);
+            margin-bottom: 8px;
+            white-space: pre-wrap;
+        }
+        .tool-def pre {
+            margin: 0;
+            padding: 8px 10px;
+            border: 1px solid var(--line);
+            font-family: var(--mono);
+            font-size: 11.5px;
+            line-height: 1.55;
+            color: var(--text);
+            white-space: pre-wrap;
+            word-break: break-word;
+            overflow-x: auto;
+            background: #fff;
+        }
+        /* Highlight declared parameter types so the user can immediately
+           see "did chak tell the model the types?". Rendered by
+           post-processing the JSON string to wrap ``"type": "..."`` in a
+           span — a low-tech but visually strong cue. */
+        .tool-def pre .ty-int    { color: #0369a1; font-weight: 600; }
+        .tool-def pre .ty-num    { color: #0369a1; font-weight: 600; }
+        .tool-def pre .ty-bool   { color: #7c3aed; font-weight: 600; }
+        .tool-def pre .ty-str    { color: #a16207; }
+        .tool-def pre .ty-arr    { color: #059669; }
+        .tool-def pre .ty-obj    { color: #059669; }
 
         /* ─── Tool calls (nested inside assistant tool-call msg) ─ */
         .tool-calls { margin-top: 6px; }
@@ -1162,6 +1270,14 @@
             <div class="stats-wrap" id="stats">
                 <div class="stats-empty">no llm calls yet</div>
             </div>
+            <!-- Tool contract panel. Shows the exact tool schema chak
+                 handed to the LLM (Anthropic conversations show the
+                 ``input_schema`` shape, everyone else shows the OpenAI
+                 ``parameters`` shape — this mirrors what the model
+                 actually received on the wire). Populated by
+                 ``renderToolsPanel`` from the SSE ``tools`` field.
+                 Hidden when the conversation has no tools. -->
+            <div class="tools-panel" id="toolsPanel" hidden></div>
         </header>
         <main id="root">
             <div class="empty-state">waiting for messages…</div>
@@ -1187,6 +1303,7 @@
         const statusEl = document.getElementById('status');
         const dotEl = document.getElementById('dot');
         const statsEl = document.getElementById('stats');
+        const toolsPanelEl = document.getElementById('toolsPanel');
 
         // Markdown rendering via markdown-it. Handles tables with inline
         // code, nested lists, and mixed HTML more robustly than marked.js.
@@ -1297,6 +1414,101 @@
                 }).join('');
             }
             return `<div class="content">${escapeHtml(JSON.stringify(content))}</div>`;
+        }
+
+        /* ─── Tool contract panel (top of conv) ────────────────────
+         * Renders the tool schema chak currently offers to the LLM.
+         * Complement to ``renderToolCalls``: this is the *forward*
+         * contract (chak → model, "here are the tools you may call"),
+         * whereas ``renderToolCalls`` renders the *reverse* payload
+         * (model → chak, "please invoke this tool with these args").
+         *
+         * Wire shape detection is structural, not label-based:
+         *   - Anthropic:  ``{ name, description, input_schema }``
+         *   - Everyone:   ``{ type: "function", function: { name, description, parameters } }``
+         * The shape tag in the header ("anthropic" / "openai") is
+         * derived from which of those two shapes we actually see, so
+         * the label is always faithful to the payload — no guessing
+         * from ``model_uri`` needed.
+         *
+         * Hidden entirely when the conv has no tools; that keeps the
+         * top-of-page real estate lean for simple chat conversations. */
+        function renderToolsPanel(tools) {
+            if (!Array.isArray(tools) || tools.length === 0) {
+                toolsPanelEl.hidden = true;
+                toolsPanelEl.innerHTML = '';
+                return;
+            }
+            // Detect wire shape by inspecting the first entry — every
+            // tool in one SSE frame comes from the same provider so a
+            // single sample is sufficient.
+            const first = tools[0] || {};
+            const isAnthropic = ('input_schema' in first) && !('function' in first);
+            const shapeTag = isAnthropic ? 'anthropic' : 'openai';
+
+            const items = tools.map(t => {
+                const src = isAnthropic ? t : (t.function || {});
+                const name = src.name || '?';
+                const desc = src.description || '';
+                const schema = isAnthropic
+                    ? (src.input_schema || {})
+                    : (src.parameters || {});
+                let pretty;
+                try { pretty = JSON.stringify(schema, null, 2); }
+                catch { pretty = String(schema); }
+                return `<div class="tool-def">
+                    <div class="tool-def-name">${escapeHtml(name)}</div>
+                    ${desc ? `<div class="tool-def-desc">${escapeHtml(desc)}</div>` : ''}
+                    <pre>${_hilightTypes(escapeHtml(pretty))}</pre>
+                </div>`;
+            }).join('');
+
+            // Preserve open/closed state across re-renders — this
+            // panel updates whenever tools change (e.g. skill staging),
+            // and it would be jarring to have it collapse on every tick.
+            const wasOpen = toolsPanelEl.classList.contains('open');
+            toolsPanelEl.hidden = false;
+            toolsPanelEl.innerHTML = `
+                <div class="tools-panel-header">
+                    <span class="caret">▸</span>
+                    <span>tools sent to llm</span>
+                    <span class="count">${tools.length}</span>
+                    <span class="shape-tag">${shapeTag}</span>
+                </div>
+                <div class="tools-panel-body">${items}</div>
+            `;
+            if (wasOpen) toolsPanelEl.classList.add('open');
+            // Wire toggle. Delegating via a fresh listener here (rather
+            // than on a stable ancestor) is safe because we rebuild the
+            // panel's innerHTML atomically — no stale listeners can
+            // accumulate on detached header nodes.
+            const header = toolsPanelEl.querySelector('.tools-panel-header');
+            if (header) {
+                header.addEventListener('click', () => {
+                    toolsPanelEl.classList.toggle('open');
+                });
+            }
+        }
+
+        /* Wrap ``"type": "..."`` occurrences in the pretty-printed JSON
+         * schema with a color-coded span. Applied to the *escaped* string
+         * (so we're already safe from LLM-injected HTML) — regex is
+         * strictly literal against the quoted-key form emitted by
+         * JSON.stringify, so it can't accidentally match, e.g., inside
+         * a description string that happens to contain the word "type". */
+        function _hilightTypes(escapedJson) {
+            const TYPE_CLASS = {
+                integer: 'ty-int',
+                number:  'ty-num',
+                boolean: 'ty-bool',
+                string:  'ty-str',
+                array:   'ty-arr',
+                object:  'ty-obj',
+            };
+            return escapedJson.replace(
+                /&quot;type&quot;: &quot;(integer|number|boolean|string|array|object)&quot;/g,
+                (_, ty) => `&quot;type&quot;: &quot;<span class="${TYPE_CLASS[ty]}">${ty}</span>&quot;`
+            );
         }
 
         function renderToolCalls(tcs) {
@@ -1465,9 +1677,7 @@
                         <span class="ts">${escapeHtml(ts)}</span>
                     </div>
                     ${m.content ? renderContent(m.content) : ''}
-                    ${m.reasoning_content ? `<div class="reasoning">
-                        <div class="reasoning-label">reasoning</div>${escapeHtml(m.reasoning_content)}
-                    </div>` : ''}
+                    ${m.reasoning_content ? `<div class="reasoning"><div class="reasoning-label">reasoning</div><div class="reasoning-content">${escapeHtml(m.reasoning_content)}</div></div>` : ''}
                     ${renderToolCalls(m.tool_calls)}
                 </div>`;
             }
@@ -1519,9 +1729,7 @@
                     ${copyBtn}
                 </div>
                 ${renderContent(m.content)}
-                ${m.reasoning_content ? `<div class="reasoning">
-                    <div class="reasoning-label">reasoning</div>${escapeHtml(m.reasoning_content)}
-                </div>` : ''}
+                ${m.reasoning_content ? `<div class="reasoning"><div class="reasoning-label">reasoning</div><div class="reasoning-content">${escapeHtml(m.reasoning_content)}</div></div>` : ''}
                 ${renderAttachments(m.attachments)}
             </div>`;
         }
@@ -2060,6 +2268,11 @@
 
             root.innerHTML = '<div class="empty-state">loading…</div>';
             statsEl.innerHTML = '<div class="stats-empty">no llm calls yet</div>';
+            // Clear the tool contract panel so the previous conv's tools
+            // don't linger while the new conv's SSE is still connecting.
+            // The first frame on the new stream will repopulate it (or
+            // hide it if the new conv has no tools).
+            renderToolsPanel([]);
             if (currentEs) {
                 currentEs.close();
                 currentEs = null;
@@ -2218,6 +2431,14 @@
                     if (currentEs !== es) return;
                     // messages: null means "no change, keep last render".
                     if (data.messages) render(data.messages);
+                    // tools: null means "no change" (server elides it to
+                    // save bytes on ticks that only carry roster/msg
+                    // updates). A concrete array — even an empty one —
+                    // is authoritative and reflects the current wire
+                    // contract chak has with the model.
+                    if (data.tools !== undefined && data.tools !== null) {
+                        renderToolsPanel(data.tools);
+                    }
                 } catch (e) { console.error(e); }
             };
             es.onerror = () => {

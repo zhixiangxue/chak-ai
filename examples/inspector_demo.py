@@ -1,14 +1,20 @@
 """
 Inspector Demo — Multi-turn agent task with live browser observation
 
-Demonstrates chak.inspector.watch(): open http://127.0.0.1:7878 to watch
-messages arrive in real time (HumanMessage / AIMessage / tool_calls /
-ToolMessage) without waiting for the agent to finish.
+Demonstrates chak.inspector.watch() in both modes:
+
+  - ``watch(conv)`` — manually attach conv1 and conv2.
+  - ``watch()``      — turn on global auto-attach so conv3 (created later
+    inside the agent loop) is picked up automatically without any
+    ``watch(conv3)`` call.
+
+Open http://127.0.0.1:7878 to watch messages arrive in real time
+(HumanMessage / AIMessage / tool_calls / ToolMessage) without waiting
+for the agent to finish.
 
 Task design:
-  Three connected conversation turns progressively exploring Python's
-  asyncio. Each turn triggers tool calls so the browser clearly shows
-  the Turn 1 / Turn 2 / Turn 3 group structure.
+  Three conversations progressively exploring Python's asyncio. Each turn
+  triggers tool calls so the browser clearly shows the group structure.
 
 Prerequisites:
     export DEEPSEEK_API_KEY=sk-xxx       # DeepSeek
@@ -162,8 +168,7 @@ async def main():
 
     # Secondary conv: another conversation in the same process with a different
     # model, to demonstrate multi-conv support. The sidebar tab bar will show
-    # it as a second tab, and the stats table will display two distinct
-    # model_uri rows (qwen-plus vs qwen-turbo).
+    # it as a second tab.
     conv2 = chak.Conversation(
         "deepseek/deepseek-v4-flash",
         api_key=api_key,
@@ -172,31 +177,53 @@ async def main():
     )
     conv2.title = "Quick QA (deepseek-v4-flash)"
 
-    # Attach both convs to the same inspector (same port). The first watch()
-    # starts the server and opens the browser; subsequent watch() calls simply
-    # register the new conv onto the running server — a new tab appears
-    # automatically in the sidebar.
+    # ── Inspector setup: two modes demonstrated ──────────────────────
+    #
+    # 1) watch(conv) — manually attach conv1 and conv2. The first call
+    #    starts the server and opens the browser.
+    #
+    # 2) watch()     — no args: flip on global auto-attach. Every
+    #    Conversation created *after* this line is automatically picked
+    #    up by the inspector — no watch(conv3) needed. This proves the
+    #    zero-intrusion agent workflow: deep inside agent code, new
+    #    conversations just show up as tabs on their own.
     watch(conv, port=9797)
     watch(conv2, port=9797)
+    watch(port=9797)
+
+    # conv3 is created AFTER watch() — it enters the inspector automatically.
+    conv3 = chak.Conversation(
+        "deepseek/deepseek-v4-flash",
+        api_key=api_key,
+        system_prompt="You are a helpful translator. Translate concisely.",
+        tools=[],
+    )
+    conv3.title = "Auto-attached conv (no watch call)"
 
     print()
     print("=" * 70)
     print("  Inspector Demo — Multi-turn agent task with live observation")
     print("=" * 70)
     print()
-    print("Browser opened at http://127.0.0.1:7878")
+    print("Browser opened at http://127.0.0.1:9797")
     print("Every new message the agent appends will refresh the page.")
-    print(f"  Main conv: {len(TURNS)} turns of asyncio research (deepseek-v4-pro)")
-    print("  Side conv: a quick question (deepseek-v4-flash) — switch via sidebar tabs")
+    print(f"  Main conv:  {len(TURNS)} turns of asyncio research (deepseek-v4-pro)")
+    print("  Side conv:  a quick question (deepseek-v4-flash) — manual watch()")
+    print("  Auto conv:  created AFTER watch() — auto-attached, no watch() call")
     print("  Starting in 3 seconds — switch to the browser and watch.")
     print()
     await asyncio.sleep(3)
 
-    # Send a warm-up message to the secondary conv first so both tabs have
+    # Send a warm-up message to the secondary conv first so all tabs have
     # content to show.
     print("[Side conv] Sending a warm-up message…")
     await conv2.asend("Tell me the current time in one sentence (use the tool).")
-    print("   -> Side conv has 1 turn. Now starting the main conv.")
+    print("   -> Side conv has 1 turn.")
+
+    # Also warm up the auto-attached conv3 to prove it's live in the browser.
+    print("[Auto conv] Sending a warm-up message…")
+    await conv3.asend("Translate 'hello world' into French — one sentence only.")
+    print("   -> Auto conv has 1 turn. Now starting the main conv.")
     await asyncio.sleep(1)
 
     for idx, turn in enumerate(TURNS, 1):

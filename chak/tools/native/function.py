@@ -7,6 +7,7 @@ implements the same interface as MCPTool, can be mixed.
 
 import asyncio
 import inspect
+import typing
 from typing import Any, Callable, Dict, get_args, get_origin
 
 try:
@@ -68,14 +69,41 @@ class NativeFunctionTool:
         
         # 2. Get function signature
         sig = inspect.signature(self.func)
-        
+
+        # 2b. Resolve string annotations back to real types.
+        #
+        # If the caller's module uses ``from __future__ import annotations``
+        # (PEP 563), every annotation on the function is stored as a *string*
+        # (e.g. ``'int'``) instead of the class object (``int``). The naive
+        # ``sig.parameters[name].annotation`` path then returns those raw
+        # strings, and ``_python_type_to_json_type`` — which compares against
+        # actual classes (``py_type == int``) — silently falls through to
+        # ``"string"`` for every parameter. Result: chak advertises every
+        # tool argument as a JSON string even when the user wrote ``int``.
+        #
+        # ``typing.get_type_hints`` is the standard way to force resolution:
+        # it evaluates the string annotations in the function's ``__globals__``
+        # + ``__locals__`` and gives us the real classes back. We wrap it in
+        # try/except because it can raise if an annotation references a
+        # name that isn't importable in that scope (e.g. TYPE_CHECKING-only
+        # imports, forward refs to locals). In that case we keep going with
+        # whatever ``sig`` provides — better a partial schema than a crash.
+        try:
+            resolved_hints = typing.get_type_hints(self.func)
+        except Exception:
+            resolved_hints = {}
+
         # 3. Build JSON Schema
         properties = {}
         required = []
-        
+
         for param_name, param in sig.parameters.items():
-            # Get type from type annotation
-            param_schema = self._python_type_to_json_type(param.annotation)
+            # Prefer the PEP-563-safe resolved hint. Fall back to whatever
+            # ``sig.parameters`` reports (which may still be a string, or
+            # ``inspect.Parameter.empty`` for un-annotated params — both
+            # handled downstream by ``_python_type_to_json_type``).
+            annotation = resolved_hints.get(param_name, param.annotation)
+            param_schema = self._python_type_to_json_type(annotation)
             
             # Get parameter description from docstring
             param_desc = param_docs.get(param_name, "")
@@ -189,15 +217,27 @@ class NativeFunctionTool:
         """
         # Convert arguments if Pydantic models are expected
         sig = inspect.signature(self.func)
+        # See ``_parse_function`` for the same rationale — PEP 563 turns
+        # annotations into strings, so ``param.annotation`` on its own is
+        # unreliable for ``issubclass`` checks. Resolve first, fall back
+        # to raw signature annotations when resolution can't complete.
+        try:
+            resolved_hints = typing.get_type_hints(self.func)
+        except Exception:
+            resolved_hints = {}
         converted_args = {}
-        
+
         try:
             from pydantic import BaseModel
             for param_name, value in arguments.items():
                 param = sig.parameters.get(param_name)
-                if param and isinstance(param.annotation, type) and issubclass(param.annotation, BaseModel):
+                annotation = resolved_hints.get(
+                    param_name,
+                    param.annotation if param else inspect.Parameter.empty,
+                )
+                if isinstance(annotation, type) and issubclass(annotation, BaseModel):
                     # Parameter is Pydantic, convert dict to model instance
-                    converted_args[param_name] = param.annotation.model_validate(value)
+                    converted_args[param_name] = annotation.model_validate(value)
                 else:
                     converted_args[param_name] = value
         except (ImportError, TypeError):

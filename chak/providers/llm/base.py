@@ -86,6 +86,33 @@ class Provider(ABC):
         """Model name from config."""
         return str(getattr(self.config, "model", "") or "")
 
+    def supports_json_schema_response_format(self, model: str) -> bool:
+        """Whether ``model`` supports OpenAI-style ``response_format=json_schema``.
+
+        When ``True``, chak's structured-output layer (``Conversation.send``
+        with ``returns=<PydanticModel>``) will drive extraction through the
+        OpenAI ``response_format`` API instead of the default forced
+        ``tool_choice`` path. This is a strictly opt-in capability:
+
+        * The default is ``False`` so providers that only speak the classic
+          function-calling protocol keep working exactly as before.
+        * Providers override this method (and can dispatch per-model) to
+          unlock the alternative path where it is documented to work — e.g.
+          Moonshot's ``kimi-k3`` family, whose thinking mode fundamentally
+          conflicts with forced ``tool_choice``.
+
+        Args:
+            model: The model name resolved for the current request.
+                   Providers should key their decision off this rather than
+                   ``self.config.model`` so that per-call overrides are
+                   respected.
+
+        Returns:
+            ``True`` iff chak may safely send ``response_format={"type":
+            "json_schema", ...}`` to this provider for the given model.
+        """
+        return False
+
     def send(
             self,
             messages: List[Message],

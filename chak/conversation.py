@@ -241,6 +241,39 @@ class _HookGroup:
         self.after_send = _HookPoint()
 
 
+class _CreateSignal:
+    """Class-level signal emitted after each Conversation instance is fully built.
+
+    A general extensibility point — any external tool (observability,
+    metrics, tracing, debugging) can subscribe without monkey-patching or
+    subclassing. Chak core itself never imports any subscriber; the
+    dependency direction is strictly one-way (subscriber → core).
+
+    Usage::
+
+        from chak.conversation import Conversation
+
+        Conversation.on_create.subscribe(lambda conv: my_hook(conv))
+    """
+
+    def __init__(self):
+        self._listeners: list = []
+
+    def subscribe(self, fn) -> None:
+        """Register a listener callable. Duplicates are silently ignored."""
+        if fn not in self._listeners:
+            self._listeners.append(fn)
+
+    def _emit(self, instance) -> None:
+        """Notify all listeners. Errors are swallowed so that a buggy
+        listener can never crash conversation creation."""
+        for fn in self._listeners:
+            try:
+                fn(instance)
+            except Exception:
+                pass
+
+
 class Conversation:
     """
     Chat conversation that follows your desired flow:
@@ -251,6 +284,11 @@ class Conversation:
     
     # 类常量：指定Conversation只使用LLM类型的provider
     PROVIDER_CATEGORY = ProviderCategory.LLM
+
+    # Class-level creation signal. External tools subscribe to this to
+    # get notified after every Conversation is fully initialized — without
+    # monkey-patching __init__. See _CreateSignal docstring.
+    on_create = _CreateSignal()
 
     @staticmethod
     async def _build_human_message(message: Union[str, "Message"], attachments: Optional[List["Attachment"]] = None) -> "HumanMessage":
@@ -480,6 +518,10 @@ class Conversation:
         # Store provider name and model name for easy access
         self._provider_name = primary_parsed['provider']
         self._model_name = primary_parsed['model']
+
+        # Notify class-level creation signal — subscribers (e.g. inspector)
+        # can observe new conversations without monkey-patching.
+        type(self).on_create._emit(self)
 
     def _normalize_system_message(self, system_prompt: Optional[str]) -> Optional[SystemMessage]:
         """
@@ -1421,6 +1463,30 @@ class Conversation:
                 f"Dict[str, BaseModel], got {type(returns)}"
             )
 
+        # Dispatch on provider capability: if the active provider declares
+        # native support for OpenAI-style ``response_format=json_schema``,
+        # route through the alternative extraction loop. This exists to
+        # rescue structured output on models where forced ``tool_choice``
+        # is broken (e.g. Moonshot ``kimi-k3``, whose always-on thinking
+        # rejects ``tool_choice='specified'``). Providers that don't
+        # override the capability method inherit ``False`` from Provider
+        # base, so the classic tool-call flow below stays unchanged for
+        # everyone else -- zero behavior change for currently-working paths.
+        #
+        # Defensive accessors: unit tests inject duck-typed provider mocks
+        # that don't necessarily expose ``.config`` or the capability
+        # method, so we must not crash when they're missing -- absent
+        # capability just means "classic path", same as the real default.
+        provider_config = getattr(self.provider, "config", None)
+        active_model = getattr(provider_config, "model", "") or ""
+        capability_fn = getattr(
+            self.provider, "supports_json_schema_response_format", None
+        )
+        if callable(capability_fn) and capability_fn(active_model):
+            return await self._run_extraction_loop_via_response_format(
+                current_messages, returns, unwrap_field, **kwargs
+            )
+
         # Generate tool schema and force its usage
         tool_schema = self._generate_tool_schema_from_model(returns)
         extraction_kwargs = dict(kwargs)
@@ -1616,6 +1682,226 @@ class Conversation:
                                 f"with correct values."
                             ),
                             tool_call_id=tool_call.id,
+                        ),
+                    ]
+                continue
+
+        raise last_error
+
+    async def _run_extraction_loop_via_response_format(
+        self,
+        current_messages: List[Message],
+        returns: type,
+        unwrap_field: Optional[str],
+        **kwargs
+    ) -> Any:
+        """Alternative structured-output loop using ``response_format=json_schema``.
+
+        Chosen by ``_run_extraction_loop`` when the active provider declares
+        ``supports_json_schema_response_format(model) is True``. This exists
+        because the default forced-``tool_choice`` path is fundamentally
+        incompatible with providers/models that keep reasoning always on
+        (notably Moonshot's ``kimi-k3`` family). Instead of asking the model
+        to call a specific tool, we constrain the entire response body to
+        match a JSON schema — a first-class OpenAI-compat feature that
+        coexists with thinking.
+
+        The validation/retry shape mirrors the tool-call path (up to
+        ``_MAX_RETRIES`` attempts, self-corrective feedback on failure,
+        Anthropic-style JSON-string decode fallback, envelope-unwrap
+        fallback for models that put the payload inside a wrapper dict)
+        so behavior stays predictable regardless of which path is taken.
+
+        Args:
+            current_messages: Messages to send to the LLM (already through
+                the context handler by the caller, same as the tool-call path).
+            returns: The Pydantic model class to validate against — already
+                wrapped for ``List[T]``/``Dict[str, T]`` inputs so we always
+                pass the model itself, not the generic type.
+            unwrap_field: If ``returns`` is a chak-generated wrapper (list
+                or dict), the attribute name to unwrap after validation
+                (``"items"`` or ``"root"``). None for direct BaseModel returns.
+            **kwargs: Additional LLM parameters passed through to
+                ``provider.send``. ``tools``/``tool_choice`` are stripped
+                to prevent double-configuration when a caller mixes flows.
+
+        Returns:
+            The validated (and unwrapped, when applicable) return value.
+
+        Raises:
+            The last error encountered after exhausting retries.
+        """
+        from pydantic import RootModel, ValidationError as PydanticValidationError
+        import json
+
+        # Reuse the same name/description convention as the tool-call path
+        # so logs/traces stay comparable across the two flows.
+        schema = returns.model_json_schema()
+        if isinstance(returns, type) and issubclass(returns, RootModel):
+            schema_name = "ExtractedData"
+        else:
+            schema_name = returns.__name__
+
+        extraction_kwargs = dict(kwargs)
+        # Strip any caller-supplied tool config: mixing forced tool_choice
+        # with response_format is either rejected by the API or produces
+        # ambiguous behavior, and we want the wire request to be exactly
+        # what we intend for this code path.
+        extraction_kwargs.pop("tools", None)
+        extraction_kwargs.pop("tool_choice", None)
+        extraction_kwargs["response_format"] = {
+            "type": "json_schema",
+            "json_schema": {
+                "name": schema_name,
+                "schema": schema,
+            },
+        }
+
+        _MAX_RETRIES = 3
+        messages = list(current_messages)
+        last_error: Exception = RuntimeError("No attempts were made")
+
+        for attempt in range(_MAX_RETRIES):
+            # ── Step 1: LLM call ──────────────────────────────────────────
+            try:
+                response = await asyncio.to_thread(
+                    self.provider.send,
+                    messages=messages,
+                    **extraction_kwargs
+                )
+            except Exception as e:
+                # Same policy as the tool-call path: 4xx are terminal
+                # (bad request / auth / etc — retrying won't help), other
+                # errors get up to _MAX_RETRIES chances.
+                status_code = getattr(e, "status_code", None)
+                if status_code is not None and 400 <= status_code < 500:
+                    raise
+                last_error = e
+                if attempt < _MAX_RETRIES - 1:
+                    continue
+                raise last_error
+
+            # ── Step 2: pull the JSON payload out of message.content ──────
+            # response_format guarantees the entire content is a JSON
+            # object matching our schema. Handle both chak's normalized
+            # AIMessage and the raw SDK ChatCompletion shape defensively.
+            if isinstance(response, AIMessage):
+                raw_content = response.content or ""
+            elif hasattr(response, "choices") and response.choices:
+                raw_content = getattr(response.choices[0].message, "content", "") or ""
+            else:
+                raw_content = ""
+
+            if not raw_content.strip():
+                last_error = RuntimeError(
+                    f"Empty response.content on attempt {attempt + 1}/{_MAX_RETRIES}"
+                )
+                if attempt < _MAX_RETRIES - 1:
+                    messages = messages + [
+                        AIMessage(content=""),
+                        HumanMessage(
+                            content=(
+                                f"Your previous response was empty. You must respond "
+                                f"with a JSON object matching the '{schema_name}' schema."
+                            )
+                        ),
+                    ]
+                continue
+
+            # ── Step 3: parse + validate (same fallbacks as tool-call path) ──
+            try:
+                arguments = json.loads(raw_content)
+
+                def _decode_json_strings(obj):
+                    # Anthropic-style workaround also lives in the tool-call
+                    # path (see there for full rationale). Kept in sync so
+                    # behavior is symmetric across the two flows.
+                    if isinstance(obj, dict):
+                        return {k: _decode_json_strings(v) for k, v in obj.items()}
+                    if isinstance(obj, list):
+                        return [_decode_json_strings(v) for v in obj]
+                    if isinstance(obj, str):
+                        try:
+                            parsed = json.loads(obj)
+                            if isinstance(parsed, (dict, list)):
+                                return _decode_json_strings(parsed)
+                        except (json.JSONDecodeError, ValueError):
+                            pass
+                    return obj
+
+                def _validate_with_string_decode(candidate):
+                    try:
+                        return returns.model_validate(candidate)
+                    except PydanticValidationError:
+                        return returns.model_validate(_decode_json_strings(candidate))
+
+                try:
+                    result = _validate_with_string_decode(arguments)
+                except PydanticValidationError as outer_err:
+                    # Envelope-unwrap fallback -- see the tool-call path for
+                    # the full explanation. Same probe strategy so we don't
+                    # regress models that already relied on it.
+                    from .utils.logger import logger
+
+                    result = None
+                    unwrapped_key: Optional[str] = None
+                    if isinstance(arguments, dict):
+                        for _k, _v in arguments.items():
+                            if not isinstance(_v, dict):
+                                continue
+                            try:
+                                result = _validate_with_string_decode(_v)
+                                unwrapped_key = _k
+                                break
+                            except PydanticValidationError:
+                                continue
+
+                    if result is None:
+                        logger.warning(
+                            f"Structured output validation failed for schema "
+                            f"{schema_name!r} (response_format path). Raw "
+                            f"content ({len(raw_content)} chars, truncated to "
+                            f"2000): {raw_content[:2000]}"
+                        )
+                        raise outer_err
+
+                    logger.warning(
+                        f"Structured output: recovered from envelope wrap for "
+                        f"{schema_name!r} (response_format path). Provider "
+                        f"returned outer keys={list(arguments.keys())}, "
+                        f"unwrapped key={unwrapped_key!r}. The model is not "
+                        f"conforming to the schema; consider tightening the "
+                        f"prompt or switching model."
+                    )
+
+                if unwrap_field is not None:
+                    result = getattr(result, unwrap_field)
+
+                # ── Step 4: record on conversation history ────────────────
+                # No virtual ToolMessage this time -- the extraction wasn't
+                # a tool call, so history only gets the assistant reply.
+                if isinstance(response, AIMessage):
+                    self.messages.append(response)
+                else:
+                    self.messages.append(AIMessage(content=raw_content))
+
+                return result
+
+            except (json.JSONDecodeError, PydanticValidationError, ValueError) as e:
+                last_error = e
+                if attempt < _MAX_RETRIES - 1:
+                    # Retry feedback: unlike the tool-call path there is no
+                    # tool_call_id to attach to, so we use a plain user turn
+                    # describing the failure. Include the raw content so the
+                    # model can see what it just produced.
+                    messages = messages + [
+                        AIMessage(content=raw_content),
+                        HumanMessage(
+                            content=(
+                                f"Your previous response failed schema validation:\n{e}\n"
+                                f"Please respond again with a valid JSON object matching "
+                                f"the '{schema_name}' schema."
+                            )
                         ),
                     ]
                 continue
