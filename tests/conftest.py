@@ -38,6 +38,11 @@ CORE_PROVIDERS: Dict[str, ProviderCase] = {
         model_uri="bailian/qwen-plus",
         api_key_env="BAILIAN_API_KEY",
     ),
+    "zhipu": ProviderCase(
+        name="zhipu",
+        model_uri="zhipu/glm-5.2",
+        api_key_env="ZHIPU_API_KEY",
+    ),
     "openai": ProviderCase(
         name="openai",
         model_uri="openai/gpt-4o-mini",

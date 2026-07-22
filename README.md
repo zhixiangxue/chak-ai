@@ -24,7 +24,7 @@ chak is not another liteLLM, one-api, or OpenRouter, but a client library that a
 
 ## 🌵 What's New
 
-- **2026-07-08 | v0.4.5** - Notebook tool: Built-in persistent memory for LLM agents via `Notebook`. Agents can `note()` down facts/preferences and `recall()` them across conversations. Powered by [seeka](https://github.com/zhixiangxue/seeka-ai) (embedded vector DB — no external database setup needed). See [example](examples/notebook_demo.py).
+- **2026-07-22 | v0.5.0** - Inspector debug viewer + before_send/after_send hooks + Context Handler turn/round scopes + OpenAI prompt cache + unified usage/token semantics.
 - **2026-06-02 | v0.4.0** - Resilient provider failover: Configure `fallbacks` to route requests through ordered backup LLM providers whenever the current provider fails. Use `fallback_on=FallbackOn.RETRYABLE_ERRORS` for the conservative timeout/rate-limit/server-error policy. See [example](examples/resilient_provider_failover.py).
 - **2026-04-28 | v0.3.5** - SQL & Excel tools:
   - **SQL tool**: Query and modify SQLite / PostgreSQL / MySQL databases. Zero extra deps for SQLite.
@@ -587,7 +587,6 @@ response = await conv.asend("Search for the latest Python release, then save a s
 | Sandbox | `Sandbox` | Run multi-file code projects in an isolated e2b cloud sandbox. Supports any language reachable from bash. | `e2b`, `E2B_API_KEY` |
 | SQL | `SQL` | Query and modify SQLite / PostgreSQL / MySQL databases. Pass the DB URI per call — works with any number of databases in one conversation. SQLite needs no extra deps. | `psycopg2-binary` (PostgreSQL), `pymysql` (MySQL) |
 | Excel | `Excel` | Read and write `.xlsx` and `.csv` spreadsheets — `sheets()`, `read()`, `write()`. | `openpyxl` |
-| Notebook | `Notebook` | Persistent memory for agents — `note()` facts/preferences, `recall()` across conversations. | `seeka` |
 
 These tools are intentionally minimal and composable. Combine them freely or mix with your own custom tools.
 

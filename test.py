@@ -6,6 +6,7 @@ from pathlib import Path
 PROVIDERS = [
     {"mark": "deepseek", "region": "domestic"},
     {"mark": "qwen",     "region": "domestic"},
+    {"mark": "zhipu",    "region": "domestic"},
     {"mark": "openai",   "region": "foreign"},
     {"mark": "claude",   "region": "foreign"},
     {"mark": "minimax",  "region": "foreign"},
