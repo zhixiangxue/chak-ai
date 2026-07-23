@@ -134,3 +134,25 @@ def test_resolve_pdf_url_does_not_disable_verify_for_other_ssl_errors(monkeypatc
 
     assert len(calls) == 1
     assert "verify" not in calls[0][1]
+
+
+def test_strip_code_fences_returns_bare_text_when_no_fence():
+    text = "<table><tr><td>x</td></tr></table>"
+    assert pdf_module._strip_code_fences(text) == text
+
+
+def test_strip_code_fences_removes_single_language_fence():
+    text = "```markdown\n<table></table>\n```"
+    assert pdf_module._strip_code_fences(text) == "<table></table>"
+
+
+def test_strip_code_fences_removes_doubled_trailing_fence():
+    # glm-4.5v was observed emitting a doubled closing fence; a single-layer
+    # peel left a stray ``` behind, so both trailing fences must be stripped.
+    text = "```markdown\n<table></table>\n```\n```"
+    assert pdf_module._strip_code_fences(text) == "<table></table>"
+
+
+def test_strip_code_fences_handles_leading_fence_without_closing():
+    text = "```html\n<table></table>"
+    assert pdf_module._strip_code_fences(text) == "<table></table>"

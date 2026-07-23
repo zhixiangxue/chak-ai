@@ -2,11 +2,30 @@
 Pdf: Built-in PDF reader tool for chak
 
 Extracts text, tables, and structured content from PDF files (local or remote).
-Uses pymupdf4llm for high-accuracy local extraction (97% table accuracy, no LLM needed).
+Uses pymupdf4llm for high-accuracy local extraction on ordinary layouts.
+
+Complex tables (merged cells, vertically rotated axis labels, footnote
+exceptions) cannot be faithfully flattened by a linear text extractor. This
+tool detects such pages automatically and, when a vision model is configured,
+transparently re-reads the page from a rendered image so the returned tables
+keep their row/column associations and footnote anchors. The caller never
+needs to know which pages are complex.
+
+Vision model recommendation for complex tables:
+
+    Model                          Complex tables    Notes
+    -----------------------------  ---------------   ----------------------------
+    anthropic/claude-sonnet-4-6    Recommended       Most reliable table structure
+    minimax/MiniMax-M3             Recommended       Strong; faster and cheaper
+    qwen-vl-max                    Not recommended   Values ok, structure slips
+
+Keep vision_dpi at 300 (the tool default); lower resolution degrades every
+model's structural accuracy.
 
 Usage:
     from chak.tools.std import Pdf
-    pdf = Pdf()
+    pdf = Pdf()                                        # plain-text extraction only
+    pdf = Pdf(vision="anthropic/claude-sonnet-4-6")    # recommended: frontier vision model
     conv = Conversation(model, tools=[pdf])
 
 Supported output formats:
@@ -20,7 +39,9 @@ Dependencies:
     markdown     — pip install markdown  (only needed for html format)
 """
 
+import base64
 import json
+import os
 import re
 import tempfile
 from pathlib import Path
@@ -31,6 +52,84 @@ _PDF_DOWNLOAD_HEADERS = {
     "Accept": "application/pdf,application/octet-stream,*/*",
 }
 _PDF_DOWNLOAD_TIMEOUT = 60
+
+# --- Complex-table detection & vision fallback tuning -------------------------
+# A text line counts as "rotated" (a vertical axis label — the classic structure
+# that linear extraction shreds) when the vertical component of its writing
+# direction exceeds this threshold. Horizontal text has dir ~= (1, 0).
+_ROTATED_DIR_THRESHOLD = 0.3
+# Ignore 1-2 char rotated fragments (stamps, glyph noise); genuine axis labels
+# are longer, so this keeps detection high-precision.
+_ROTATED_MIN_CHARS = 3
+# A table is "heavily merged" when at least this fraction of its grid cells are
+# absorbed into spans. Kept conservative so ordinary header merges alone do not
+# route a page through the (slower, paid) vision model.
+_MERGED_CELL_RATIO = 0.25
+# DPI used when rendering a page to an image for the vision model / render_page.
+# 200 is the hard floor for correct merged-cell spans (150 reproducibly broke a
+# rowspan in testing); 300 is the reliable default for the deeply nested tables
+# that trigger the vision path, at negligible extra cost (tiled models are
+# fixed-token; glm-class is near its per-image token cap by 300 anyway).
+_DEFAULT_VISION_DPI = 300
+
+# Sentinel distinguishing "vision provider not yet resolved" from "resolved to
+# None" (unconfigured or construction failed), so we resolve at most once.
+_UNSET = object()
+
+_VISION_SYSTEM_PROMPT = (
+    "You are a precise table data extractor. You are shown an image of a single "
+    "PDF page. Your job is to capture every value and its full row/column context "
+    "as clean, fully rectangular tables optimized for data consumption — not to "
+    "reproduce the original visual layout."
+)
+
+_VISION_USER_PROMPT = (
+    "Extract page {page} from the image. First decide what each block IS, then "
+    "choose its shape:\n"
+    "\n"
+    "SEGMENT BY MEANING, NOT BY GRID LINES. One visual grid is NOT necessarily one "
+    "table: PDF authors often cram a small rule box or a differently-structured "
+    "block into the same borders as a big matrix. Whenever a group of rows or "
+    "columns has DIFFERENT axes or a different meaning from its neighbors (e.g. a "
+    "little 'Max LTV / Min DSCR / Max Loan Amount' box tacked onto the bottom or "
+    "side of a pricing matrix), emit it as its OWN separate table with its own "
+    "header instead of forcing it into the neighboring grid. It is better to output "
+    "several small correct tables than one big table with wrong semantics.\n"
+    "\n"
+    "(A) DATA MATRIX — a grid of values indexed by row and column (e.g. FICO × LTV). "
+    "Render it as a GitHub-flavored Markdown pipe table where every row has the "
+    "exact same number of columns as the header row.\n"
+    "  - Do NOT use merged cells. Wherever the original merges a cell, uses a "
+    "vertical/rotated axis label, or a value that heads a group of rows/columns, "
+    "REPEAT that exact value in every row/column it actually covers so each row is "
+    "self-contained. This repetition applies ONLY to genuinely merged/spanning "
+    "labels.\n"
+    "  - Flatten multi-level headers into ONE header row: prefix EVERY sub-column "
+    "with its FULL group-header path joined by ' / ' (e.g. a 'DSCR >= 1.00' band "
+    "sitting over a 'Purchase' column becomes the single header "
+    "'DSCR >= 1.00 / Purchase'). Never drop a group header, and never turn a group "
+    "header into its own separate data column.\n"
+    "  - For a cell that is genuinely empty or not applicable, write its printed "
+    "value (e.g. 'n/a') or leave it blank. NEVER invent or duplicate a value just "
+    "to fill a column. If making a row rectangular would force you to copy ONE "
+    "value across columns it does not actually apply to (e.g. a single "
+    "'Max LTV: 70%' becoming 70% under Purchase AND R&T AND Cash-Out), STOP — that "
+    "is a sign the block is really a key-value block (B); split it out instead of "
+    "duplicating.\n"
+    "\n"
+    "(B) KEY-VALUE / REQUIREMENTS block — a list of 'label: description' entries "
+    "(e.g. a 'General Requirements' section, or a small 'Max LTV / Min DSCR / Max "
+    "Loan Amount' rule box). Render it as a simple TWO-column table "
+    "'| Field | Details |': the label in column 1, its full content in column 2 "
+    "(use <br> for line breaks inside the cell). Do NOT widen it into many columns "
+    "and do NOT pad or repeat values to make it look like a matrix.\n"
+    "\n"
+    "- Keep footnote markers (*, **, superscripts) inline in the cell they annotate, "
+    "then list every footnote and its meaning as a plain list under the table.\n"
+    "- Transcribe non-table prose as plain markdown text in reading order.\n"
+    "- Copy every printed value exactly; never invent, merge, or drop data.\n"
+    "- Output only the tables and text. No commentary, no code fences."
+)
 
 
 _HTML_CSS = """
@@ -326,6 +425,140 @@ def _fallback_chunks(doc: Any, pages: list[int]) -> list[dict[str, Any]]:
     return chunks
 
 
+def _count_rotated_lines(page: Any) -> int:
+    """Count text lines with a non-horizontal writing direction on ``page``.
+
+    Vertically rotated labels (e.g. an occupancy axis printed sideways across a
+    matrix) are the single strongest fingerprint of a table whose 2D structure
+    linear extraction cannot recover. Short fragments are ignored to avoid
+    firing on stray glyphs.
+    """
+    try:
+        info = page.get_text("dict")
+    except Exception:
+        return 0
+    count = 0
+    for block in info.get("blocks", []):
+        for line in block.get("lines", []):
+            direction = line.get("dir", (1, 0))
+            if len(direction) != 2 or abs(direction[1]) <= _ROTATED_DIR_THRESHOLD:
+                continue
+            text = "".join(span.get("text", "") for span in line.get("spans", []))
+            if len(text.strip()) >= _ROTATED_MIN_CHARS:
+                count += 1
+    return count
+
+
+def _has_heavily_merged_table(page: Any) -> bool:
+    """Return True if any detected table has a high fraction of merged cells.
+
+    PyMuPDF exposes one rectangle per physical cell, so a merged span shows up
+    as fewer cells than ``row_count * col_count``. A large merge ratio means the
+    grid is genuinely two-dimensional (spanning headers), which markdown's flat
+    pipe tables cannot represent faithfully.
+    """
+    try:
+        tables = page.find_tables().tables
+    except Exception:
+        return False
+    for table in tables:
+        try:
+            expected = (table.row_count or 0) * (table.col_count or 0)
+            actual = len(table.cells)
+        except Exception:
+            continue
+        if expected and actual < expected:
+            if (expected - actual) / expected >= _MERGED_CELL_RATIO:
+                return True
+    return False
+
+
+def _has_tables(page: Any) -> bool:
+    try:
+        return bool(page.find_tables().tables)
+    except Exception:
+        return False
+
+
+def _complex_table_reasons(page: Any) -> list[str]:
+    """Diagnose why a page's tables are unsafe for linear extraction.
+
+    Returns a list of human-readable reasons (empty when the page is safe). A
+    page only qualifies when it actually contains a detected table AND exhibits
+    a structure — rotated axis labels or heavy cell merging — that flattening
+    would corrupt. This keeps ordinary tables on the fast plain-text path.
+    """
+    if not _has_tables(page):
+        return []
+    reasons: list[str] = []
+    if _count_rotated_lines(page) > 0:
+        reasons.append("rotated axis labels")
+    if _has_heavily_merged_table(page):
+        reasons.append("merged/spanning cells")
+    return reasons
+
+
+def _render_page_png(page: Any, dpi: int) -> bytes:
+    """Render a single page to PNG bytes at the requested DPI."""
+    pixmap = page.get_pixmap(dpi=dpi)
+    return pixmap.tobytes("png")
+
+
+def _strip_code_fences(text: str) -> str:
+    """Strip any wrapping ```lang ... ``` fence(s) the model may have added.
+
+    Vision models frequently wrap the HTML table in a markdown code fence
+    (e.g. ```` ```markdown ... ``` ````), and some (observed with glm-4.5v) emit
+    doubled/nested closing fences. Peeling only a single layer left a stray
+    ``` behind, so we drop fence lines from both ends until none remain. Our
+    expected payload is an HTML table, which never legitimately starts or ends
+    with a ``` line, so edge-only stripping is safe.
+    """
+    lines = text.strip().splitlines()
+    while lines and lines[0].strip().startswith("```"):
+        lines.pop(0)
+    while lines and lines[-1].strip().startswith("```"):
+        lines.pop()
+    return "\n".join(lines).strip()
+
+
+def _wrap_complex_vision(page_no: int, vision_text: str, reasons: list[str]) -> str:
+    """Prefix a vision-reconstructed page with a short provenance note."""
+    note = (
+        f"[PDF page {page_no}: this page contains a complex table "
+        f"({', '.join(reasons)}). The content below was reconstructed from a "
+        f"rendered image with a vision model to preserve column/row structure and "
+        f"footnote exceptions. Trust this reconstruction over any flat text layout.]"
+    )
+    return f"{note}\n\n{vision_text}"
+
+
+def _wrap_complex_warning(
+    page_no: int, base_md: str, reasons: list[str], vision_configured: bool
+) -> str:
+    """Prefix a not-reconstructed complex page with an explicit reliability warning."""
+    if vision_configured:
+        hint = "the configured vision model was unavailable; retry or render_page and read the image manually"
+    else:
+        hint = (
+            "render this page with render_page and read the image using a "
+            "vision-capable model, or configure a vision model on the Pdf tool"
+        )
+    warning = (
+        f"> WARNING — COMPLEX TABLE ON PDF PAGE {page_no}: contains "
+        f"{', '.join(reasons)} that linear text extraction cannot represent "
+        f"faithfully. Column/row associations and footnote exceptions in the text "
+        f"below may be WRONG. To read it accurately, {hint}."
+    )
+    return f"{warning}\n\n{base_md}"
+
+
+def _summarize_methods(per_page: list[dict[str, Any]]) -> str:
+    """Join the distinct per-page extraction methods (e.g. ``layout+vision``)."""
+    methods = sorted({record["method"] for record in per_page})
+    return "+".join(methods) if methods else "none"
+
+
 class Pdf:
     """Navigate and extract PDF content safely for LLM workflows.
 
@@ -334,6 +567,210 @@ class Pdf:
     start_page/end_page arguments are 1-based PDF physical pages, not printed
     page labels shown inside the document.
     """
+
+    def __init__(
+        self,
+        vision: str | None = None,
+        vision_api_key: str | None = None,
+        vision_dpi: int = _DEFAULT_VISION_DPI,
+    ):
+        """Configure the PDF reader.
+
+        Args:
+            vision: Optional model URI (e.g. ``"anthropic/claude-sonnet-4-6"``
+                or a full ``provider@base_url:model`` URI) of a vision-capable
+                model. When set, pages whose tables are unsafe for linear
+                extraction (rotated axis labels, merged/spanning cells) are
+                rendered to an image and re-read by this model so the returned
+                tables stay structurally faithful. This is fully transparent to
+                callers. Prefer a frontier model: cell VALUES are transcribed
+                accurately by ``claude-sonnet-4-6``, ``gpt-4o`` and the
+                domestically-reachable ``zhipu/glm-4.5v`` and
+                ``bailian/qwen-vl-max`` alike, but MERGED-CELL structure
+                (spanning cells, tall rotated labels) is only fully reliable on
+                frontier models — mid-tier models occasionally miss a span by
+                one row on the most deeply nested tables. ``qwen-vl-max`` works
+                well ONLY at high DPI: at low DPI it shifts whole columns and
+                produces wrong values, so never pair a qwen model with DPI
+                below 300 (it is also markedly slower, ~80-120s/page). If you
+                have no adequate model, leave vision unset and rely on the
+                inline complex-table warning plus render_page instead.
+            vision_api_key: API key for the vision model. When omitted, it is
+                resolved from the ``{PROVIDER}_API_KEY`` environment variable
+                matching the vision URI's provider.
+            vision_dpi: Render resolution for the vision fallback and
+                render_page. 200 DPI is the HARD FLOOR for correct merged-cell
+                spans — below it, even strong models mis-judge rowspan/colspan
+                (150 DPI reproducibly broke a span in testing). Defaults to 300,
+                the reliable resolution for the deeply nested tables that
+                trigger the vision path; higher values rarely help because
+                tiled models are fixed-token and glm-class hits its per-image
+                token cap around 300.
+        """
+        self.vision = vision
+        self.vision_api_key = vision_api_key
+        self.vision_dpi = vision_dpi
+        # Resolved lazily and cached; _UNSET means "not yet attempted".
+        self._vision_provider_cache: Any = _UNSET
+
+    def __available__(self) -> frozenset[str]:
+        """Explicitly declare which methods are exposed as LLM tools.
+
+        Keeps the tool surface stable and prevents internal helpers from ever
+        leaking into the tool schema.
+        """
+        return frozenset(
+            {"metadata", "outline", "search", "read_pages", "read_all", "render_page"}
+        )
+
+    def _vision_configured(self) -> bool:
+        return bool(self.vision)
+
+    def _vision_provider(self) -> Any:
+        """Resolve (once) and cache the vision provider, or None if unavailable.
+
+        Never raises: a missing key or bad URI degrades to None so extraction
+        falls back to plain text with an explicit warning rather than failing.
+        """
+        if not self.vision:
+            return None
+        if self._vision_provider_cache is not _UNSET:
+            return self._vision_provider_cache
+
+        from ...utils.logger import logger  # noqa: PLC0415
+
+        provider = None
+        try:
+            from ...providers import create_provider  # noqa: PLC0415
+            from ...providers.types import ProviderCategory  # noqa: PLC0415
+            from ...utils.uri import parse as parse_uri  # noqa: PLC0415
+
+            parsed = parse_uri(self.vision)
+            api_key = self.vision_api_key or os.getenv(f"{parsed['provider'].upper()}_API_KEY")
+            if not api_key:
+                logger.warning(
+                    f"[Pdf] vision model '{self.vision}' configured but no API key found "
+                    f"(pass vision_api_key or set {parsed['provider'].upper()}_API_KEY); "
+                    f"complex tables will fall back to plain text with a warning."
+                )
+            else:
+                config: dict[str, Any] = {"api_key": api_key, "model": parsed["model"]}
+                if parsed.get("base_url"):
+                    config["base_url"] = parsed["base_url"]
+                provider = create_provider(parsed["provider"], config, ProviderCategory.LLM)
+        except Exception as error:
+            logger.warning(f"[Pdf] failed to initialize vision model '{self.vision}': {error}")
+            provider = None
+
+        self._vision_provider_cache = provider
+        return provider
+
+    def _vision_transcribe_png(self, png: bytes | None, page_no: int) -> str | None:
+        """Ask the vision model to transcribe a pre-rendered page image.
+
+        The PNG must be rendered by the caller BEFORE pymupdf4llm.to_markdown
+        runs: that call's OCR fallback mutates page state and degrades a later
+        re-render (see _extract_pages). Returns None when no vision model is
+        available, no image was captured, or the call fails, so the caller can
+        degrade gracefully.
+        """
+        provider = self._vision_provider()
+        if provider is None or not png:
+            return None
+
+        from ...utils.logger import logger  # noqa: PLC0415
+        from ...message import HumanMessage, SystemMessage  # noqa: PLC0415
+
+        try:
+            data_uri = "data:image/png;base64," + base64.b64encode(png).decode("ascii")
+            messages = [
+                SystemMessage(content=_VISION_SYSTEM_PROMPT),
+                HumanMessage(
+                    content=[
+                        {"type": "text", "text": _VISION_USER_PROMPT.format(page=page_no)},
+                        {"type": "image_url", "image_url": {"url": data_uri}},
+                    ]
+                ),
+            ]
+            response = provider.send(messages=messages, stream=False)
+            text = getattr(response, "content", "") or ""
+            text = _strip_code_fences(text)
+            return text or None
+        except Exception as error:
+            logger.warning(f"[Pdf] vision transcription failed for page {page_no}: {error}")
+            return None
+
+    def _extract_pages(self, doc: Any, pages: list[int], lib: Any) -> list[dict[str, Any]]:
+        """Extract each requested page, transparently upgrading complex tables.
+
+        For every page: use fast layout markdown by default; when the page holds
+        a table unsafe for flattening, re-read it with the vision model (if
+        configured) or annotate it with a reliability warning otherwise.
+
+        Returns a list of records: ``{page, content, method, complex}`` where
+        ``method`` is one of ``layout`` / ``plain_text`` / ``vision``.
+        """
+        # Detect complex tables AND render their page images BEFORE to_markdown.
+        # pymupdf4llm's OCR fallback mutates page state: it changes what
+        # find_tables() reports (breaking complexity detection) and degrades a
+        # later re-render (a 469KB page collapsed to a 70KB blurred image in
+        # testing), which would corrupt the vision transcription. Snapshot both
+        # signals up front on the clean document. See _require_pdf_libs().
+        vision_ready = self._vision_configured()
+        reasons_by_page: dict[int, list[str]] = {}
+        png_by_page: dict[int, bytes] = {}
+        for page_index in pages:
+            page = doc.load_page(page_index)
+            reasons = _complex_table_reasons(page)
+            reasons_by_page[page_index] = reasons
+            if reasons and vision_ready:
+                try:
+                    png_by_page[page_index] = _render_page_png(page, self.vision_dpi)
+                except Exception:
+                    pass
+
+        try:
+            chunks = lib.to_markdown(doc, pages=pages, page_chunks=True)
+            base_method = "layout"
+        except ValueError:
+            # pymupdf4llm raises on some complex/empty table layouts; fall back.
+            chunks = _fallback_chunks(doc, pages)
+            base_method = "plain_text"
+
+        results: list[dict[str, Any]] = []
+        for index, page_index in enumerate(pages):
+            page_no = page_index + 1
+            base_md = chunks[index].get("text", "") if index < len(chunks) else ""
+            reasons = reasons_by_page.get(page_index, [])
+
+            if not reasons:
+                results.append(
+                    {"page": page_no, "content": base_md, "method": base_method, "complex": False}
+                )
+                continue
+
+            vision_text = self._vision_transcribe_png(png_by_page.get(page_index), page_no)
+            if vision_text:
+                results.append(
+                    {
+                        "page": page_no,
+                        "content": _wrap_complex_vision(page_no, vision_text, reasons),
+                        "method": "vision",
+                        "complex": True,
+                    }
+                )
+            else:
+                results.append(
+                    {
+                        "page": page_no,
+                        "content": _wrap_complex_warning(
+                            page_no, base_md, reasons, self._vision_configured()
+                        ),
+                        "method": base_method,
+                        "complex": True,
+                    }
+                )
+        return results
 
     def metadata(
         self,
@@ -537,35 +974,35 @@ class Pdf:
         local_path = _resolve_pdf(source)
         with pymupdf.open(local_path) as doc:
             pages = _page_numbers(start_page, end_page, doc.page_count)
+            # Per-page extraction transparently upgrades complex-table pages to
+            # a vision transcription (or annotates them) so callers never have
+            # to know which pages are structurally hard.
+            per_page = self._extract_pages(doc, pages, lib)
+            complex_pages = [r["page"] for r in per_page if r["complex"]]
+            vision_pages = [r["page"] for r in per_page if r["method"] == "vision"]
+
             if format == "json":
-                try:
-                    chunks = lib.to_markdown(doc, pages=pages, page_chunks=True)
-                    extraction_method = "layout"
-                except ValueError:
-                    chunks = _fallback_chunks(doc, pages)
-                    extraction_method = "plain_text"
                 payload = {
                     "source": source,
                     "start_page": start_page,
                     "end_page": end_page,
                     "total_pages": doc.page_count,
-                    "extraction_method": extraction_method,
+                    "extraction_method": _summarize_methods(per_page),
+                    "complex_table_pages": complex_pages,
+                    "vision_pages": vision_pages,
                     "pages": [
                         {
-                            "page": _chunk_page(chunk, start_page + index),
-                            "content": chunk.get("text", ""),
+                            "page": record["page"],
+                            "content": record["content"],
+                            "extraction_method": record["method"],
+                            "complex_table": record["complex"],
                         }
-                        for index, chunk in enumerate(chunks)
+                        for record in per_page
                     ],
                 }
                 return _json(payload)
 
-            try:
-                md = lib.to_markdown(doc, pages=pages)
-                extraction_method = "layout"
-            except ValueError:
-                md = _fallback_markdown(doc, pages)
-                extraction_method = "plain_text"
+            md = "\n\n".join(record["content"] for record in per_page)
             formatted = _format_output(md, format, Path(source).stem)
             content = _content(formatted, max_chars)
             header = _json(
@@ -575,7 +1012,9 @@ class Pdf:
                     "end_page": end_page,
                     "total_pages": doc.page_count,
                     "format": format,
-                    "extraction_method": extraction_method,
+                    "extraction_method": _summarize_methods(per_page),
+                    "complex_table_pages": complex_pages,
+                    "vision_pages": vision_pages,
                     "next_page": end_page + 1 if end_page < doc.page_count else None,
                 }
             )
@@ -610,12 +1049,11 @@ class Pdf:
         pymupdf, lib = _require_pdf_libs()
         local_path = _resolve_pdf(source)
         with pymupdf.open(local_path) as doc:
-            try:
-                md = lib.to_markdown(doc)
-                extraction_method = "layout"
-            except ValueError:
-                md = _fallback_markdown(doc, list(range(doc.page_count)))
-                extraction_method = "plain_text"
+            pages = list(range(doc.page_count))
+            per_page = self._extract_pages(doc, pages, lib)
+            complex_pages = [r["page"] for r in per_page if r["complex"]]
+            vision_pages = [r["page"] for r in per_page if r["method"] == "vision"]
+            md = "\n\n".join(record["content"] for record in per_page)
             formatted = _format_output(md, format, Path(source).stem)
             content = _content(formatted, max_chars)
             header = _json(
@@ -623,7 +1061,68 @@ class Pdf:
                     "source": source,
                     "pages": doc.page_count,
                     "format": format,
-                    "extraction_method": extraction_method,
+                    "extraction_method": _summarize_methods(per_page),
+                    "complex_table_pages": complex_pages,
+                    "vision_pages": vision_pages,
                 }
             )
             return f"{header}\n\n{content}"
+
+    def render_page(
+        self,
+        source: str,
+        page: int,
+        dpi: int | None = None,
+        output_path: str | None = None,
+    ) -> str:
+        """Render a single PDF page to a PNG image on disk.
+
+        Use this as a fallback when a page contains a complex table (merged
+        cells, rotated axis labels, footnote exceptions) that text extraction
+        cannot represent, and no vision model is configured on the tool. The
+        saved image can then be read by a vision-capable model or inspected
+        manually to recover the true 2D structure.
+
+        Args:
+            source: Local file path or HTTPS URL pointing to a PDF file.
+            page: PDF physical page to render, 1-based.
+            dpi: Render resolution. Higher improves small-text fidelity at the
+                cost of a larger image. Defaults to the tool's configured DPI.
+            output_path: Where to write the PNG. When omitted, a temp file is
+                created and its path returned.
+
+        Returns:
+            JSON string with source, page, dpi, image_path, and image byte size.
+        """
+        pymupdf, _ = _require_pdf_libs()
+        local_path = _resolve_pdf(source)
+        render_dpi = dpi or self.vision_dpi
+        with pymupdf.open(local_path) as doc:
+            if page < 1 or page > doc.page_count:
+                raise ValueError(
+                    f"page must be between 1 and {doc.page_count} (got {page})"
+                )
+            png = _render_page_png(doc.load_page(page - 1), render_dpi)
+
+        if output_path:
+            image_path = str(Path(output_path).expanduser())
+            Path(image_path).parent.mkdir(parents=True, exist_ok=True)
+            with open(image_path, "wb") as handle:
+                handle.write(png)
+        else:
+            tmp = tempfile.NamedTemporaryFile(
+                suffix=f".page{page}.png", delete=False
+            )
+            tmp.write(png)
+            tmp.close()
+            image_path = tmp.name
+
+        return _json(
+            {
+                "source": source,
+                "page": page,
+                "dpi": render_dpi,
+                "image_path": image_path,
+                "bytes": len(png),
+            }
+        )
