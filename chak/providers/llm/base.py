@@ -113,6 +113,24 @@ class Provider(ABC):
         """
         return False
 
+    def _merge_default_params(self, kwargs: Dict[str, Any]) -> Dict[str, Any]:
+        """Merge construction-time default request params with per-call kwargs.
+
+        Extra fields stored on the config (Pydantic ``extra='allow'``) — e.g.
+        ``temperature``/``top_p`` passed to ``Conversation(...)`` at
+        construction time — are treated as request defaults and forwarded to
+        every call. Per-call kwargs always win, so callers can still override
+        any default on a per-message basis. Only *undeclared* extras are
+        forwarded; declared config fields (api_key, base_url, cache, ...) are
+        never leaked onto the wire.
+        """
+        defaults = getattr(self.config, "model_extra", None)
+        if not defaults:
+            return kwargs
+        merged = dict(defaults)
+        merged.update(kwargs)
+        return merged
+
     def send(
             self,
             messages: List[Message],
@@ -121,6 +139,7 @@ class Provider(ABC):
     ):
         """Unified send method for both streaming and non-streaming."""
         try:
+            kwargs = self._merge_default_params(kwargs)
             provider_messages = self.converter.to_provider_format(messages)
 
             if stream:

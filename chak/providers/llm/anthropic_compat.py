@@ -555,6 +555,7 @@ class AnthropicCompatibleProvider(Provider):
     def send(self, messages: List[Message], stream: bool = False, **kwargs):
         """Unified send method (overrides base to handle dict provider_data)."""
         try:
+            kwargs = self._merge_default_params(kwargs)
             provider_data = self.converter.to_provider_format(messages)
             if stream:
                 return self._wrap_stream_errors(self._send_stream(provider_data, **kwargs))
