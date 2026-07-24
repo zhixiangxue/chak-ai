@@ -968,6 +968,13 @@ class Pdf:
         if format not in valid_formats:
             raise ValueError(f"Unsupported format '{format}'. Choose from: {', '.join(sorted(valid_formats))}")
 
+        # LLMs often pass numeric args as strings; coerce so page comparisons
+        # and slicing don't raise TypeError on str.
+        start_page = int(start_page)
+        end_page = int(end_page)
+        if max_chars is not None:
+            max_chars = int(max_chars)
+
         # Do NOT import pymupdf.layout here — see _require_pdf_libs() docstring
         # for the full explanation of why it is globally banned.
         pymupdf, lib = _require_pdf_libs()
@@ -1096,7 +1103,10 @@ class Pdf:
         """
         pymupdf, _ = _require_pdf_libs()
         local_path = _resolve_pdf(source)
-        render_dpi = dpi or self.vision_dpi
+        # LLMs often pass numeric args as strings; coerce so downstream
+        # arithmetic (page - 1) and PyMuPDF (dpi / 72) don't blow up on str.
+        page = int(page)
+        render_dpi = int(dpi) if dpi is not None else self.vision_dpi
         with pymupdf.open(local_path) as doc:
             if page < 1 or page > doc.page_count:
                 raise ValueError(
