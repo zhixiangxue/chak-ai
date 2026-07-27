@@ -883,6 +883,7 @@ class Pdf:
         vision: str | None = None,
         vision_api_key: str | None = None,
         vision_dpi: int = _DEFAULT_VISION_DPI,
+        mode: str = "rw",
     ):
         """Configure the PDF reader.
 
@@ -916,7 +917,17 @@ class Pdf:
                 trigger the vision path; higher values rarely help because
                 tiled models are fixed-token and glm-class hits its per-image
                 token cap around 300.
+            mode: Tool visibility mode — ``"rw"`` (default) exposes every
+                method including form filling; ``"r"`` hides ``schema`` and
+                ``fill`` so a read-only agent never attempts to fill forms.
+                There is no ``"w"``: filling requires reading metadata/schema
+                first, so a write-only PDF tool has no workable workflow.
         """
+        if mode not in ("r", "rw"):
+            raise ValueError(
+                f"Invalid mode '{mode}': must be 'r' or 'rw'."
+            )
+        self._mode = mode
         self.vision = vision
         self.vision_api_key = vision_api_key
         self.vision_dpi = vision_dpi
@@ -924,12 +935,14 @@ class Pdf:
         self._vision_provider_cache: Any = _UNSET
 
     def __available__(self) -> frozenset[str]:
-        """Explicitly declare which methods are exposed as LLM tools.
+        """Declare which methods are exposed as LLM tools based on mode.
 
         Keeps the tool surface stable and prevents internal helpers from ever
-        leaking into the tool schema.
+        leaking into the tool schema. render_page stays in read-only mode: it
+        writes a PNG to disk, but only as a derived artifact serving the
+        complex-table reading fallback.
         """
-        return frozenset(
+        read_methods = frozenset(
             {
                 "metadata",
                 "outline",
@@ -937,10 +950,13 @@ class Pdf:
                 "read_pages",
                 "read_all",
                 "render_page",
-                "schema",
-                "fill",
             }
         )
+        if self._mode == "r":
+            return read_methods
+        # schema is read-only but exists solely to serve fill, so it is
+        # hidden together with fill in "r" mode.
+        return read_methods | {"schema", "fill"}
 
     def _vision_configured(self) -> bool:
         return bool(self.vision)

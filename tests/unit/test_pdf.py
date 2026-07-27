@@ -156,3 +156,28 @@ def test_strip_code_fences_removes_doubled_trailing_fence():
 def test_strip_code_fences_handles_leading_fence_without_closing():
     text = "```html\n<table></table>"
     assert pdf_module._strip_code_fences(text) == "<table></table>"
+
+
+def test_mode_rw_exposes_all_tools_by_default():
+    available = pdf_module.Pdf().__available__()
+    assert available == {
+        "metadata", "outline", "search", "read_pages", "read_all",
+        "render_page", "schema", "fill",
+    }
+
+
+def test_mode_r_hides_form_filling_tools():
+    available = pdf_module.Pdf(mode="r").__available__()
+    # schema is hidden together with fill: it exists solely to serve fill.
+    assert "fill" not in available
+    assert "schema" not in available
+    # render_page stays: it only writes a derived PNG as a reading fallback.
+    assert available == {
+        "metadata", "outline", "search", "read_pages", "read_all",
+        "render_page",
+    }
+
+
+def test_mode_rejects_invalid_value():
+    with pytest.raises(ValueError, match="must be 'r' or 'rw'"):
+        pdf_module.Pdf(mode="w")
