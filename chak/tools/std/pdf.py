@@ -1,8 +1,15 @@
 """
-Pdf: Built-in PDF reader tool for chak
+Pdf: Built-in PDF reader & form filler tool for chak
 
 Extracts text, tables, and structured content from PDF files (local or remote).
 Uses pymupdf4llm for high-accuracy local extraction on ordinary layouts.
+Also fills AcroForm PDF forms (e.g. the URLA 1003 loan application) through a
+three-step, LLM-friendly workflow:
+
+    metadata  — reports is_fillable_form plus field counts and pages
+    schema    — maps every field name to its meaning, type, options, value
+    fill      — writes a {field_name: value} mapping into a new editable PDF,
+                so the form can be completed incrementally over multiple calls
 
 Complex tables (merged cells, vertically rotated axis labels, footnote
 exceptions) cannot be faithfully flattened by a linear text extractor. This
@@ -37,6 +44,7 @@ Supported output formats:
 Dependencies:
     pymupdf4llm  — pip install pymupdf4llm
     markdown     — pip install markdown  (only needed for html format)
+    PyPDFForm    — pip install PyPDFForm (only needed for form filling)
 """
 
 import base64
@@ -44,6 +52,7 @@ import json
 import os
 import re
 import tempfile
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -75,6 +84,29 @@ _DEFAULT_VISION_DPI = 300
 # Sentinel distinguishing "vision provider not yet resolved" from "resolved to
 # None" (unconfigured or construction failed), so we resolve at most once.
 _UNSET = object()
+
+# --- Form (AcroForm) support ---------------------------------------------------
+# Map PyMuPDF widget type strings to the compact type vocabulary exposed to the
+# LLM. Push buttons are deliberately absent: they hold no fillable value.
+_WIDGET_TYPE_MAP = {
+    "Text": "text",
+    "CheckBox": "checkbox",
+    "RadioButton": "radio",
+    "ComboBox": "dropdown",
+    "ListBox": "dropdown",
+    "Signature": "signature",
+}
+# LLMs routinely send checkbox values as strings; accept the common spellings
+# instead of failing the field.
+_CHECKBOX_TRUE = {"true", "yes", "on", "1", "x", "checked"}
+_CHECKBOX_FALSE = {"false", "no", "off", "0", "unchecked"}
+# Cap for the printed-text hint extracted around an unlabeled widget.
+_NEARBY_TEXT_MAX_CHARS = 80
+# A tooltip shared by this many fields no longer discriminates between them
+# (real-world forms ship copy-paste TU errors, e.g. the 2021 URLA labels all
+# 16 Section 5 declaration radios "Asset 2 Deposited/Not Deposited"), so a
+# nearby-text hint is appended alongside such labels.
+_AMBIGUOUS_LABEL_MIN_COUNT = 4
 
 _VISION_SYSTEM_PROMPT = (
     "You are a precise table data extractor. You are shown an image of a single "
@@ -559,6 +591,284 @@ def _summarize_methods(per_page: list[dict[str, Any]]) -> str:
     return "+".join(methods) if methods else "none"
 
 
+# --- Form (AcroForm) helpers ---------------------------------------------------
+
+
+def _require_pypdfform():
+    """Lazily import and return PyPDFForm's PdfWrapper."""
+    try:
+        from PyPDFForm import PdfWrapper  # noqa: PLC0415
+    except ImportError:
+        raise ImportError(
+            "PyPDFForm is required for PDF form filling. Run: pip install PyPDFForm"
+        )
+    return PdfWrapper
+
+
+def _has_xfa(doc: Any) -> bool:
+    """Detect an XFA form. PyPDFForm (and this tool) can only fill AcroForm."""
+    try:
+        key_type, _ = doc.xref_get_key(doc.pdf_catalog(), "AcroForm/XFA")
+        return key_type not in (None, "null")
+    except Exception:
+        return False
+
+
+def _decode_pdf_name(value: str) -> str:
+    """Decode ``#XX`` hex escapes in a PDF name (e.g. ``U.S.#20Citizen``).
+
+    Radio export values are PDF name objects, whose special characters are
+    hex-escaped. Show the LLM the human-readable form; filling goes through
+    zero-based indices anyway, so the raw spelling is never needed.
+    """
+    if "#" not in value:
+        return value
+    try:
+        return re.sub(
+            r"#([0-9A-Fa-f]{2})", lambda m: chr(int(m.group(1), 16)), value
+        )
+    except Exception:
+        return value
+
+
+def _widget_on_state(widget: Any) -> str | None:
+    """Return the on-state (export value) of a checkbox/radio kid widget."""
+    try:
+        states = widget.button_states() or {}
+    except Exception:
+        return None
+    for key in ("normal", "down"):
+        for state in states.get(key) or []:
+            if state != "Off":
+                return _decode_pdf_name(state)
+    return None
+
+
+def _dropdown_choices(widget: Any) -> list[str]:
+    """Normalize combo/list box choices; entries may be str or (export, display)."""
+    labels = []
+    for choice in widget.choice_values or []:
+        if isinstance(choice, (list, tuple)) and choice:
+            labels.append(str(choice[-1]))
+        else:
+            labels.append(str(choice))
+    return labels
+
+
+def _collect_form_fields(doc: Any) -> list[dict[str, Any]]:
+    """Group widgets into logical fields, in document encounter order.
+
+    Radio kids share one field name, so a group collapses into a single record
+    whose options follow kid encounter order — the same zero-based index
+    PyPDFForm uses for filling. Internal keys (``_loc``, ``_pages``) support
+    later enrichment and are stripped before serialization.
+    """
+    fields: dict[str, dict[str, Any]] = {}
+    for page_index in range(doc.page_count):
+        page = doc.load_page(page_index)
+        for widget in page.widgets():
+            name = widget.field_name
+            field_type = _WIDGET_TYPE_MAP.get(widget.field_type_string)
+            if not name or field_type is None:
+                continue
+            record = fields.get(name)
+            if record is None:
+                record = {
+                    "name": name,
+                    "type": field_type,
+                    "page": page_index + 1,
+                    "label": None,
+                    "options": [],
+                    "current_value": None,
+                    "max_length": None,
+                    "_loc": (page_index, tuple(widget.rect)),
+                    "_pages": set(),
+                }
+                fields[name] = record
+            record["_pages"].add(page_index + 1)
+
+            label = (widget.field_label or "").strip()
+            if label and not record["label"]:
+                record["label"] = label
+
+            value = widget.field_value
+            if field_type == "radio":
+                state = _widget_on_state(widget)
+                if state is not None and state not in record["options"]:
+                    record["options"].append(state)
+                # The selected kid reports its on-state; unselected kids "Off".
+                if value and value != "Off":
+                    record["current_value"] = _decode_pdf_name(value)
+            elif field_type == "checkbox":
+                record["current_value"] = bool(value) and value != "Off"
+            elif field_type == "dropdown":
+                if not record["options"]:
+                    record["options"] = _dropdown_choices(widget)
+                if value not in (None, ""):
+                    record["current_value"] = value
+            else:
+                if widget.text_maxlen:
+                    record["max_length"] = widget.text_maxlen
+                if value not in (None, ""):
+                    record["current_value"] = value
+    return list(fields.values())
+
+
+def _nearby_label_text(doc: Any, record: dict[str, Any]) -> str | None:
+    """Best-effort semantic hint from printed text around a widget.
+
+    Form labels conventionally sit to the right of checkboxes, to the left of
+    a radio group's buttons (the question text; each button only carries its
+    option label), and above or to the left of text boxes; clip-extract
+    printed text from those spots, in order of likelihood.
+    """
+    pymupdf, _ = _require_pdf_libs()
+    page_index, (x0, y0, x1, y1) = record["_loc"]
+    page = doc.load_page(page_index)
+    if record["type"] == "radio":
+        clips = [
+            pymupdf.Rect(x0 - 300, y0 - 6, x0 - 1, y1 + 6),
+            pymupdf.Rect(x1 + 1, y0 - 3, x1 + 220, y1 + 3),
+        ]
+    elif record["type"] == "checkbox":
+        clips = [
+            pymupdf.Rect(x1 + 1, y0 - 3, x1 + 220, y1 + 3),
+            pymupdf.Rect(x0 - 300, y0 - 3, x0 - 1, y1 + 3),
+        ]
+    else:
+        clips = [
+            pymupdf.Rect(x0 - 4, y0 - 24, x1 + 60, y0 - 1),
+            pymupdf.Rect(x0 - 240, y0 - 3, x0 - 1, y1 + 3),
+        ]
+    for clip in clips:
+        if clip.is_empty:
+            continue
+        text = " ".join(page.get_text("text", clip=clip).split())
+        if text:
+            return text[:_NEARBY_TEXT_MAX_CHARS]
+    return None
+
+
+def _compress_page_ranges(pages: list[int]) -> str:
+    """Compress sorted page numbers to a compact range string like ``1-3,5``."""
+    ranges: list[str] = []
+    start = prev = None
+    for page in pages:
+        if start is None:
+            start = prev = page
+        elif page == prev + 1:
+            prev = page
+        else:
+            ranges.append(str(start) if start == prev else f"{start}-{prev}")
+            start = prev = page
+    if start is not None:
+        ranges.append(str(start) if start == prev else f"{start}-{prev}")
+    return ",".join(ranges)
+
+
+def _serialize_field(record: dict[str, Any], fillable_keys: set[str] | None) -> dict[str, Any]:
+    """Compact one field record for the LLM: omit empty/irrelevant keys."""
+    entry: dict[str, Any] = {
+        "name": record["name"],
+        "type": record["type"],
+        "page": record["page"],
+    }
+    if record["label"]:
+        entry["label"] = record["label"]
+    # nearby_text is only populated when the label is missing or ambiguous,
+    # so emitting both never bloats the common case.
+    if record.get("nearby_text"):
+        entry["nearby_text"] = record["nearby_text"]
+    if record["options"]:
+        entry["options"] = {str(i): label for i, label in enumerate(record["options"])}
+    value = record["current_value"]
+    # Identity check for False: `0 in (None, "", False)` is True in Python,
+    # which would wrongly drop a legitimate value of 0.
+    if not (value is None or value == "" or value is False):
+        entry["current_value"] = value
+    if record["max_length"]:
+        entry["max_length"] = record["max_length"]
+    # Flag names PyPDFForm cannot address so the LLM does not waste a fill call.
+    if fillable_keys is not None and record["name"] not in fillable_keys:
+        entry["fillable"] = False
+    return entry
+
+
+def _coerce_form_value(record: dict[str, Any], value: Any) -> tuple[Any, str | None]:
+    """Coerce an LLM-supplied value to what PyPDFForm expects for the field.
+
+    Returns ``(coerced, None)`` on success or ``(None, reason)`` on rejection.
+    Radios and dropdowns are always resolved to a zero-based index here —
+    passing an unknown string through would make PyPDFForm append it as a new
+    dropdown option, which silently amplifies model hallucinations.
+    """
+    field_type = record["type"]
+    if value is None:
+        return None, "value is null"
+
+    if field_type == "text":
+        return value if isinstance(value, str) else str(value), None
+
+    if field_type == "checkbox":
+        if isinstance(value, bool):
+            return value, None
+        if isinstance(value, (int, float)) and value in (0, 1):
+            return bool(value), None
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            if lowered in _CHECKBOX_TRUE:
+                return True, None
+            if lowered in _CHECKBOX_FALSE:
+                return False, None
+        return None, "checkbox expects true or false"
+
+    if field_type in ("radio", "dropdown"):
+        options = record["options"]
+        if isinstance(value, bool):
+            return None, f"expects a zero-based option index or one of: {options}"
+        if isinstance(value, int) or (
+            isinstance(value, str) and value.strip().lstrip("-").isdigit()
+        ):
+            index = int(value)
+            if 0 <= index < len(options):
+                return index, None
+            return None, f"index {index} out of range; options are: {options}"
+        if isinstance(value, str):
+            text = value.strip()
+            for i, option in enumerate(options):
+                if option == text:
+                    return i, None
+            lowered = text.casefold()
+            for i, option in enumerate(options):
+                if option.casefold() == lowered:
+                    return i, None
+            return None, f"'{text}' is not an option; choose one of: {options}"
+        return None, f"expects a zero-based option index or one of: {options}"
+
+    if field_type == "signature":
+        if isinstance(value, str) and Path(value).expanduser().exists():
+            return str(Path(value).expanduser()), None
+        return None, "signature expects the path of an existing image file"
+
+    return None, f"field type '{field_type}' cannot be filled"
+
+
+def _form_wrapper(PdfWrapper: Any, local_path: str, names: set[str]) -> Any:
+    """Build the PdfWrapper whose fill keys best match PyMuPDF's full names.
+
+    Forms with hierarchical field names need ``use_full_widget_name=True`` for
+    the keys to line up; flat forms work either way. Pick empirically.
+    """
+    wrapper = PdfWrapper(local_path, need_appearances=True)
+    keys = set((wrapper.schema or {}).get("properties", {}))
+    if names - keys:
+        full = PdfWrapper(local_path, need_appearances=True, use_full_widget_name=True)
+        full_keys = set((full.schema or {}).get("properties", {}))
+        if len(names & full_keys) > len(names & keys):
+            return full
+    return wrapper
+
+
 class Pdf:
     """Navigate and extract PDF content safely for LLM workflows.
 
@@ -620,7 +930,16 @@ class Pdf:
         leaking into the tool schema.
         """
         return frozenset(
-            {"metadata", "outline", "search", "read_pages", "read_all", "render_page"}
+            {
+                "metadata",
+                "outline",
+                "search",
+                "read_pages",
+                "read_all",
+                "render_page",
+                "schema",
+                "fill",
+            }
         )
 
     def _vision_configured(self) -> bool:
@@ -784,9 +1103,10 @@ class Pdf:
         Returns:
             JSON string with source, PDF physical page count, file size,
             structural metadata, TOC count, estimated total characters, sampled
-            page text density, and compact document-scale signals. This method
-            intentionally does not include page content; use read_pages when
-            content is needed.
+            page text density, and compact document-scale signals. When the PDF
+            is a fillable form, also includes form-field counts and a hint to
+            call schema next. This method intentionally does not include page
+            content; use read_pages when content is needed.
         """
         pymupdf, _ = _require_pdf_libs()
         local_path = _resolve_pdf(source)
@@ -801,6 +1121,8 @@ class Pdf:
             text_density = _text_density(average_chars)
             toc = doc.get_toc(simple=True)
             pdf_metadata = dict(doc.metadata or {})
+            form_fields = _collect_form_fields(doc)
+            has_xfa = _has_xfa(doc)
 
             payload = {
                 "source": source,
@@ -829,7 +1151,28 @@ class Pdf:
                     doc.page_count,
                     average_chars,
                 ),
+                "is_fillable_form": bool(form_fields),
             }
+            if form_fields:
+                by_type: dict[str, int] = {}
+                widget_pages: set[int] = set()
+                for record in form_fields:
+                    by_type[record["type"]] = by_type.get(record["type"], 0) + 1
+                    widget_pages.update(record["_pages"])
+                payload["form_field_count"] = len(form_fields)
+                payload["form_fields_by_type"] = by_type
+                payload["form_pages"] = _compress_page_ranges(sorted(widget_pages))
+                payload["form_hint"] = (
+                    "This PDF is a fillable form. Call schema to get every field's "
+                    "name, meaning, and options, then call fill with a "
+                    "{field_name: value} mapping to fill it."
+                )
+            if has_xfa:
+                payload["has_xfa"] = True
+                payload["form_hint"] = (
+                    "This PDF uses an XFA form, which this tool cannot fill; "
+                    "only its AcroForm fields (if any) are accessible."
+                )
         return _json(payload)
 
     def outline(
@@ -1136,3 +1479,147 @@ class Pdf:
                 "bytes": len(png),
             }
         )
+
+    def schema(
+        self,
+        source: str,
+    ) -> str:
+        """Describe every fillable form field of a PDF form.
+
+        Call metadata first; when it reports is_fillable_form, use this method
+        to learn what data the form needs, then call fill.
+
+        Args:
+            source: Local file path or HTTPS URL pointing to a PDF file.
+
+        Returns:
+            JSON string with total_fields and a fields array. Each entry has:
+            name (the exact key to pass to fill), type (text, checkbox, radio,
+            dropdown, or signature), page (1-based PDF physical page), label
+            (the field's meaning, from its tooltip) and/or nearby_text
+            (printed text next to the field, provided when the label is
+            missing or shared by many fields), options (for radio/dropdown: a
+            zero-based index to option-label map; fill with the index or the
+            exact label), current_value (present only when already filled),
+            and max_length for length-limited text fields. Entries marked
+            "fillable": false cannot be written by fill. For a PDF without
+            form fields, returns is_fillable_form false instead.
+        """
+        pymupdf, _ = _require_pdf_libs()
+        local_path = _resolve_pdf(source)
+        with pymupdf.open(local_path) as doc:
+            records = _collect_form_fields(doc)
+            if not records:
+                return _json(
+                    {
+                        "source": source,
+                        "is_fillable_form": False,
+                        "hint": (
+                            "This PDF has no fillable form fields; use read_pages "
+                            "to read its content instead."
+                        ),
+                    }
+                )
+            # Only trust a tooltip when it discriminates: a label shared by
+            # many fields (copy-paste TU errors, boilerplate like "State")
+            # gets a nearby-text hint appended so the LLM can tell them apart.
+            label_counts = Counter(r["label"] for r in records if r["label"])
+            for record in records:
+                label = record["label"]
+                if not label or label_counts[label] >= _AMBIGUOUS_LABEL_MIN_COUNT:
+                    record["nearby_text"] = _nearby_label_text(doc, record)
+
+        # Cross-check against PyPDFForm so the LLM never wastes a fill call on
+        # a field the filler cannot address. Inspection alone must not require
+        # PyPDFForm, so degrade to "no cross-check" when it is missing.
+        fillable_keys: set[str] | None = None
+        try:
+            PdfWrapper = _require_pypdfform()
+            names = {record["name"] for record in records}
+            wrapper = _form_wrapper(PdfWrapper, local_path, names)
+            fillable_keys = set((wrapper.schema or {}).get("properties", {}))
+        except Exception:
+            pass
+
+        return _json(
+            {
+                "source": source,
+                "total_fields": len(records),
+                "fields": [_serialize_field(record, fillable_keys) for record in records],
+            }
+        )
+
+    def fill(
+        self,
+        source: str,
+        data: dict[str, Any] | str,
+        output_path: str | None = None,
+    ) -> str:
+        """Fill form fields of a PDF form and write the result to a new PDF.
+
+        Use field names exactly as returned by schema. The output stays
+        editable, so the form can be completed incrementally: pass a previous
+        output as source (or set output_path to it) and fill more fields.
+
+        Args:
+            source: Local file path or HTTPS URL pointing to a PDF form.
+            data: Mapping of field name to value. Value by field type —
+                text: a string; checkbox: true or false; radio and dropdown:
+                the zero-based option index or the exact option label from
+                schema's options; signature: path of a local image file.
+            output_path: Where to write the filled PDF. When omitted, a new
+                file is created next to a temp directory and its path returned.
+                May equal source to fill the working copy in place.
+
+        Returns:
+            JSON string with output_path and filled (number of fields
+            written). Rejected fields appear in errors as {field_name: reason};
+            fix them and call fill again on the output.
+        """
+        PdfWrapper = _require_pypdfform()
+        pymupdf, _ = _require_pdf_libs()
+        if isinstance(data, str):
+            data = json.loads(data)
+        if not isinstance(data, dict) or not data:
+            raise ValueError("data must be a non-empty {field_name: value} object")
+
+        local_path = _resolve_pdf(source)
+        with pymupdf.open(local_path) as doc:
+            records = {record["name"]: record for record in _collect_form_fields(doc)}
+        if not records:
+            raise ValueError("This PDF has no fillable form fields.")
+
+        wrapper = _form_wrapper(PdfWrapper, local_path, set(records))
+        fillable_keys = set((wrapper.schema or {}).get("properties", {}))
+
+        valid: dict[str, Any] = {}
+        errors: dict[str, str] = {}
+        for name, value in data.items():
+            record = records.get(name)
+            if record is None or name not in fillable_keys:
+                errors[name] = "unknown field name; use names exactly as returned by schema"
+                continue
+            coerced, reason = _coerce_form_value(record, value)
+            if reason is not None:
+                errors[name] = reason
+                continue
+            valid[name] = coerced
+
+        if not valid:
+            return _json({"filled": 0, "errors": errors})
+
+        if output_path:
+            out = Path(output_path).expanduser()
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out_path = str(out)
+        else:
+            tmp = tempfile.NamedTemporaryFile(suffix=".filled.pdf", delete=False)
+            tmp.close()
+            out_path = tmp.name
+
+        wrapper.fill(valid).write(out_path)
+
+        payload: dict[str, Any] = {"output_path": out_path, "filled": len(valid)}
+        if errors:
+            payload["errors"] = errors
+        return _json(payload)

@@ -9,7 +9,7 @@ All first-party atomic tools that ship with chak live here:
   - Web:        fetch web pages (Firecrawl → Jina → httpx+readability fallback)
   - Search:     search the web (Tavily → Brave → DuckDuckGo fallback)
   - Http:       full HTTP client (GET/POST/PUT/PATCH/DELETE)
-  - Pdf:        extract text/tables from PDF files (local path or URL)
+  - Pdf:        extract text/tables from PDF files and fill PDF forms (local path or URL)
   - Sandbox:    execute multi-file code projects in an isolated e2b cloud sandbox
   - SQL:        query and modify SQLite / PostgreSQL / MySQL databases
   - Excel:      read and write .xlsx and .csv spreadsheets
