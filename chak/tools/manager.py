@@ -22,6 +22,7 @@ _ATTACHMENT_RE = re.compile(r"attachment://(https?://\S+)")
 # Extension → Attachment subclass mapping for resolving tool-produced attachment URLs.
 from ..attachment.base import Attachment as _Attachment
 from ..attachment import PDF as _PDF, DOC as _DOC, Excel as _Excel, CSV as _CSV, TXT as _TXT, Image as _Image
+from ..utils.streaming import iter_in_thread
 
 _EXT_TO_TYPE: Dict[str, type] = {
     ".pdf":  _PDF,
@@ -640,18 +641,69 @@ class ToolManager:
             finish_reason = None
             last_metadata: Optional[Dict] = None
             try:
-                # Get stream iterator synchronously in thread
-                def _get_stream():
+                # Bridge the provider's lazy sync stream into the event loop:
+                # every blocking network read happens in a worker thread so
+                # other coroutines keep running and task.cancel() takes effect
+                # between chunks (see chak.utils.streaming).
+                def _stream_factory():
                     # Anthropic rejects tools=[] — only include when non-empty
                     _kwargs: Dict[str, Any] = {"messages": messages_for_send, "stream": True}
                     if openai_tools:
                         _kwargs["tools"] = openai_tools
                     return provider.send(**_kwargs)
-                
-                stream = await asyncio.to_thread(_get_stream)
+
+                # Step 2: Process streaming chunks (Manager only handles UnifiedStreamChunk)
+                async for provider_chunk in iter_in_thread(_stream_factory):
+                    # Convert provider chunk to unified format
+                    unified_chunk = provider.converter.from_provider_chunk(provider_chunk)
+                    
+                    # Accumulate reasoning_content (required by DeepSeek thinking mode on next round)
+                    if unified_chunk.reasoning_content:
+                        accumulated_reasoning_content += unified_chunk.reasoning_content
+
+                    # Handle regular content
+                    if unified_chunk.content:
+                        accumulated_content += unified_chunk.content
+                        yield MessageChunk(
+                            content=unified_chunk.content,
+                            is_final=False,
+                            metadata={"iteration": iteration}
+                        ), new_messages
+                    
+                    # Handle tool_calls delta (accumulate)
+                    for tc_delta in unified_chunk.tool_calls_delta:
+                        index = tc_delta.index
+                        
+                        # Ensure list is large enough
+                        while len(accumulated_tool_calls) <= index:
+                            accumulated_tool_calls.append({
+                                "id": None,
+                                "type": "function",
+                                "function": {"name": "", "arguments": ""}
+                            })
+                        
+                        # Update accumulated tool call (incremental)
+                        if tc_delta.id:
+                            accumulated_tool_calls[index]["id"] = tc_delta.id
+                        if tc_delta.type:
+                            accumulated_tool_calls[index]["type"] = tc_delta.type
+                        if tc_delta.function_name:
+                            accumulated_tool_calls[index]["function"]["name"] = tc_delta.function_name
+                        if tc_delta.function_arguments:
+                            accumulated_tool_calls[index]["function"]["arguments"] += tc_delta.function_arguments
+                    
+                    # Update finish_reason if present
+                    if unified_chunk.finish_reason:
+                        finish_reason = unified_chunk.finish_reason
+                    
+                    # Track last metadata (usage arrives in the final chunk)
+                    if unified_chunk.metadata:
+                        last_metadata = unified_chunk.metadata
             except Exception as e:
-                error_msg = str(e).lower()
-                if _is_no_tool_support_error(e):
+                # Provider streams are lazy: errors (including "model doesn't
+                # support tools") surface during iteration, not at send() time,
+                # so the graceful-degradation check lives around the loop.
+                if _is_no_tool_support_error(e) and not accumulated_content and not accumulated_tool_calls:
                     logger.warning(f"⚠️ [Tool] Model doesn't support function calling, gracefully degrading to streaming mode...")
                     logger.debug(f"📝 [Tool Loop] Error message: {str(e)}")
                     # Graceful degradation: streaming without tools
@@ -660,11 +712,10 @@ class ToolManager:
                             messages=messages_for_send,
                             stream=True
                         )
-                    stream = await asyncio.to_thread(_get_fallback_stream)
-                    
+
                     # Yield all chunks from the fallback stream (using converter)
                     fallback_content = ""
-                    for provider_chunk in stream:
+                    async for provider_chunk in iter_in_thread(_get_fallback_stream):
                         unified_chunk = provider.converter.from_provider_chunk(provider_chunk)
                         if unified_chunk.content:
                             fallback_content += unified_chunk.content
@@ -682,54 +733,6 @@ class ToolManager:
                 else:
                     logger.error(f"❌ [Tool] LLM call failed: {str(e)}")
                     raise
-            
-            # Step 2: Process streaming chunks (Manager only handles UnifiedStreamChunk)
-            for provider_chunk in stream:
-                # Convert provider chunk to unified format
-                unified_chunk = provider.converter.from_provider_chunk(provider_chunk)
-                
-                # Accumulate reasoning_content (required by DeepSeek thinking mode on next round)
-                if unified_chunk.reasoning_content:
-                    accumulated_reasoning_content += unified_chunk.reasoning_content
-
-                # Handle regular content
-                if unified_chunk.content:
-                    accumulated_content += unified_chunk.content
-                    yield MessageChunk(
-                        content=unified_chunk.content,
-                        is_final=False,
-                        metadata={"iteration": iteration}
-                    ), new_messages
-                
-                # Handle tool_calls delta (accumulate)
-                for tc_delta in unified_chunk.tool_calls_delta:
-                    index = tc_delta.index
-                    
-                    # Ensure list is large enough
-                    while len(accumulated_tool_calls) <= index:
-                        accumulated_tool_calls.append({
-                            "id": None,
-                            "type": "function",
-                            "function": {"name": "", "arguments": ""}
-                        })
-                    
-                    # Update accumulated tool call (incremental)
-                    if tc_delta.id:
-                        accumulated_tool_calls[index]["id"] = tc_delta.id
-                    if tc_delta.type:
-                        accumulated_tool_calls[index]["type"] = tc_delta.type
-                    if tc_delta.function_name:
-                        accumulated_tool_calls[index]["function"]["name"] = tc_delta.function_name
-                    if tc_delta.function_arguments:
-                        accumulated_tool_calls[index]["function"]["arguments"] += tc_delta.function_arguments
-                
-                # Update finish_reason if present
-                if unified_chunk.finish_reason:
-                    finish_reason = unified_chunk.finish_reason
-                
-                # Track last metadata (usage arrives in the final chunk)
-                if unified_chunk.metadata:
-                    last_metadata = unified_chunk.metadata
             
             # Step 3: Check finish_reason
             logger.debug(f"📊 [Tool Loop] Iteration {iteration}: finish_reason={finish_reason}, tool_calls_count={len(accumulated_tool_calls)}")
@@ -882,18 +885,78 @@ class ToolManager:
             # Step 1: Call LLM with streaming
             logger.debug(f"💬 [Tool Loop] Iteration {iteration}: Calling LLM with {len(openai_tools)} tools (streaming with events)...")
             try:
-                # Get stream iterator synchronously in thread
-                def _get_stream():
+                # Bridge the provider's lazy sync stream into the event loop:
+                # every blocking network read happens in a worker thread so
+                # other coroutines keep running and task.cancel() takes effect
+                # between chunks (see chak.utils.streaming).
+                def _stream_factory():
                     # Anthropic rejects tools=[] — only include when non-empty
                     _kwargs: Dict[str, Any] = {"messages": messages_for_send, "stream": True}
                     if openai_tools:
                         _kwargs["tools"] = openai_tools
                     return provider.send(**_kwargs)
-                
-                stream = await asyncio.to_thread(_get_stream)
+
+                # Step 2: Process streaming chunks (Manager only handles UnifiedStreamChunk)
+                async for provider_chunk in iter_in_thread(_stream_factory):
+                    # Convert provider chunk to unified format
+                    unified_chunk = provider.converter.from_provider_chunk(provider_chunk)
+                    
+                    # Handle reasoning content
+                    if unified_chunk.reasoning_content:
+                        # Accumulate for pass-back (DeepSeek thinking mode requirement)
+                        accumulated_reasoning_content += unified_chunk.reasoning_content
+                        yield ReasoningChunk(
+                            content=unified_chunk.reasoning_content,
+                            is_final=False,
+                            metadata=unified_chunk.metadata
+                        )
+                    
+                    # Handle regular content
+                    if unified_chunk.content:
+                        accumulated_content += unified_chunk.content
+                        yield MessageChunk(
+                            content=unified_chunk.content,
+                            is_final=False
+                        )
+                    
+                    # Handle tool_calls delta (accumulate)
+                    for tc_delta in unified_chunk.tool_calls_delta:
+                        index = tc_delta.index
+                        
+                        # Ensure list is large enough
+                        while len(accumulated_tool_calls) <= index:
+                            accumulated_tool_calls.append({
+                                "id": None,
+                                "type": "function",
+                                "function": {"name": "", "arguments": ""}
+                            })
+                        
+                        # Update accumulated tool call (incremental)
+                        if tc_delta.id:
+                            accumulated_tool_calls[index]["id"] = tc_delta.id
+                        if tc_delta.type:
+                            accumulated_tool_calls[index]["type"] = tc_delta.type
+                        if tc_delta.function_name:
+                            accumulated_tool_calls[index]["function"]["name"] = tc_delta.function_name
+                        if tc_delta.function_arguments:
+                            accumulated_tool_calls[index]["function"]["arguments"] += tc_delta.function_arguments
+                    
+                    # Update finish_reason if present
+                    if unified_chunk.finish_reason:
+                        finish_reason = unified_chunk.finish_reason
+                    
+                    # Track last metadata (usage arrives in the final chunk)
+                    if unified_chunk.metadata:
+                        last_metadata = unified_chunk.metadata
+                    
+                    # Check if final
+                    if unified_chunk.is_final:
+                        finish_reason = finish_reason or "stop"
             except Exception as e:
-                error_msg = str(e).lower()
-                if _is_no_tool_support_error(e):
+                # Provider streams are lazy: errors (including "model doesn't
+                # support tools") surface during iteration, not at send() time,
+                # so the graceful-degradation check lives around the loop.
+                if _is_no_tool_support_error(e) and not accumulated_content and not accumulated_tool_calls:
                     logger.warning(f"⚠️ [Tool] Model doesn't support function calling, gracefully degrading to event streaming mode...")
                     logger.debug(f"📝 [Tool Loop] Error message: {str(e)}")
                     # Graceful degradation: streaming without tools
@@ -902,11 +965,10 @@ class ToolManager:
                             messages=messages_for_send,
                             stream=True
                         )
-                    stream = await asyncio.to_thread(_get_fallback_stream)
-                    
+
                     # Yield all content events from the fallback stream
                     fallback_content = ""
-                    for provider_chunk in stream:
+                    async for provider_chunk in iter_in_thread(_get_fallback_stream):
                         # Use converter to handle different provider formats
                         chunk = provider.converter.from_provider_chunk(provider_chunk)
                         if isinstance(chunk, MessageChunk) and chunk.content:
@@ -922,63 +984,6 @@ class ToolManager:
                 else:
                     logger.error(f"❌ [Tool] LLM call failed: {str(e)}")
                     raise
-            
-            # Step 2: Process streaming chunks (Manager only handles UnifiedStreamChunk)
-            for provider_chunk in stream:
-                # Convert provider chunk to unified format
-                unified_chunk = provider.converter.from_provider_chunk(provider_chunk)
-                
-                # Handle reasoning content
-                if unified_chunk.reasoning_content:
-                    # Accumulate for pass-back (DeepSeek thinking mode requirement)
-                    accumulated_reasoning_content += unified_chunk.reasoning_content
-                    yield ReasoningChunk(
-                        content=unified_chunk.reasoning_content,
-                        is_final=False,
-                        metadata=unified_chunk.metadata
-                    )
-                
-                # Handle regular content
-                if unified_chunk.content:
-                    accumulated_content += unified_chunk.content
-                    yield MessageChunk(
-                        content=unified_chunk.content,
-                        is_final=False
-                    )
-                
-                # Handle tool_calls delta (accumulate)
-                for tc_delta in unified_chunk.tool_calls_delta:
-                    index = tc_delta.index
-                    
-                    # Ensure list is large enough
-                    while len(accumulated_tool_calls) <= index:
-                        accumulated_tool_calls.append({
-                            "id": None,
-                            "type": "function",
-                            "function": {"name": "", "arguments": ""}
-                        })
-                    
-                    # Update accumulated tool call (incremental)
-                    if tc_delta.id:
-                        accumulated_tool_calls[index]["id"] = tc_delta.id
-                    if tc_delta.type:
-                        accumulated_tool_calls[index]["type"] = tc_delta.type
-                    if tc_delta.function_name:
-                        accumulated_tool_calls[index]["function"]["name"] = tc_delta.function_name
-                    if tc_delta.function_arguments:
-                        accumulated_tool_calls[index]["function"]["arguments"] += tc_delta.function_arguments
-                
-                # Update finish_reason if present
-                if unified_chunk.finish_reason:
-                    finish_reason = unified_chunk.finish_reason
-                
-                # Track last metadata (usage arrives in the final chunk)
-                if unified_chunk.metadata:
-                    last_metadata = unified_chunk.metadata
-                
-                # Check if final
-                if unified_chunk.is_final:
-                    finish_reason = finish_reason or "stop"
             
             # Step 3: Check finish_reason
             logger.debug(f"📊 [Tool Loop] Iteration {iteration}: finish_reason={finish_reason}, tool_calls_count={len(accumulated_tool_calls)}")

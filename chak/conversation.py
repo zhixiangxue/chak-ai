@@ -13,6 +13,7 @@ from .providers import create_provider
 from .providers.llm.resilient import FallbackOn, ResilientProvider
 from .providers.types import ProviderCategory
 from .schemas import Reasoning
+from .utils.streaming import iter_in_thread
 from .utils.uri import parse as parse_uri
 
 if TYPE_CHECKING:
@@ -1298,16 +1299,16 @@ class Conversation:
     
     async def _asend_stream(self, messages: List[Message], **kwargs) -> AsyncIterator[Union[MessageChunk, ReasoningChunk, FailoverChunk]]:
         """Handle async streaming response with support for both answer and reasoning chunks."""
-        # Get provider chunks (sync iterator)
-        def _get_sync_chunks():
+        # Provider streams are lazy sync generators: the HTTP request fires on
+        # the first next() and every subsequent next() blocks on network I/O.
+        # iter_in_thread runs the whole iteration in a worker thread so the
+        # event loop stays responsive and cancellation works between chunks.
+        def _stream_factory():
             return self.provider.send(
                 messages=messages,
                 stream=True,
                 **kwargs
             )
-        
-        # Run in thread to avoid blocking
-        provider_chunks = await asyncio.to_thread(_get_sync_chunks)
 
         # Convert to standard chunks and collect content
         complete_content = ""
@@ -1315,7 +1316,7 @@ class Conversation:
         last_chunk_was_final = False
         last_chunk_metadata = {}
         
-        for provider_chunk in provider_chunks:
+        async for provider_chunk in iter_in_thread(_stream_factory):
             if isinstance(provider_chunk, FailoverChunk):
                 complete_content = ""
                 complete_reasoning_content = ""
@@ -2297,7 +2298,99 @@ class Conversation:
     def clear(self):
         """Clear conversation history."""
         self.messages.clear()
-    
+
+    def remove_message(self, message_id: str) -> List[Message]:
+        """
+        Remove the entire turn that contains the given message.
+
+        Deletion is always turn-scoped: removing a single message from the
+        middle of a turn could orphan tool_calls / tool results and produce
+        structurally invalid history that providers reject. This method
+        locates the message by ID, resolves its turn, and removes the whole
+        turn via the same underlying logic as :meth:`remove_turn`.
+
+        Only HumanMessage and AIMessage can be used as the anchor: system
+        messages are never deletable, and tool messages are internal
+        plumbing that should not drive deletion directly.
+
+        Args:
+            message_id: ID of a HumanMessage or AIMessage in this conversation
+
+        Returns:
+            List of removed messages (the full turn), in original order
+
+        Raises:
+            ValueError: If no message with this ID exists, the message is not
+                a HumanMessage/AIMessage, or the message has no turn_id
+                (e.g. manually injected via add_messages)
+
+        Example:
+            >>> msg = conv.assistant_messages[-1]
+            >>> removed = conv.remove_message(msg.id)
+            >>> len(removed)  # e.g. 4: user + assistant(tool_calls) + tool + assistant
+        """
+        target = next((m for m in self.messages if m.id == message_id), None)
+        if target is None:
+            raise ValueError(f"Message with id '{message_id}' not found")
+
+        if not isinstance(target, (HumanMessage, AIMessage)):
+            raise ValueError(
+                f"Message '{message_id}' has role '{target.role}': only 'user' "
+                f"and 'assistant' messages can anchor a removal"
+            )
+
+        if not target.turn_id:
+            raise ValueError(
+                f"Message '{message_id}' has no turn_id and cannot be removed "
+                f"by turn (it was likely injected manually via add_messages)"
+            )
+
+        return self._remove_turn(target.turn_id)
+
+    def remove_turn(self, turn_id: str) -> List[Message]:
+        """
+        Remove all messages belonging to the given turn.
+
+        A turn is the atomic unit of history (HumanMessage through the final
+        AIMessage, including any tool_calls/tool results in between), so
+        removing it never breaks the assistant(tool_calls) <-> tool result
+        pairing that providers validate. System messages are never removed,
+        even if they carry a matching turn_id.
+
+        Args:
+            turn_id: Turn ID to remove (see :attr:`turns`)
+
+        Returns:
+            List of removed messages, in original order
+
+        Raises:
+            ValueError: If no removable message carries this turn_id
+
+        Example:
+            >>> conv.remove_turn(conv.turns[-1])  # drop the last turn
+        """
+        return self._remove_turn(turn_id)
+
+    def _remove_turn(self, turn_id: str) -> List[Message]:
+        """Shared turn-removal implementation for remove_message/remove_turn.
+
+        Removes every non-system message whose turn_id matches, keeping
+        system messages untouched. Raises ValueError when nothing matches so
+        callers never silently no-op on a stale/typoed turn_id.
+        """
+        removed = [
+            m for m in self.messages
+            if m.turn_id == turn_id and not isinstance(m, SystemMessage)
+        ]
+        if not removed:
+            raise ValueError(f"Turn with id '{turn_id}' not found")
+
+        removed_ids = {m.id for m in removed}
+        # In-place slice assignment keeps the list identity stable: the tool
+        # loop and other call sites hold references to conv.messages.
+        self.messages[:] = [m for m in self.messages if m.id not in removed_ids]
+        return removed
+
     def reset(self):
         """
         Reset conversation to initial state.
