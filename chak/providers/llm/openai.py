@@ -9,7 +9,8 @@ Supported models:
 - GPT-3.5 series: gpt-3.5-turbo
 - O1 series: o1, o1-mini, o1-preview
 """
-from typing import Optional, Any, Union, get_args
+from types import SimpleNamespace
+from typing import Optional, Any, Union, Dict, List, get_args
 
 import re
 
@@ -20,11 +21,12 @@ from openai.types.responses import (
     ResponseOutputItemAddedEvent,
     ResponseCompletedEvent,
     ResponseStreamEvent,
+    ResponseFunctionCallArgumentsDeltaEvent,
 )
 
 from .openai_compat import OpenAICompatibleMessageConverter, OpenAICompatibleProvider
 from .base import BaseProviderConfig
-from ...message import AIMessage, MessageChunk, ReasoningChunk, UnifiedStreamChunk
+from ...message import AIMessage, MessageChunk, ReasoningChunk, ToolCallDelta, UnifiedStreamChunk
 from ...schemas import Reasoning, Cache
 
 
@@ -75,24 +77,18 @@ class OpenAIMessageConverter(OpenAICompatibleMessageConverter):
     
     def _from_responses_event(self, event: Any) -> UnifiedStreamChunk:
         """Handle OpenAI Responses API streaming events.
-        
+
         Event types and flow:
         1. response.created: Response object created
         2. response.in_progress: Response is being generated
         3. response.output_item.added (reasoning): Reasoning started
-        4. response.reasoning_summary_part.added: Reasoning summary part added
-        5. response.reasoning_summary_text.delta: Reasoning summary text delta (REASONING CONTENT HERE)
-        6. response.reasoning_summary_text.done: Reasoning summary text completed
-        7. response.reasoning_summary_part.done: Reasoning summary part completed
-        8. response.output_item.done (reasoning): Reasoning completed
-        9. response.output_item.added (message): Answer message started
-        10. response.content_part.added: Content part added
-        11. response.output_text.delta: Text content delta (ANSWER CONTENT HERE)
-        12. response.output_text.done: Text completed
-        13. response.content_part.done: Content part completed
-        14. response.output_item.done (message): Message completed
-        15. response.completed: Response generation completed
-        
+        4. response.reasoning_summary_text.delta: Reasoning summary delta
+        5. response.output_item.added (message): Answer message started
+        6. response.output_text.delta: Text content delta (ANSWER CONTENT)
+        7. response.output_item.added (function_call): Tool call started
+        8. response.function_call_arguments.delta: Tool args delta (TOOL CONTENT)
+        9. response.completed: Response generation completed
+
         Note: Reasoning raw content is encrypted and not streamed.
         However, reasoning summary (when requested) IS streamed as deltas.
         """
@@ -103,7 +99,7 @@ class OpenAIMessageConverter(OpenAICompatibleMessageConverter):
                 reasoning_content=event.delta,
                 is_final=False,
             )
-        
+
         # Handle answer text delta events (ANSWER CONTENT)
         if isinstance(event, ResponseTextDeltaEvent):
             return UnifiedStreamChunk(
@@ -111,30 +107,70 @@ class OpenAIMessageConverter(OpenAICompatibleMessageConverter):
                 reasoning_content=None,
                 is_final=False,
             )
-        
+
+        # Handle function-call argument streaming (TOOL CONTENT)
+        if isinstance(event, ResponseFunctionCallArgumentsDeltaEvent):
+            return UnifiedStreamChunk(
+                content="",
+                reasoning_content=None,
+                tool_calls_delta=[ToolCallDelta(
+                    index=event.output_index,
+                    id=None,
+                    type=None,
+                    function_name=None,
+                    function_arguments=event.delta,
+                )],
+                is_final=False,
+            )
+
         # Handle output item added events
         if isinstance(event, ResponseOutputItemAddedEvent):
             item_type = getattr(event.item, 'type', None)
-            
+
             # Reasoning item added - reasoning started
             if item_type == 'reasoning':
                 return UnifiedStreamChunk(content="", reasoning_content="", is_final=False)
-            
+
             # Message item added - answer message started
             if item_type == 'message':
                 return UnifiedStreamChunk(content="", reasoning_content=None, is_final=False)
-        
+
+            # Function-call item added - emit tool call id + name
+            if item_type == 'function_call':
+                return UnifiedStreamChunk(
+                    content="",
+                    reasoning_content=None,
+                    tool_calls_delta=[ToolCallDelta(
+                        index=getattr(event, 'output_index', 0),
+                        id=getattr(event.item, 'call_id', None),
+                        type="function",
+                        function_name=getattr(event.item, 'name', None),
+                        function_arguments=None,
+                    )],
+                    is_final=False,
+                )
+
         # Handle completion events
         if isinstance(event, ResponseCompletedEvent):
             metadata = self._build_metadata(event.response, choice=None)
+            # Translate Responses status to Chat Completions finish_reason so
+            # ToolManager's loop condition (finish_reason == "tool_calls") works.
+            # Check whether any output item is a function_call.
+            output_items = getattr(event.response, 'output', None) or []
+            has_function_call = any(
+                getattr(item, 'type', None) == 'function_call'
+                if not isinstance(item, dict) else item.get('type') == 'function_call'
+                for item in output_items
+            )
+            finish_reason = "tool_calls" if has_function_call else "stop"
             return UnifiedStreamChunk(
                 content="",
                 reasoning_content=None,
                 is_final=True,
-                finish_reason=getattr(event.response, 'status', None),
+                finish_reason=finish_reason,
                 metadata=metadata.model_dump() if metadata else None,
             )
-        
+
         # For other events (created, in_progress, done, etc.), return empty chunk
         return UnifiedStreamChunk(content="", reasoning_content=None, is_final=False)
 
@@ -240,18 +276,26 @@ class OpenAIProvider(OpenAICompatibleProvider):
         # Explicit breakpoint on system prompt (Chat Completions API only,
         # GPT-5.6+ only). Silently skipped on older models — automatic
         # caching still works for them, so nothing is lost.
-        if cache.system_prompt and self._supports_explicit_breakpoint(self.config.model):
+        if cache.system_prompt and self._is_gpt56_plus(self.config.model):
             self._inject_system_breakpoint(messages)
 
     @staticmethod
-    def _supports_explicit_breakpoint(model: str) -> bool:
-        """Whether the model accepts ``prompt_cache_breakpoint``.
+    def _is_gpt56_plus(model: str) -> bool:
+        """Whether the model is GPT-5.6 or a later generation.
 
-        Per OpenAI docs, only GPT-5.6 and later model families support
-        explicit breakpoints. Older models (gpt-4o, gpt-4.1, gpt-5,
-        gpt-5.5, o1, o3, etc.) reject the parameter with a 400
-        invalid_request_error. Those models still benefit from automatic
-        prompt caching for prompts ≥ 1024 tokens.
+        Two GPT-5.6+ behaviors require this check:
+
+        1. **Tool calling**: Chat Completions returns HTTP 400 for function
+           tools on these models (error: "Function tools with
+           reasoning_effort are not supported ... use /v1/responses").
+           Empirically verified (2026-08) that gpt-5, gpt-5.1, and gpt-5.5
+           do NOT have this restriction — only 5.6+ does. The Responses
+           API is the required path for tool calling on 5.6+.
+
+        2. **Prompt caching**: ``prompt_cache_breakpoint`` is only
+           accepted on GPT-5.6+; older models reject it with HTTP 400.
+
+        Matches: gpt-5.6, gpt-5.6-luna, gpt-5.6-mini, gpt-5.7, ..., gpt-6, ...
         """
         m = (model or "").lower()
         # GPT-5.6 through 5.9 (any patch variant like gpt-5.6-mini also matches)
@@ -339,123 +383,283 @@ class OpenAIProvider(OpenAICompatibleProvider):
             # No valid reasoning config, remove it
             kwargs.pop('reasoning', None)
     
-    def _send_complete(self, messages, **kwargs):
-        """Send non-streaming request for OpenAI.
+    # ------------------------------------------------------------------ #
+    # Responses API adapter                                               #
+    #                                                                    #
+    # GPT-5.6+ models require the Responses API for tool calling because #
+    # Chat Completions rejects function tools when the model's internal  #
+    # reasoning_effort is active. The methods below convert between the  #
+    # two API formats at the I/O boundary so the rest of chak (converter,#
+    # ToolManager, Conversation) works unchanged.                        #
+    # ------------------------------------------------------------------ #
 
-        OpenAI has two APIs:
-        1. Responses API: Supports reasoning, but NOT function calling
-        2. Chat Completions API: Supports function calling, but NOT reasoning
-        
-        Strategy:
-        - If reasoning is requested → Use Responses API
-        - Otherwise → Use Chat Completions API (default, supports function calling)
-        
-        Returns:
-            Raw SDK response object (will be parsed by converter later)
+    @staticmethod
+    def _is_responses_unsupported_error(error: Exception) -> bool:
+        """Check if an error means the model can't use Responses API (for fallback)."""
+        msg = str(error).lower()
+        return any(p in msg for p in (
+            "unsupported parameter", "not supported", "does not support",
+        ))
+
+    @staticmethod
+    def _convert_tools_to_responses(tools: List[Dict]) -> List[Dict]:
+        """Convert Chat Completions tool definitions to Responses API format.
+
+        Chat Completions nests fields under a ``function`` key::
+
+            {"type": "function", "function": {"name": ..., "description": ..., "parameters": ...}}
+
+        Responses API expects them flat at the top level::
+
+            {"type": "function", "name": ..., "description": ..., "parameters": ...}
         """
-        model = self.config.model
-        has_reasoning = 'reasoning' in kwargs
+        result: List[Dict] = []
+        for tool in tools:
+            if isinstance(tool, dict) and tool.get("type") == "function" and "function" in tool:
+                fn = tool["function"]
+                converted: Dict[str, Any] = {"type": "function"}
+                for key in ("name", "description", "parameters", "strict"):
+                    if key in fn:
+                        converted[key] = fn[key]
+                result.append(converted)
+            else:
+                # Already flat (Responses format) or unknown type — pass through
+                result.append(tool)
+        return result
 
-        # Route 1: Responses API (for reasoning)
-        if has_reasoning:
-            try:
-                # Apply cache key for Responses API too
-                cache = getattr(self.config, "cache", None)
-                if cache and cache.key:
-                    kwargs.setdefault("prompt_cache_key", cache.key)
+    @staticmethod
+    def _convert_messages_to_responses_input(messages: List[Dict]) -> List[Dict]:
+        """Convert Chat Completions messages to Responses API input items.
 
-                response = self._client.responses.create(
-                    model=model,
-                    input=messages,
-                    **kwargs,
-                )
-                # Return raw Responses API response
-                return response
-            except Exception as e:
-                # Friendly error for unsupported models
-                error_msg = str(e).lower()
-                if 'unsupported parameter' in error_msg or 'reasoning' in error_msg:
-                    raise ValueError(
-                        f"Model '{model}' does not support reasoning parameter. "
-                        f"Reasoning is only supported by specific models like gpt-5, gpt-5-mini, etc. "
-                        f"Please use a reasoning-capable model or remove the reasoning parameter."
-                    ) from e
-                # Other errors: fallback to Chat Completions without reasoning
-                kwargs.pop('reasoning', None)
+        Three structural differences require translation:
 
-        # Route 2: Chat Completions API (default, supports function calling)
-        # Apply cache params (prompt_cache_key + system breakpoint)
-        self._apply_cache_params(messages, kwargs)
+        1. Assistant message with ``tool_calls`` → split into a text item
+           plus one ``function_call`` item per tool call.
+        2. ``role="tool"`` message → ``function_call_output`` item.
+        3. Regular ``system`` / ``user`` / ``assistant`` messages pass
+           through unchanged (Responses API accepts them as-is).
+        """
+        input_items: List[Dict] = []
+        for msg in messages:
+            if not isinstance(msg, dict):
+                input_items.append(msg)
+                continue
 
-        # Apply provider-specific reasoning parameter transformations
-        self._apply_reasoning_params(kwargs)
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+            tool_calls = msg.get("tool_calls")
+            tool_call_id = msg.get("tool_call_id")
 
-        # Call Chat Completions API
-        raw_response = self._client.chat.completions.create(
-            model=model,
-            messages=messages,
-            **kwargs
+            if role == "tool":
+                # Tool result → function_call_output
+                input_items.append({
+                    "type": "function_call_output",
+                    "call_id": tool_call_id or "",
+                    "output": content if isinstance(content, str) else str(content),
+                })
+            elif role == "assistant" and tool_calls:
+                # Assistant with tool calls → text (if any) + function_call items
+                if content:
+                    input_items.append({"role": "assistant", "content": content})
+                for tc in tool_calls:
+                    fn = tc.get("function", {}) if isinstance(tc, dict) else {}
+                    input_items.append({
+                        "type": "function_call",
+                        "call_id": tc.get("id", ""),
+                        "name": fn.get("name", ""),
+                        "arguments": fn.get("arguments", "{}"),
+                    })
+            else:
+                # Regular message — Responses API accepts this as-is
+                input_items.append({"role": role, "content": content})
+
+        return input_items
+
+    @staticmethod
+    def _wrap_responses_as_completion(response: Any) -> Any:
+        """Wrap a Responses API response as a Chat Completions-compatible object.
+
+        This is the key adapter trick: by giving the wrapped object a
+        ``choices`` list with ``message.{content, tool_calls,
+        reasoning_content}``, the base ``from_provider_response`` in
+        ``OpenAICompatibleMessageConverter`` processes it through the
+        existing Chat Completions code path — no converter changes needed.
+        """
+        content_parts: List[str] = []
+        reasoning_parts: List[str] = []
+        tool_calls: List[Any] = []
+
+        output_items = getattr(response, "output", None) or []
+
+        for item in output_items:
+            item_type = getattr(item, "type", None) if not isinstance(item, dict) else item.get("type")
+
+            if item_type == "message":
+                contents = getattr(item, "content", None) if not isinstance(item, dict) else item.get("content")
+                if contents:
+                    for c in contents:
+                        c_type = getattr(c, "type", None) if not isinstance(c, dict) else c.get("type")
+                        if c_type == "output_text":
+                            text = getattr(c, "text", "") if not isinstance(c, dict) else c.get("text", "")
+                            content_parts.append(text)
+
+            elif item_type == "reasoning":
+                summaries = getattr(item, "summary", None) if not isinstance(item, dict) else item.get("summary")
+                if summaries:
+                    for s in summaries:
+                        text = getattr(s, "text", "") if not isinstance(s, dict) else s.get("text", "")
+                        reasoning_parts.append(text)
+
+            elif item_type == "function_call":
+                name = getattr(item, "name", "") if not isinstance(item, dict) else item.get("name", "")
+                call_id = getattr(item, "call_id", "") if not isinstance(item, dict) else item.get("call_id", "")
+                arguments = getattr(item, "arguments", "{}") if not isinstance(item, dict) else item.get("arguments", "{}")
+                tool_calls.append(SimpleNamespace(
+                    id=call_id,
+                    type="function",
+                    function=SimpleNamespace(name=name, arguments=arguments),
+                ))
+
+        message = SimpleNamespace(
+            content="".join(content_parts) if content_parts else None,
+            reasoning_content="".join(reasoning_parts) if reasoning_parts else None,
+            tool_calls=tool_calls if tool_calls else None,
+        )
+        choice = SimpleNamespace(
+            message=message,
+            finish_reason="tool_calls" if tool_calls else "stop",
         )
 
-        # Return raw Chat Completions response
-        return raw_response
-    
-    def _send_stream(self, messages, **kwargs):
-        """Send streaming request for OpenAI.
+        return SimpleNamespace(
+            choices=[choice],
+            usage=getattr(response, "usage", None),
+            model=getattr(response, "model", None),
+            id=getattr(response, "id", None),
+        )
 
-        OpenAI has two APIs:
-        1. Responses API: Supports reasoning, but NOT function calling
-        2. Chat Completions API: Supports function calling, but NOT reasoning
-        
-        Strategy:
-        - If reasoning is requested → Use Responses API streaming
-        - Otherwise → Use Chat Completions API streaming (default, supports function calling)
+    def _send_via_responses(self, model: str, messages: List[Dict], stream: bool, **kwargs):
+        """Send via Responses API with automatic format conversion.
+
+        Converts tool definitions and messages from Chat Completions
+        format to Responses API format, calls the API, then wraps the
+        non-streaming response back to CC format so the rest of chak
+        (converter, ToolManager) processes it unchanged.
+
+        For streaming, the raw event stream is returned directly — the
+        converter's ``_from_responses_event`` handles each event.
         """
-        model = self.config.model
-        has_reasoning = 'reasoning' in kwargs
+        # Convert tools from CC nested format to Responses flat format
+        cc_tools = kwargs.pop('tools', None)
+        if cc_tools:
+            kwargs['tools'] = self._convert_tools_to_responses(cc_tools)
 
-        # Route 1: Responses API streaming (for reasoning)
-        if has_reasoning:
-            try:
-                # Apply cache key for Responses API too
-                cache = getattr(self.config, "cache", None)
-                if cache and cache.key:
-                    kwargs.setdefault("prompt_cache_key", cache.key)
+        # Convert tool_choice from CC nested format to Responses flat format.
+        # CC:  {"type": "function", "function": {"name": "extract"}}
+        # Responses: {"type": "function", "name": "extract"}
+        tool_choice = kwargs.get('tool_choice')
+        if isinstance(tool_choice, dict) and tool_choice.get("type") == "function" \
+                and "function" in tool_choice:
+            fn = tool_choice["function"]
+            kwargs['tool_choice'] = {"type": "function", "name": fn.get("name", "")}
 
-                return self._client.responses.create(
-                    model=model,
-                    input=messages,
-                    stream=True,
-                    **kwargs,
-                )
-            except Exception as e:
-                # Friendly error for unsupported models
-                error_msg = str(e).lower()
-                if 'unsupported parameter' in error_msg or 'reasoning' in error_msg:
-                    raise ValueError(
-                        f"Model '{model}' does not support reasoning parameter. "
-                        f"Reasoning is only supported by specific models like gpt-5, gpt-5-mini, etc. "
-                        f"Please use a reasoning-capable model or remove the reasoning parameter."
-                    ) from e
-                # Other errors: fallback to Chat Completions without reasoning
-                kwargs.pop('reasoning', None)
+        # Convert messages to Responses input format
+        responses_input = self._convert_messages_to_responses_input(messages)
 
-        # Route 2: Chat Completions API streaming (default, supports function calling)
-        # Apply cache params (prompt_cache_key + system breakpoint)
-        self._apply_cache_params(messages, kwargs)
-
-        # Apply provider-specific reasoning parameter transformations
+        # Convert reasoning params from chak format to OpenAI format
         self._apply_reasoning_params(kwargs)
 
-        # Add stream_options to include usage in streaming mode (if not already set)
+        # Responses API also supports prompt_cache_key
+        cache = getattr(self.config, "cache", None)
+        if cache and cache.key:
+            kwargs.setdefault("prompt_cache_key", cache.key)
+
+        if stream:
+            # Return raw event stream — converter handles event parsing
+            return self._client.responses.create(
+                model=model,
+                input=responses_input,
+                stream=True,
+                **kwargs,
+            )
+
+        response = self._client.responses.create(
+            model=model,
+            input=responses_input,
+            **kwargs,
+        )
+        # Wrap as Chat Completions format for downstream processing
+        return self._wrap_responses_as_completion(response)
+
+    # ------------------------------------------------------------------ #
+    # Send methods (routing layer)                                        #
+    # ------------------------------------------------------------------ #
+
+    def _send_complete(self, messages, **kwargs):
+        """Send non-streaming request.
+
+        Routing logic:
+        - GPT-5.6+ models → always Responses API (Chat Completions
+          rejects function tools due to internal reasoning_effort).
+        - Other models + reasoning param → try Responses API, fall
+          back to Chat Completions if the model doesn't support it.
+        - Everything else → Chat Completions API (unchanged).
+        """
+        model = self.config.model
+
+        # GPT-5.6+: Responses API is the only option for tool calling
+        if self._is_gpt56_plus(model):
+            return self._send_via_responses(model, messages, stream=False, **kwargs)
+
+        # Other models with reasoning: try Responses API, fall back gracefully
+        if 'reasoning' in kwargs:
+            try:
+                return self._send_via_responses(model, messages, stream=False, **kwargs)
+            except Exception as e:
+                if self._is_responses_unsupported_error(e):
+                    kwargs.pop('reasoning', None)  # Fall back without reasoning
+                else:
+                    raise
+
+        # Chat Completions API (default path)
+        self._apply_cache_params(messages, kwargs)
+        self._apply_reasoning_params(kwargs)
+        return self._client.chat.completions.create(
+            model=model,
+            messages=messages,
+            **kwargs,
+        )
+
+    def _send_stream(self, messages, **kwargs):
+        """Send streaming request.
+
+        Same routing logic as ``_send_complete``.
+        """
+        model = self.config.model
+
+        # GPT-5.6+: Responses API is the only option for tool calling
+        if self._is_gpt56_plus(model):
+            return self._send_via_responses(model, messages, stream=True, **kwargs)
+
+        # Other models with reasoning: try Responses API, fall back gracefully
+        if 'reasoning' in kwargs:
+            try:
+                return self._send_via_responses(model, messages, stream=True, **kwargs)
+            except Exception as e:
+                if self._is_responses_unsupported_error(e):
+                    kwargs.pop('reasoning', None)  # Fall back without reasoning
+                else:
+                    raise
+
+        # Chat Completions API streaming (default path)
+        self._apply_cache_params(messages, kwargs)
+        self._apply_reasoning_params(kwargs)
+
         if 'stream_options' not in kwargs:
             kwargs['stream_options'] = {"include_usage": True}
 
-        stream = self._client.chat.completions.create(
+        return self._client.chat.completions.create(
             model=model,
             messages=messages,
             stream=True,
-            **kwargs
+            **kwargs,
         )
-
-        return stream
