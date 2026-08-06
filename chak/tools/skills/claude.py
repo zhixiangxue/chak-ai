@@ -9,9 +9,8 @@ as tools via function calling with three-layer progressive disclosure:
   Layer 3: supporting files readable on demand via ClaudeSkillFileReader
 """
 
-import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 from .runner import ScriptRunner
 
@@ -25,6 +24,50 @@ _BINARY_EXTENSIONS = frozenset({
     '.db', '.sqlite',
     '.pyc', '.pyo',
 })
+
+# Default file exposure is intentionally conservative. SKILL.md is the entry
+# point and is returned by ClaudeSkill.call(); supporting files must live under
+# explicitly allowed directories or be explicitly allowed by relative path.
+_DEFAULT_ALLOWED_FILE_DIRS = ('scripts',)
+_DEFAULT_ALLOWED_FILES: tuple[str, ...] = ()
+
+
+def _normalize_allowed_paths(paths: Sequence[str], label: str) -> tuple[str, ...]:
+    """Validate and normalize caller-provided relative allowlist entries."""
+    normalized: list[str] = []
+    for raw in paths:
+        value = str(raw).strip().replace('\\', '/')
+        if not value:
+            raise ValueError(f"{label} entries must not be empty.")
+        path = Path(value)
+        if path.is_absolute() or '..' in path.parts:
+            raise ValueError(
+                f"{label} entries must be relative paths without traversal: {raw}"
+            )
+        normalized.append(path.as_posix().rstrip('/'))
+    return tuple(dict.fromkeys(normalized))
+
+
+def _to_manifest_path(path: Path, skill_dir: Path) -> str:
+    """Return a POSIX-style path relative to the skill directory."""
+    return path.relative_to(skill_dir).as_posix()
+
+
+def _is_allowed_skill_file(
+    target: Path,
+    skill_dir: Path,
+    allowed_dirs: Sequence[str],
+    allowed_files: Sequence[str],
+) -> bool:
+    """Return True when target is in the ClaudeSkill file allowlist."""
+    try:
+        rel = target.relative_to(skill_dir).as_posix()
+    except ValueError:
+        return False
+
+    if rel in allowed_files:
+        return True
+    return any(rel == dirname or rel.startswith(f"{dirname}/") for dirname in allowed_dirs)
 
 
 def _parse_skill_md(path: Path):
@@ -97,9 +140,17 @@ class ClaudeSkillFileReader:
     ToolManager. Developers do not need to create or reference it directly.
     """
 
-    def __init__(self, skill_name: str, skill_dir: Path):
+    def __init__(
+        self,
+        skill_name: str,
+        skill_dir: Path,
+        allowed_dirs: Sequence[str] = _DEFAULT_ALLOWED_FILE_DIRS,
+        allowed_files: Sequence[str] = _DEFAULT_ALLOWED_FILES,
+    ):
         self._skill_name = skill_name
         self._skill_dir = skill_dir.resolve()
+        self._allowed_dirs = _normalize_allowed_paths(allowed_dirs, "allowed_dirs")
+        self._allowed_files = _normalize_allowed_paths(allowed_files, "allowed_files")
 
     @property
     def name(self) -> str:
@@ -151,9 +202,13 @@ class ClaudeSkillFileReader:
         if not rel_path:
             return "Error: 'path' argument is required."
 
+        raw_path = Path(rel_path)
+        if raw_path.is_absolute():
+            return "Error: 'path' must be a relative path within the skill directory."
+
         # Security: prevent path traversal outside the skill directory
         try:
-            target = (self._skill_dir / rel_path).resolve()
+            target = (self._skill_dir / raw_path).resolve()
         except Exception as e:
             return f"Error: Invalid path '{rel_path}': {e}"
 
@@ -163,6 +218,20 @@ class ClaudeSkillFileReader:
             return (
                 "Error: Path traversal not allowed. "
                 "The path must be within the skill directory."
+            )
+
+        if not _is_allowed_skill_file(
+            target,
+            self._skill_dir,
+            self._allowed_dirs,
+            self._allowed_files,
+        ):
+            allowed_dirs = ", ".join(self._allowed_dirs) or "(none)"
+            allowed_files = ", ".join(self._allowed_files) or "(none)"
+            return (
+                f"Error: File is not exposed by this skill: {rel_path}. "
+                f"Allowed directories: {allowed_dirs}. "
+                f"Allowed files: {allowed_files}."
             )
 
         if not target.exists():
@@ -217,7 +286,13 @@ class ClaudeSkill:
         conv = Conversation(..., tools=skills)
     """
 
-    def __init__(self, skill_dir: str, runner: Optional[ScriptRunner] = None):
+    def __init__(
+        self,
+        skill_dir: str,
+        runner: Optional[ScriptRunner] = None,
+        allowed_file_dirs: Sequence[str] = _DEFAULT_ALLOWED_FILE_DIRS,
+        allowed_files: Sequence[str] = _DEFAULT_ALLOWED_FILES,
+    ):
         """Load a Claude Agent Skill from a directory.
 
         Args:
@@ -225,6 +300,11 @@ class ClaudeSkill:
             runner: Optional skill-scoped script runner. When provided, the
                 runner is exposed as an additional companion tool bound to this
                 skill directory.
+            allowed_file_dirs: Relative directories whose files are listed in
+                the skill manifest and readable by the companion read_file tool.
+                Defaults to ``("scripts",)``.
+            allowed_files: Exact relative file paths outside allowed_file_dirs
+                that may be listed and read. Defaults to no extra files.
 
         Raises:
             FileNotFoundError: If skill_dir or SKILL.md does not exist.
@@ -237,6 +317,12 @@ class ClaudeSkill:
         if not self._skill_dir.is_dir():
             raise FileNotFoundError(f"Not a directory: {skill_dir}")
 
+        self._allowed_file_dirs = _normalize_allowed_paths(
+            allowed_file_dirs,
+            "allowed_file_dirs",
+        )
+        self._allowed_files = _normalize_allowed_paths(allowed_files, "allowed_files")
+
         skill_md_path = self._skill_dir / 'SKILL.md'
         self._name, self._description, self._body = _parse_skill_md(skill_md_path)
 
@@ -244,7 +330,12 @@ class ClaudeSkill:
         self._files = self._scan_files()
 
         # Cache companion tools
-        self._file_reader = ClaudeSkillFileReader(self._name, self._skill_dir)
+        self._file_reader = ClaudeSkillFileReader(
+            self._name,
+            self._skill_dir,
+            allowed_dirs=self._allowed_file_dirs,
+            allowed_files=self._allowed_files,
+        )
         self._runner = runner.bind(self._name, self._skill_dir) if runner else None
 
     @property
@@ -353,25 +444,52 @@ class ClaudeSkill:
         return tools
 
     def _scan_files(self) -> List[str]:
-        """Scan the skill directory for readable (non-binary) supporting files.
+        """Scan whitelisted skill support files that are safe to show to the LLM.
 
         Returns:
             Sorted list of relative file paths (excluding SKILL.md itself).
         """
-        files = []
+        files: List[str] = []
 
-        for entry in sorted(self._skill_dir.rglob('*')):
-            if not entry.is_file():
-                continue
-            # Skip SKILL.md at the skill root
-            if entry.name == 'SKILL.md' and entry.parent == self._skill_dir:
-                continue
-            if entry.suffix.lower() in _BINARY_EXTENSIONS:
-                continue
-            rel = entry.relative_to(self._skill_dir)
-            files.append(str(rel).replace(os.sep, '/'))
+        for name in sorted(self._allowed_files):
+            entry = (self._skill_dir / name).resolve()
+            if (
+                entry.is_file()
+                and _is_allowed_skill_file(
+                    entry,
+                    self._skill_dir,
+                    self._allowed_file_dirs,
+                    self._allowed_files,
+                )
+                and entry.suffix.lower() not in _BINARY_EXTENSIONS
+            ):
+                files.append(_to_manifest_path(entry, self._skill_dir))
 
-        return files
+        for dirname in sorted(self._allowed_file_dirs):
+            root = (self._skill_dir / dirname).resolve()
+            if not root.exists() or not root.is_dir():
+                continue
+            try:
+                root.relative_to(self._skill_dir)
+            except ValueError:
+                continue
+
+            for entry in sorted(root.rglob('*')):
+                if not entry.is_file():
+                    continue
+                entry = entry.resolve()
+                if not _is_allowed_skill_file(
+                    entry,
+                    self._skill_dir,
+                    self._allowed_file_dirs,
+                    self._allowed_files,
+                ):
+                    continue
+                if entry.suffix.lower() in _BINARY_EXTENSIONS:
+                    continue
+                files.append(_to_manifest_path(entry, self._skill_dir))
+
+        return sorted(set(files))
 
     def __repr__(self) -> str:
         return (

@@ -117,6 +117,24 @@ def test_pyrunner_executes_skill_script_with_cwd_args_and_stdin(tmp_path):
     assert "stdin=payload" in result
 
 
+def test_pyrunner_decodes_utf8_stdout_on_windows_locale(tmp_path):
+    skill_dir = _write_skill(tmp_path)
+    (skill_dir / "scripts" / "unicode_output.py").write_text(
+        "import sys\n"
+        "sys.stdout.buffer.write('status 🔧 ok … done'.encode('utf-8'))\n",
+        encoding="utf-8",
+    )
+    skill = ClaudeSkill(str(skill_dir), runner=PyRunner(python=sys.executable))
+    runner = skill.get_companion_tools()[1]
+
+    result = asyncio.run(runner.call({"script_path": "scripts/unicode_output.py"}))
+
+    assert "Timed out: false" in result
+    assert "Exit code: 0" in result
+    assert "status 🔧 ok … done" in result
+    assert "STDOUT:\nNone" not in result
+
+
 def test_pyrunner_rejects_path_traversal(tmp_path):
     skill = ClaudeSkill(
         str(_write_skill(tmp_path)),
@@ -177,3 +195,97 @@ def test_tool_manager_rejects_companion_tool_name_conflict(tmp_path):
 
     with pytest.raises(ValueError, match="Duplicate tool name 'calc__run_python'"):
         ToolManager([skill, DuckTool("calc__run_python")])
+
+
+def test_claude_skill_scan_files_uses_conservative_default_allowlist(tmp_path):
+    skill_dir = _write_skill(tmp_path)
+    (skill_dir / "pyproject.toml").write_text("[project]\nname = 'calc'\n", encoding="utf-8")
+    (skill_dir / "skill.toml").write_text("enabled = true\n", encoding="utf-8")
+    (skill_dir / "src").mkdir()
+    (skill_dir / "src" / "engine.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (skill_dir / "formulas").mkdir()
+    (skill_dir / "formulas" / "income.md").write_text("formula docs\n", encoding="utf-8")
+    (skill_dir / ".venv" / "Lib" / "site-packages").mkdir(parents=True)
+    (skill_dir / ".venv" / "Lib" / "site-packages" / "huge.py").write_text("x\n", encoding="utf-8")
+    (skill_dir / "__pycache__").mkdir()
+    (skill_dir / "__pycache__" / "ignored.py").write_text("x\n", encoding="utf-8")
+    (skill_dir / ".pytest_cache").mkdir()
+    (skill_dir / ".pytest_cache" / "ignored.txt").write_text("x\n", encoding="utf-8")
+    (skill_dir / ".git").mkdir()
+    (skill_dir / ".git" / "config").write_text("secret\n", encoding="utf-8")
+    (skill_dir / "notes.md").write_text("root notes should not be exposed\n", encoding="utf-8")
+    (skill_dir / "scripts" / "image.png").write_bytes(b"binary")
+
+    skill = ClaudeSkill(str(skill_dir))
+
+    assert skill._files == ["scripts/example.py"]
+
+
+def test_claude_skill_scan_files_supports_explicit_allowlist_extensions(tmp_path):
+    skill_dir = _write_skill(tmp_path)
+    (skill_dir / "pyproject.toml").write_text("[project]\nname = 'calc'\n", encoding="utf-8")
+    (skill_dir / "src").mkdir()
+    (skill_dir / "src" / "engine.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (skill_dir / "docs").mkdir()
+    (skill_dir / "docs" / "guide.md").write_text("guide\n", encoding="utf-8")
+    (skill_dir / "formulas").mkdir()
+    (skill_dir / "formulas" / "income.md").write_text("formula docs\n", encoding="utf-8")
+
+    skill = ClaudeSkill(
+        str(skill_dir),
+        allowed_file_dirs=("scripts", "src", "docs"),
+        allowed_files=("pyproject.toml",),
+    )
+
+    assert skill._files == [
+        "docs/guide.md",
+        "pyproject.toml",
+        "scripts/example.py",
+        "src/engine.py",
+    ]
+
+
+def test_claude_skill_read_file_enforces_same_allowlist(tmp_path):
+    skill_dir = _write_skill(tmp_path)
+    (skill_dir / "src").mkdir()
+    (skill_dir / "src" / "engine.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (skill_dir / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+    (skill_dir / ".env").write_text("SECRET=1\n", encoding="utf-8")
+    (skill_dir / ".venv" / "Lib" / "site-packages").mkdir(parents=True)
+    (skill_dir / ".venv" / "Lib" / "site-packages" / "pkg.py").write_text("secret\n", encoding="utf-8")
+
+    default_reader = ClaudeSkill(str(skill_dir)).get_file_reader()
+    configured_reader = ClaudeSkill(
+        str(skill_dir),
+        allowed_file_dirs=("scripts", "src"),
+        allowed_files=("pyproject.toml",),
+    ).get_file_reader()
+
+    assert asyncio.run(default_reader.call({"path": "scripts/example.py"})).startswith("import os")
+    assert "Error: File is not exposed by this skill" in asyncio.run(
+        default_reader.call({"path": "src/engine.py"})
+    )
+    assert "Error: File is not exposed by this skill" in asyncio.run(
+        default_reader.call({"path": "pyproject.toml"})
+    )
+
+    assert asyncio.run(configured_reader.call({"path": "src/engine.py"})) == "VALUE = 1\n"
+    assert asyncio.run(configured_reader.call({"path": "pyproject.toml"})) == "[project]\n"
+
+    env_result = asyncio.run(configured_reader.call({"path": ".env"}))
+    venv_result = asyncio.run(configured_reader.call({"path": ".venv/Lib/site-packages/pkg.py"}))
+    root_result = asyncio.run(configured_reader.call({"path": "notes.md"}))
+
+    assert "Error: File is not exposed by this skill" in env_result
+    assert "Error: File is not exposed by this skill" in venv_result
+    assert "Error: File is not exposed by this skill" in root_result
+
+
+def test_claude_skill_read_file_rejects_absolute_paths(tmp_path):
+    skill_dir = _write_skill(tmp_path)
+    reader = ClaudeSkill(str(skill_dir)).get_file_reader()
+
+    result = asyncio.run(reader.call({"path": str(skill_dir / "scripts" / "example.py")}))
+
+    assert "Error:" in result
+    assert "relative path" in result

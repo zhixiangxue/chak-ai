@@ -20,7 +20,7 @@ from . import std
 from .mcp import Server, MCPTool
 from .native import NativeFunctionTool, NativeObjectTool
 from .skills import SkillBase, SkillObjectTool, ClaudeSkill
-from .std import Bash, Python, FileSystem, Web, Search, Http  # Notebook, NotebookBackend — TODO: re-enable after seeka fix
+from .std import Bash, Python, FileSystem, Web, Search, Http, Scratchpad  # Notebook, NotebookBackend — TODO: re-enable after seeka fix
 from .manager import ToolManager
 
 # Type alias for any supported tool — use this instead of repeating the full union.
@@ -54,6 +54,7 @@ __all__ = [
     "Web",
     "Search",
     "Http",
+    "Scratchpad",
     # "Notebook",       # TODO: re-enable after seeka fix
     # "NotebookBackend", # TODO: re-enable after seeka fix
     "ToolManager",

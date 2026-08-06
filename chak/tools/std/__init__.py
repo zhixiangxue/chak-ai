@@ -13,6 +13,7 @@ All first-party atomic tools that ship with chak live here:
   - Sandbox:    execute multi-file code projects in an isolated e2b cloud sandbox
   - SQL:        query and modify SQLite / PostgreSQL / MySQL databases
   - Excel:      read and write .xlsx and .csv spreadsheets
+  - Scratchpad: disk-backed working memory for agents (section CRUD + search)
   - Notebook:   persistent, searchable notebook for agents (note + recall)
 """
 
@@ -26,7 +27,8 @@ from .pdf import Pdf
 from .sandbox import Sandbox
 from .sql import SQL
 from .excel import Excel
+from .scratchpad import Scratchpad
 # TODO: re-enable after seeka 0.2.1+ is installable (currently blocked by zvec)
 # from .notebook import Notebook, NotebookBackend
 
-__all__ = ["Bash", "Python", "FileSystem", "Web", "Search", "Http", "Pdf", "Sandbox", "SQL", "Excel"]  # Notebook, NotebookBackend — TODO: re-enable
+__all__ = ["Bash", "Python", "FileSystem", "Web", "Search", "Http", "Pdf", "Sandbox", "SQL", "Excel", "Scratchpad"]  # Notebook, NotebookBackend — TODO: re-enable

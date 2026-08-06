@@ -235,6 +235,8 @@ class BoundPyRunner:
                 command,
                 input=stdin,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 capture_output=True,
                 cwd=str(self._skill_dir),
                 timeout=timeout,
@@ -252,11 +254,13 @@ class BoundPyRunner:
         except Exception as exc:
             return f"Error executing script: {exc}"
 
+        stdout = completed.stdout or ""
+        stderr = completed.stderr or ""
         return (
             f"Timed out: false\n"
             f"Exit code: {completed.returncode}\n"
-            f"STDOUT:\n{completed.stdout}\n"
-            f"STDERR:\n{completed.stderr}"
+            f"STDOUT:\n{stdout}\n"
+            f"STDERR:\n{stderr}"
         )
 
     def __repr__(self) -> str:

@@ -611,6 +611,12 @@ class BailianProvider(Provider):
             "messages": messages,
         }
         
+        # Add tools / tool_choice (for structured output via tool calling)
+        if "tools" in kwargs and kwargs["tools"]:
+            params["tools"] = kwargs["tools"]
+        if "tool_choice" in kwargs and kwargs["tool_choice"]:
+            params["tool_choice"] = kwargs["tool_choice"]
+        
         # Add optional parameters supported by MultiModalConversation
         if "temperature" in kwargs:
             params["temperature"] = kwargs["temperature"]
@@ -691,6 +697,12 @@ class BailianProvider(Provider):
             "stream": True,
             "incremental_output": True,
         }
+        
+        # Add tools / tool_choice (for structured output via tool calling)
+        if "tools" in kwargs and kwargs["tools"]:
+            params["tools"] = kwargs["tools"]
+        if "tool_choice" in kwargs and kwargs["tool_choice"]:
+            params["tool_choice"] = kwargs["tool_choice"]
         
         # Add optional parameters
         if "temperature" in kwargs:
