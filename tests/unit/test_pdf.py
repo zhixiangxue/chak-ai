@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 from types import SimpleNamespace
@@ -181,3 +182,54 @@ def test_mode_r_hides_form_filling_tools():
 def test_mode_rejects_invalid_value():
     with pytest.raises(ValueError, match="must be 'r' or 'rw'"):
         pdf_module.Pdf(mode="w")
+
+
+class FakePage:
+    def __init__(self, text: str):
+        self._text = text
+
+    def get_text(self, kind: str) -> str:
+        return self._text
+
+
+class FakeDoc:
+    def __init__(self, pages_text: list[str]):
+        self._pages = [FakePage(t) for t in pages_text]
+        self.page_count = len(self._pages)
+
+    def load_page(self, index: int) -> FakePage:
+        return self._pages[index]
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def test_search_coerces_string_numeric_args_from_llm(monkeypatch):
+    """LLMs frequently pass numeric tool arguments as strings (e.g. "220"
+    instead of 220). Without coercion, ``position - context_chars`` raises
+    'unsupported operand type(s) for -: int and str'. search() must coerce
+    max_results/context_chars the same way render_page() coerces page/dpi.
+    """
+    fake_doc = FakeDoc(["some text with the keyword inside it"])
+    fake_pymupdf = SimpleNamespace(open=lambda path: fake_doc)
+
+    monkeypatch.setattr(pdf_module, "_require_pdf_libs", lambda: (fake_pymupdf, None))
+    monkeypatch.setattr(pdf_module, "_resolve_pdf", lambda source: "/tmp/fake.pdf")
+
+    pdf = pdf_module.Pdf()
+
+    # Simulates the exact failure mode: LLM sends string values for numeric params.
+    result = pdf.search(
+        source="fake.pdf",
+        query="keyword",
+        max_results="20",
+        context_chars="10",
+    )
+
+    payload = json.loads(result)
+    assert payload["results"][0]["page"] == 1
+    assert "keyword" in payload["results"][0]["context"]
+

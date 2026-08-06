@@ -1266,6 +1266,11 @@ class Pdf:
         if not query:
             raise ValueError("query is required")
 
+        # LLMs often pass numeric args as strings; coerce so downstream
+        # arithmetic (position - context_chars) doesn't blow up on str.
+        max_results = int(max_results)
+        context_chars = int(context_chars)
+
         pymupdf, _ = _require_pdf_libs()
         local_path = _resolve_pdf(source)
         results = []
