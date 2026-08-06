@@ -13,6 +13,8 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from .runner import ScriptRunner
+
 # Binary file extensions excluded from file listings and content reading
 _BINARY_EXTENSIONS = frozenset({
     '.ttf', '.otf', '.woff', '.woff2',
@@ -215,11 +217,14 @@ class ClaudeSkill:
         conv = Conversation(..., tools=skills)
     """
 
-    def __init__(self, skill_dir: str):
+    def __init__(self, skill_dir: str, runner: Optional[ScriptRunner] = None):
         """Load a Claude Agent Skill from a directory.
 
         Args:
             skill_dir: Path to the skill directory containing SKILL.md.
+            runner: Optional skill-scoped script runner. When provided, the
+                runner is exposed as an additional companion tool bound to this
+                skill directory.
 
         Raises:
             FileNotFoundError: If skill_dir or SKILL.md does not exist.
@@ -238,8 +243,9 @@ class ClaudeSkill:
         # Scan supporting files once at load time
         self._files = self._scan_files()
 
-        # Cache the file reader
+        # Cache companion tools
         self._file_reader = ClaudeSkillFileReader(self._name, self._skill_dir)
+        self._runner = runner.bind(self._name, self._skill_dir) if runner else None
 
     @property
     def name(self) -> str:
@@ -301,12 +307,32 @@ class ClaudeSkill:
             parts.append(
                 f"Skill directory (absolute): {self._skill_dir}"
             )
-            parts.append(
-                f"Available files (use {reader_tool_name} to read content, "
-                f"or use bash with 'python <skill_dir>/<path>' to execute scripts):"
-            )
+            if self._runner is None:
+                # Legacy hint preserved verbatim for callers that still pair
+                # ClaudeSkill with a global Bash/Python tool (no runner
+                # configured). Removing this would silently change prompt
+                # behavior for existing single-skill setups.
+                parts.append(
+                    f"Available files (use {reader_tool_name} to read content, "
+                    f"or use bash with 'python <skill_dir>/<path>' to execute scripts):"
+                )
+            else:
+                parts.append(
+                    f"Available files (use {reader_tool_name} to read content):"
+                )
             for f in self._files:
                 parts.append(f"- {f}")
+
+        if self._runner is not None:
+            runner_name = self._runner.name
+            parts.append("")
+            parts.append("Execution:")
+            parts.append(
+                f"Use {runner_name} to execute Python scripts in this skill. "
+                "The runner executes with cwd fixed to this skill directory."
+            )
+            parts.append("Example arguments:")
+            parts.append('{"script_path": "scripts/example.py", "stdin": "..."}')
 
         return "\n".join(parts)
 
@@ -318,6 +344,13 @@ class ClaudeSkill:
         Developers do not need to call this directly.
         """
         return self._file_reader
+
+    def get_companion_tools(self) -> List[Any]:
+        """Return all companion tools that should be registered with this skill."""
+        tools: List[Any] = [self._file_reader]
+        if self._runner is not None:
+            tools.append(self._runner)
+        return tools
 
     def _scan_files(self) -> List[str]:
         """Scan the skill directory for readable (non-binary) supporting files.
@@ -343,7 +376,9 @@ class ClaudeSkill:
     def __repr__(self) -> str:
         return (
             f"ClaudeSkill(name='{self.name}', "
-            f"files={len(self._files)}, dir='{self._skill_dir}')"
+            f"files={len(self._files)}, "
+            f"runner={self._runner is not None}, "
+            f"dir='{self._skill_dir}')"
         )
 
     def __str__(self) -> str:

@@ -357,10 +357,10 @@ class ToolManager:
                 for method_name, method_tool in tool._method_tools.items():
                     self._add_unique_tool(tool_map, method_name, method_tool)
             elif isinstance(tool, ClaudeSkill):
-                # Register both the skill and its companion file reader
+                # Register the skill and all skill-scoped companion tools
                 self._add_unique_tool(tool_map, tool.name, tool)
-                file_reader = tool.get_file_reader()
-                self._add_unique_tool(tool_map, file_reader.name, file_reader)
+                for companion in tool.get_companion_tools():
+                    self._add_unique_tool(tool_map, companion.name, companion)
             else:
                 # MCPTool or NativeFunctionTool
                 self._add_unique_tool(tool_map, tool.name, tool)
@@ -447,7 +447,8 @@ class ToolManager:
                 continue
             elif isinstance(tool, ClaudeSkill):
                 openai_tools.append(tool.to_openai_tool())
-                openai_tools.append(tool.get_file_reader().to_openai_tool())
+                for companion in tool.get_companion_tools():
+                    openai_tools.append(companion.to_openai_tool())
             else:
                 openai_tools.append(tool.to_openai_tool())
 
