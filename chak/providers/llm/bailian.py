@@ -69,6 +69,34 @@ class BailianMessageConverter(BaseMessageConverter):
                 result.append(part)
         return result
     
+    @staticmethod
+    def _normalize_stream_content(value: Any) -> str:
+        """Normalize provider stream content to text for UnifiedStreamChunk."""
+        if isinstance(value, str):
+            return value
+        if isinstance(value, list):
+            text_parts = [
+                part["text"]
+                for part in value
+                if isinstance(part, dict) and isinstance(part.get("text"), str)
+            ]
+            return "".join(text_parts)
+        return ""
+
+    @staticmethod
+    def _normalize_stream_reasoning_content(value: Any) -> Optional[str]:
+        """Normalize provider stream reasoning content to optional text."""
+        if isinstance(value, str):
+            return value
+        if isinstance(value, list):
+            text_parts = [
+                part["text"]
+                for part in value
+                if isinstance(part, dict) and isinstance(part.get("text"), str)
+            ]
+            return "".join(text_parts) or None
+        return None
+    
     def to_provider_format(self, messages: List[Message]) -> List[Dict[str, Any]]:
         """Convert chak messages to DashScope format.
         
@@ -230,14 +258,14 @@ class BailianMessageConverter(BaseMessageConverter):
         content = ''
         
         try:
-            reasoning_content = getattr(message, 'reasoning_content', None)
+            reasoning_content = self._normalize_stream_reasoning_content(
+                getattr(message, 'reasoning_content', None)
+            )
         except Exception:
             reasoning_content = None
         
         try:
-            content = getattr(message, 'content', '')
-            if content is None:
-                content = ''
+            content = self._normalize_stream_content(getattr(message, 'content', ''))
         except Exception:
             content = ''
         
