@@ -306,6 +306,35 @@ class ToolManager:
         self.executor = executor
         self.hitl_handler = hitl_handler
         self.verbose = verbose
+
+    @staticmethod
+    def _tool_label(tool: Any) -> str:
+        """Return a concise label for duplicate-tool error messages."""
+        name = getattr(tool, "name", None)
+        cls_name = type(tool).__name__
+        if isinstance(name, str) and name:
+            return f"{cls_name}(name='{name}')"
+        return cls_name
+
+    @classmethod
+    def _add_unique_tool(
+        cls,
+        tool_map: Dict[str, Any],
+        name: str,
+        tool: Any,
+    ) -> None:
+        """Add a tool to a name map, failing fast on duplicate names."""
+        if name in tool_map:
+            existing = cls._tool_label(tool_map[name])
+            duplicate = cls._tool_label(tool)
+            raise ValueError(
+                f"Duplicate tool name '{name}' detected. Tool names must be "
+                f"globally unique because LLM providers use the function name "
+                f"as the tool-call routing key. Existing tool: {existing}; "
+                f"duplicate tool: {duplicate}. Please rename one of the tools "
+                f"before constructing ToolManager."
+            )
+        tool_map[name] = tool
     
     def _build_tool_map(self) -> Dict[str, Any]:
         """
@@ -326,15 +355,15 @@ class ToolManager:
             elif isinstance(tool, NativeObjectTool):
                 # Expand object methods
                 for method_name, method_tool in tool._method_tools.items():
-                    tool_map[method_name] = method_tool
+                    self._add_unique_tool(tool_map, method_name, method_tool)
             elif isinstance(tool, ClaudeSkill):
                 # Register both the skill and its companion file reader
-                tool_map[tool.name] = tool
+                self._add_unique_tool(tool_map, tool.name, tool)
                 file_reader = tool.get_file_reader()
-                tool_map[file_reader.name] = file_reader
+                self._add_unique_tool(tool_map, file_reader.name, file_reader)
             else:
                 # MCPTool or NativeFunctionTool
-                tool_map[tool.name] = tool
+                self._add_unique_tool(tool_map, tool.name, tool)
         
         return tool_map
     
@@ -346,10 +375,14 @@ class ToolManager:
             skill_map: skill name -> SkillObjectTool instance
         """
         skill_map = {}
+        reserved_names = dict(self._tool_map)
         
         for tool in self.tools:
             if isinstance(tool, SkillObjectTool):
+                self._add_unique_tool(reserved_names, tool.name, tool)
                 skill_map[tool.name] = tool
+                for method_name, method_tool in tool._method_tools.items():
+                    self._add_unique_tool(reserved_names, method_name, method_tool)
         
         return skill_map
     
