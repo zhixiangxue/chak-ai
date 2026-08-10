@@ -428,16 +428,56 @@ class OpenAIProvider(OpenAICompatibleProvider):
         return result
 
     @staticmethod
+    def _convert_content_parts_to_responses(content: List[Dict]) -> List[Dict]:
+        """Convert Chat Completions multimodal content parts to Responses API format.
+
+        Chat Completions uses ``text`` and ``image_url`` part types, while the
+        Responses API requires ``input_text`` and ``input_image`` respectively.
+
+        Mapping:
+        - ``{"type": "text", "text": "..."}`` → ``{"type": "input_text", "text": "..."}``
+        - ``{"type": "image_url", "image_url": {"url": "...", "detail": "..."}}``
+          → ``{"type": "input_image", "image_url": "...", "detail": "..."}``
+        """
+        result: List[Dict] = []
+        for part in content:
+            if not isinstance(part, dict):
+                result.append(part)
+                continue
+            part_type = part.get("type", "")
+            if part_type == "text":
+                result.append({"type": "input_text", "text": part.get("text", "")})
+            elif part_type == "image_url":
+                image_url_info = part.get("image_url", {})
+                if isinstance(image_url_info, dict):
+                    image_url = image_url_info.get("url", "")
+                    detail = image_url_info.get("detail", "auto")
+                else:
+                    image_url = str(image_url_info)
+                    detail = "auto"
+                result.append({
+                    "type": "input_image",
+                    "image_url": image_url,
+                    "detail": detail,
+                })
+            else:
+                # Unknown type — pass through as-is
+                result.append(part)
+        return result
+
+    @staticmethod
     def _convert_messages_to_responses_input(messages: List[Dict]) -> List[Dict]:
         """Convert Chat Completions messages to Responses API input items.
 
-        Three structural differences require translation:
+        Four structural differences require translation:
 
-        1. Assistant message with ``tool_calls`` → split into a text item
+        1. Multimodal content parts need type mapping:
+           ``text`` → ``input_text``, ``image_url`` → ``input_image``.
+        2. Assistant message with ``tool_calls`` → split into a text item
            plus one ``function_call`` item per tool call.
-        2. ``role="tool"`` message → ``function_call_output`` item.
-        3. Regular ``system`` / ``user`` / ``assistant`` messages pass
-           through unchanged (Responses API accepts them as-is).
+        3. ``role="tool"`` message → ``function_call_output`` item.
+        4. Regular string-content ``system`` / ``user`` / ``assistant``
+           messages pass through unchanged.
         """
         input_items: List[Dict] = []
         for msg in messages:
@@ -470,7 +510,9 @@ class OpenAIProvider(OpenAICompatibleProvider):
                         "arguments": fn.get("arguments", "{}"),
                     })
             else:
-                # Regular message — Responses API accepts this as-is
+                # Regular message — convert multimodal content parts if needed
+                if isinstance(content, list):
+                    content = OpenAIProvider._convert_content_parts_to_responses(content)
                 input_items.append({"role": role, "content": content})
 
         return input_items
