@@ -21,6 +21,7 @@ SCENARIO_MARKS = {
     "structured": "structured",
     "skill": "skill",
     "hook": "hook",
+    "multimodal": "multimodal",
 }
 
 

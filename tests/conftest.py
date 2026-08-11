@@ -109,6 +109,33 @@ def core_provider(request) -> ProviderCase:
     return provider
 
 
+# Provider names (the ``name`` field on ProviderCase) that support
+# multimodal (text + image) input. DeepSeek V4 is text-only; all other
+# core providers have vision-capable models.
+MULTIMODAL_PROVIDER_KEYS = {"openai", "claude", "zhipu", "qwen", "minimax"}
+
+_multimodal_params = [
+    p for p in _all_params if p.values[0].name in MULTIMODAL_PROVIDER_KEYS
+]
+
+
+@pytest.fixture(params=_multimodal_params)
+def multimodal_provider(request) -> ProviderCase:
+    """Parametrized fixture for providers that support multimodal input.
+
+    Excludes text-only providers (e.g. deepseek). Same skip-if-no-key
+    behavior as ``core_provider``.
+
+    Usage:
+        pytest tests/live/test_multimodal.py
+        pytest tests/live/ -k 'openai or claude'
+    """
+    provider = request.param
+    if not provider.api_key:
+        pytest.skip(f"{provider.api_key_env} is not set")
+    return provider
+
+
 @pytest.fixture
 def project_root() -> Path:
     return PROJECT_ROOT

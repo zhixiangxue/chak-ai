@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "chakpy"
-version = "0.5.1"
+version = "0.5.2"
 description = "A simple, yet elegant, LLM API routing library"
 readme = "README.md"
 authors = [
@@ -146,6 +146,7 @@ markers = [
     "structured: structured output tests",
     "skill: skill and ClaudeSkill tests",
     "hook: lifecycle hook (before_send / after_send) tests",
+    "multimodal: text + image vision tests",
     "deepseek: DeepSeek live provider tests",
     "qwen: Qwen/Bailian live provider tests",
     "zhipu: Zhipu GLM live provider tests",
