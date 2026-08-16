@@ -34,9 +34,11 @@ PROVIDER_MODELS = {
         "deepseek-coder": "deepseek-coder"
     },
     "google": {
-        "gemini-1.5-pro": "gemini-1.5-pro",
-        "gemini-1.5-flash": "gemini-1.5-flash",
-        "gemini-pro": "gemini-pro"
+        "gemini-3.7-flash": "gemini-3.7-flash",
+        "gemini-3.6-flash": "gemini-3.6-flash",
+        "gemini-3.5-flash": "gemini-3.5-flash",
+        "gemini-pro-latest": "gemini-pro-latest",
+        "gemini-flash-latest": "gemini-flash-latest"
     },
     "iflytek": {
         "spark-v3.5": "spark-v3.5",

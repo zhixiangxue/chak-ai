@@ -152,5 +152,7 @@ markers = [
     "zhipu: Zhipu GLM live provider tests",
     "openai: OpenAI live provider tests",
     "claude: Claude/Anthropic live provider tests",
+    "minimax: MiniMax live provider tests",
+    "google: Google Gemini live provider tests",
 ]
 asyncio_mode = "auto"

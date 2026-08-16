@@ -65,6 +65,11 @@ CORE_PROVIDERS: Dict[str, Union[ProviderCase, List[ProviderCase]]] = {
         model_uri="minimax@https://api.minimax.io/anthropic:MiniMax-M3",
         api_key_env="MINIMAX_API_KEY",
     ),
+    "google": ProviderCase(
+        name="google",
+        model_uri="google/gemini-3.7-flash",
+        api_key_env="GOOGLE_API_KEY",
+    ),
 }
 
 
@@ -112,7 +117,7 @@ def core_provider(request) -> ProviderCase:
 # Provider names (the ``name`` field on ProviderCase) that support
 # multimodal (text + image) input. DeepSeek V4 is text-only; all other
 # core providers have vision-capable models.
-MULTIMODAL_PROVIDER_KEYS = {"openai", "claude", "zhipu", "qwen", "minimax"}
+MULTIMODAL_PROVIDER_KEYS = {"openai", "claude", "zhipu", "qwen", "minimax", "google"}
 
 _multimodal_params = [
     p for p in _all_params if p.values[0].name in MULTIMODAL_PROVIDER_KEYS

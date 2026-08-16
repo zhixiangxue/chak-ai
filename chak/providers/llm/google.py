@@ -5,9 +5,8 @@ Google provides Gemini models through an OpenAI-compatible API.
 Official documentation: https://ai.google.dev/gemini-api/docs
 
 Supported models:
-- Gemini 2.0: gemini-2.0-flash-exp
-- Gemini 1.5: gemini-1.5-pro, gemini-1.5-flash
-- Gemini Pro: gemini-pro
+- Gemini 3.x: gemini-3.7-flash, gemini-3.6-flash, gemini-3.5-flash
+- Latest aliases: gemini-pro-latest, gemini-flash-latest
 """
 from typing import Optional, Dict, Any
 
