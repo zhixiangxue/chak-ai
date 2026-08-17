@@ -114,13 +114,22 @@ def core_provider(request) -> ProviderCase:
     return provider
 
 
-# Provider names (the ``name`` field on ProviderCase) that support
-# multimodal (text + image) input. DeepSeek V4 is text-only; all other
-# core providers have vision-capable models.
-MULTIMODAL_PROVIDER_KEYS = {"openai", "claude", "zhipu", "qwen", "minimax", "google"}
+# model_uri values of cases that support multimodal (text + image) input.
+# Granularity is per-case (specific model), not per-provider: a provider may
+# register both vision-capable and text-only models (e.g. openai has two
+# entries). zhipu/glm-5.2 is text-only — its endpoint rejects image content
+# with 400 "messages.content.type 参数非法" — so it stays out of this list.
+MULTIMODAL_MODEL_URIS = {
+    "bailian/qwen-plus",
+    "openai/gpt-4o-mini",
+    "openai/gpt-5.6-luna",
+    "anthropic/claude-haiku-4-5",
+    "minimax@https://api.minimax.io/anthropic:MiniMax-M3",
+    "google/gemini-3.7-flash",
+}
 
 _multimodal_params = [
-    p for p in _all_params if p.values[0].name in MULTIMODAL_PROVIDER_KEYS
+    p for p in _all_params if p.values[0].model_uri in MULTIMODAL_MODEL_URIS
 ]
 
 
@@ -128,8 +137,9 @@ _multimodal_params = [
 def multimodal_provider(request) -> ProviderCase:
     """Parametrized fixture for providers that support multimodal input.
 
-    Excludes text-only providers (e.g. deepseek). Same skip-if-no-key
-    behavior as ``core_provider``.
+    Excludes text-only models (e.g. deepseek, zhipu/glm-5.2) via
+    ``MULTIMODAL_MODEL_URIS``. Same skip-if-no-key behavior as
+    ``core_provider``.
 
     Usage:
         pytest tests/live/test_multimodal.py

@@ -26,6 +26,7 @@ keywords = ["llm", "openai", "api", "routing", "chatbot", "ai"]
 dependencies = [
     "openai>=1.0.0",
     "anthropic>=0.40.0",
+    "google-genai>=1.0.0",
     "pydantic>=2.0.0",
     "dashscope>=1.20.0",
     "httpx>=0.24.0",
