@@ -6,7 +6,7 @@ Official documentation: https://help.aliyun.com/zh/model-studio/
 
 Supported models:
 - Text-only (Generation API): qwen-plus, qwen-turbo, qwen-max, etc.
-- Multimodal (MultiModalConversation API): qwen-vl-max, qwen-vl-plus, qwen3.6-plus, etc.
+- Multimodal (MultiModalConversation API): qwen-vl-max, qwen3-vl-plus, qwen3.6-plus, etc.
 - With reasoning: qwen-plus (enable_thinking), QwQ models, etc.
 """
 from typing import Optional, Dict, Any, List, Iterator
@@ -362,8 +362,11 @@ class BailianProvider(Provider):
     - MultiModalConversation.call(): multimodal models (qwen-vl-*, qwen3.6-*, etc.)
     """
     
-    # Model name patterns that require MultiModalConversation API
-    _MULTIMODAL_MODEL_PATTERNS = ["qwen-vl", "qwen3."]
+    # Model name patterns that require MultiModalConversation API.
+    # "-vl" covers the whole vision series (qwen-vl, qwen2-vl, qwen2.5-vl,
+    # qwen3-vl); "qwen3." covers dotted multimodal text models like
+    # qwen3.6-plus.
+    _MULTIMODAL_MODEL_PATTERNS = ["-vl", "qwen3."]
     
     def __init__(self, config: BailianConfig, converter: BailianMessageConverter = None):
         self.config: BailianConfig = config
@@ -481,7 +484,7 @@ class BailianProvider(Provider):
     def _is_multimodal_model(model: str) -> bool:
         """Check if the model requires MultiModalConversation API.
         
-        Models like qwen-vl-max, qwen-vl-plus, qwen3.6-plus are multimodal
+        Models like qwen-vl-max, qwen3-vl-plus, qwen3.6-plus are multimodal
         and require the MultiModalConversation API instead of Generation API.
         """
         model_lower = model.lower()

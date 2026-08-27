@@ -1,7 +1,7 @@
 import pytest
 
 from chak.message import ConversationCompleteEvent, HumanMessage, MessageChunk, ToolCallStartEvent, ToolCallSuccessEvent
-from chak.providers.llm.bailian import BailianMessageConverter
+from chak.providers.llm.bailian import BailianMessageConverter, BailianProvider
 from chak.tools.manager import ToolManager
 
 pytestmark = pytest.mark.unit
@@ -153,3 +153,25 @@ async def test_event_tool_loop_emits_final_stop_frame_text_from_list_content():
     assert [chunk.content for chunk in text_chunks] == ["Final answer after tool"]
     assert isinstance(text_chunks[0].content, str)
     assert any(isinstance(event, ConversationCompleteEvent) for event in events)
+
+
+@pytest.mark.parametrize(
+    "model, expected",
+    [
+        # Vision series must route to MultiModalConversation API
+        ("qwen-vl-max", True),
+        ("qwen-vl-plus", True),
+        ("qwen2-vl-72b-instruct", True),
+        ("qwen2.5-vl-72b-instruct", True),
+        ("qwen3-vl-plus", True),
+        ("qwen3-vl-max", True),
+        # Dotted multimodal text models
+        ("qwen3.6-plus", True),
+        # Text-only models stay on the Generation API
+        ("qwen-plus", False),
+        ("qwen-max", False),
+        ("qwen-turbo", False),
+    ],
+)
+def test_is_multimodal_model_routes_vision_series(model, expected):
+    assert BailianProvider._is_multimodal_model(model) is expected
