@@ -582,7 +582,7 @@ response = await conv.asend("Search for the latest Python release, then save a s
 | File System | `FileSystem` | Read, write, edit, move, find, grep, list, and delete files and directories. | — |
 | HTTP Client | `Http` | Full HTTP client — GET, POST, PUT, PATCH, DELETE with headers and body. | — |
 | Web | `Web` | Fetch and parse web pages into clean text (Firecrawl → Jina → httpx fallback). | `firecrawl-py` (Layer 1, needs API key), `beautifulsoup4`, `readability-lxml` |
-| Search | `Search` | Search the web and return structured results (Tavily → Brave → DuckDuckGo fallback). | `ddgs`, `tavily-python` |
+| Search | `Search` | Search the web and return structured results (Tavily → Brave → optional You.com → DuckDuckGo fallback). Pass `youcom=True` for You.com's keyless free profile, or a You.com API key (or `YDC_API_KEY`) for the authenticated endpoint. | `ddgs`, `tavily-python` |
 | PDF | `Pdf` | Extract text and tables from PDF files (local path or URL). | `pymupdf4llm` |
 | Sandbox | `Sandbox` | Run multi-file code projects in an isolated e2b cloud sandbox. Supports any language reachable from bash. | `e2b`, `E2B_API_KEY` |
 | SQL | `SQL` | Query and modify SQLite / PostgreSQL / MySQL databases. Pass the DB URI per call — works with any number of databases in one conversation. SQLite needs no extra deps. | `psycopg2-binary` (PostgreSQL), `pymysql` (MySQL) |
