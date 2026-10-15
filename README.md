@@ -790,7 +790,21 @@ search uses Fast mode, and the free tier has lower rate limits. See the
 [Parallel Search MCP setup guide](https://docs.parallel.ai/integrations/mcp/search-mcp).
 This example leaves the built-in `Search` tool and existing providers unchanged.
 
+For local code navigation without a model API key, try the
+[Sem stdio example](examples/sem_code_mcp.py). Install Sem separately, then use
+the same Python dependencies as above:
+
+```bash
+python examples/sem_code_mcp.py /absolute/path/to/repo parse_config
+python examples/sem_code_mcp.py /absolute/path/to/repo parse_config --context
+```
+
+Replace the repository and symbol with your own. The example selects only
+`sem_find`, disables Sem network/telemetry, and leaves existing tools unchanged.
+Index caches may be created; the repository path is not a security sandbox.
+
 ### Mix Everything
+
 
 Functions, objects, and MCP tools work together:
 
