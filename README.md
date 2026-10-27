@@ -790,6 +790,19 @@ search uses Fast mode, and the free tier has lower rate limits. See the
 [Parallel Search MCP setup guide](https://docs.parallel.ai/integrations/mcp/search-mcp).
 This example leaves the built-in `Search` tool and existing providers unchanged.
 
+To publish an HTML page to a public URL, again with no account or API key, run
+the [deed.page MCP example](examples/deed_page_mcp.py):
+
+```bash
+python examples/deed_page_mcp.py publish                  # sample page, expires in 1 hour
+python examples/deed_page_mcp.py publish report.html --ttl 0
+python examples/deed_page_mcp.py delete <slug>
+```
+
+The first publish returns an owner token, which the example saves to
+`~/.config/deed-page/token` (mode 600) and reuses to update or delete your pages.
+Published pages are public. See the [deed.page docs](https://deed.page/docs).
+
 ### Mix Everything
 
 Functions, objects, and MCP tools work together:
