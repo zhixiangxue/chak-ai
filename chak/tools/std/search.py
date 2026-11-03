@@ -8,7 +8,8 @@ Provides one public method exposed as an LLM tool via NativeObjectTool:
 Search chain (first success wins):
     1. Tavily      — AI-optimized, clean results, requires tavily_key
     2. Brave       — high-quality traditional search, requires brave_key
-    3. DuckDuckGo  — free, no key, via duckduckgo-search (ddgs)
+    3. Keenable    — opt-in (use_keenable=True or keenable_key); works without a key
+    4. DuckDuckGo  — free, no key, via duckduckgo-search (ddgs)
 
 Usage:
     from chak.tools.std import Search
@@ -31,6 +32,9 @@ import httpx
 
 _USER_AGENT = "Mozilla/5.0 (compatible; chak-ai/1.0)"
 _BRAVE_SEARCH_URL = "https://api.search.brave.com/res/v1/web/search"
+_KEENABLE_PUBLIC_SEARCH_URL = "https://api.keenable.ai/v1/search/public"
+_KEENABLE_SEARCH_URL = "https://api.keenable.ai/v1/search"
+_KEENABLE_SNIPPET_MAX_CHARS = 1000
 
 
 # ---------------------------------------------------------------------------
@@ -67,7 +71,9 @@ class Search:
     Search chain (first success wins):
         1. Tavily      — AI-optimized results (requires tavily_key)
         2. Brave       — high-quality traditional search (requires brave_key)
-        3. DuckDuckGo  — free, no API key needed
+        3. Keenable    — opt-in via use_keenable=True or keenable_key; the key
+                         is optional (keyless public endpoint otherwise)
+        4. DuckDuckGo  — free, no API key needed
 
     Example::
 
@@ -79,6 +85,8 @@ class Search:
         self,
         tavily_key: Optional[str] = None,
         brave_key: Optional[str] = None,
+        keenable_key: Optional[str] = None,
+        use_keenable: bool = False,
         max_results: int = 10,
         timeout: int = 15,
         region: str = "wt-wt",
@@ -88,6 +96,10 @@ class Search:
         Args:
             tavily_key:   Tavily API key (optional; Layer 1 skipped when absent).
             brave_key:    Brave Search API key (optional; Layer 2 skipped when absent).
+            keenable_key: Keenable API key (optional). Setting it enables Layer 3
+                          on the keyed endpoint.
+            use_keenable: Enable Layer 3 (Keenable) without a key, via its
+                          keyless public endpoint (default False).
             max_results:  Maximum number of results to return (default 10).
             timeout:      HTTP request timeout in seconds (default 15).
             region:       Search region for DuckDuckGo, e.g. "wt-wt", "us-en", "cn-zh".
@@ -95,6 +107,8 @@ class Search:
         """
         self._tavily_key = tavily_key
         self._brave_key = brave_key
+        self._keenable_key = keenable_key
+        self._use_keenable = use_keenable or bool(keenable_key)
         self._max_results = max_results
         self._timeout = timeout
         self._region = region
@@ -148,7 +162,14 @@ class Search:
             else:
                 failures.append("Brave: skipped (no brave_key provided)")
 
-            # Layer 3: DuckDuckGo (free, no key)
+            # Layer 3: Keenable (opt-in; works without a key)
+            if self._use_keenable:
+                results = await self._search_keenable(query, n)
+                if results:
+                    return self._format(results)
+                failures.append("Keenable: failed (check network or API key)")
+
+            # Layer 4: DuckDuckGo (free, no key)
             results, ddgs_err = await self._search_ddgs(query, n)
             if results:
                 return self._format(results)
@@ -228,6 +249,30 @@ class Search:
             ))
         return results or None
 
+    async def _search_keenable(self, query: str, n: int) -> Optional[List[SearchResult]]:
+        """Query Keenable: keyless public endpoint, or the keyed one when a key is set."""
+        headers = {"Content-Type": "application/json", "X-Keenable-Title": "chak"}
+        url = _KEENABLE_PUBLIC_SEARCH_URL
+        if self._keenable_key:
+            headers["X-API-Key"] = self._keenable_key
+            url = _KEENABLE_SEARCH_URL
+        try:
+            async with httpx.AsyncClient(timeout=self._timeout) as client:
+                r = await client.post(url, json={"query": query, "max_results": n}, headers=headers)
+                r.raise_for_status()
+                data = r.json()
+        except Exception:
+            return None
+
+        results = []
+        for item in (data.get("results") or [])[:n]:
+            url_ = item.get("url")
+            if not url_:
+                continue
+            snippet = item.get("description") or (item.get("snippet") or "")[:_KEENABLE_SNIPPET_MAX_CHARS]
+            results.append(SearchResult(title=item.get("title", ""), url=url_, snippet=snippet))
+        return results or None
+
     async def _search_ddgs(
         self, query: str, n: int
     ) -> tuple[Optional[List[SearchResult]], str]:
@@ -268,4 +313,5 @@ class Search:
     def __repr__(self) -> str:
         tv = "yes" if self._tavily_key else "no"
         br = "yes" if self._brave_key else "no"
-        return f"<Search tavily={tv} brave={br} max_results={self._max_results}>"
+        kn = "yes" if self._use_keenable else "no"
+        return f"<Search tavily={tv} brave={br} keenable={kn} max_results={self._max_results}>"
