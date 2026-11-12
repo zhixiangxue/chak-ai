@@ -288,7 +288,7 @@ pip install chakpy[all]
 
 | Extra | What it installs |
 |-------|------------------|
-| `tools` | pymupdf4llm, beautifulsoup4, readability-lxml, ddgs, e2b (and optional API clients for Firecrawl/Tavily) |
+| `tools` | pymupdf4llm, beautifulsoup4, readability-lxml, ddgs, e2b, boxd (and optional API clients for Firecrawl/Tavily) |
 | `server` | fastapi, uvicorn, websockets, pyyaml |
 | `web` | beautifulsoup4, readability-lxml, firecrawl-py, tavily-python, ddgs |
 | `all` | everything above |
@@ -584,7 +584,7 @@ response = await conv.asend("Search for the latest Python release, then save a s
 | Web | `Web` | Fetch and parse web pages into clean text (Firecrawl → Jina → httpx fallback). | `firecrawl-py` (Layer 1, needs API key), `beautifulsoup4`, `readability-lxml` |
 | Search | `Search` | Search the web and return structured results (Tavily → Brave → DuckDuckGo fallback). | `ddgs`, `tavily-python` |
 | PDF | `Pdf` | Extract text and tables from PDF files (local path or URL). | `pymupdf4llm` |
-| Sandbox | `Sandbox` | Run multi-file code projects in an isolated e2b cloud sandbox. Supports any language reachable from bash. | `e2b`, `E2B_API_KEY` |
+| Sandbox | `Sandbox` | Run multi-file code projects in an isolated cloud sandbox: e2b (default) or a [boxd](https://boxd.sh/?ref=chak-ai) machine with `Sandbox(provider="boxd")`. Supports any language reachable from bash. | `e2b`, `E2B_API_KEY` (e2b); `boxd`, `BOXD_API_KEY` (boxd) |
 | SQL | `SQL` | Query and modify SQLite / PostgreSQL / MySQL databases. Pass the DB URI per call — works with any number of databases in one conversation. SQLite needs no extra deps. | `psycopg2-binary` (PostgreSQL), `pymysql` (MySQL) |
 | Excel | `Excel` | Read and write `.xlsx` and `.csv` spreadsheets — `sheets()`, `read()`, `write()`. | `openpyxl` |
 

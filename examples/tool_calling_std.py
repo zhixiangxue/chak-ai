@@ -13,6 +13,7 @@ Tools:
     web         - Fetch and extract readable content from web pages
     pdf         - Extract text/tables from PDF files (local path or URL)
     sandbox     - Run multi-file code projects in an isolated e2b cloud sandbox
+    sandbox_boxd - Run the sandbox demo on an isolated boxd machine
     sql         - Query and modify SQLite / PostgreSQL / MySQL databases
     excel       - Read and write .xlsx and .csv spreadsheets
 
@@ -25,6 +26,7 @@ Usage:
     python examples/tool_calling_std.py web
     python examples/tool_calling_std.py pdf
     python examples/tool_calling_std.py sandbox
+    python examples/tool_calling_std.py sandbox_boxd
     python examples/tool_calling_std.py sql
     python examples/tool_calling_std.py excel
     python examples/tool_calling_std.py all
@@ -32,6 +34,7 @@ Usage:
 Prerequisites:
     ANTHROPIC_API_KEY — or swap model to any supported provider
     E2B_API_KEY       — required for the sandbox demo only (https://e2b.dev)
+    BOXD_API_KEY      : required for the sandbox_boxd demo only (https://boxd.sh/?ref=chak-ai)
 
 Optional (for richer search/web results):
     TAVILY_API_KEY   — Tavily AI search (search demo)
@@ -230,6 +233,29 @@ async def demo_sandbox():
     print(response.content)
 
 
+async def demo_sandbox_boxd():
+    """Run a multi-file Python project on an isolated boxd machine.
+
+    Requires: pip install boxd  and  BOXD_API_KEY environment variable.
+    Each call gets a fresh machine, deleted when the call returns.
+    """
+    boxd_key = os.getenv("BOXD_API_KEY")
+    if not boxd_key:
+        print("BOXD_API_KEY not set. Get a key at https://boxd.sh/?ref=chak-ai")
+        return
+
+    conv = chak.Conversation(
+        _MODEL,
+        api_key=_API_KEY,
+        tools=[Sandbox(provider="boxd", api_key=boxd_key, timeout=300)],
+    )
+    response = await conv.asend(
+        "Scrape https://quotes.toscrape.com and print all quotes with their "
+        "authors and tags. Use code to do it."
+    )
+    print(response.content)
+
+
 # ---------------------------------------------------------------------------
 # sql
 # ---------------------------------------------------------------------------
@@ -337,6 +363,7 @@ _DEMOS = {
     "web": demo_web,
     "pdf": demo_pdf,
     "sandbox": demo_sandbox,
+    "sandbox_boxd": demo_sandbox_boxd,
     "sql": demo_sql,
     "excel": demo_excel,
 }
