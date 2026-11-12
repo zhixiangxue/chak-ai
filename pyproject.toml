@@ -82,6 +82,7 @@ tools = [
     "ddgs>=0.1.0",
     # Sandbox tool
     "e2b>=2.0.0",
+    "boxd>=0.3.1",
     # Excel tool
     "openpyxl>=3.1.0",
     # Notebook tool (persistent memory)
@@ -120,6 +121,7 @@ all = [
     "PyPDFForm>=3.8,<4.0; sys_platform == 'darwin' and platform_machine == 'x86_64'",
     "PyPDFForm>=5.0; sys_platform != 'darwin' or platform_machine != 'x86_64'",
     "e2b>=2.0.0",
+    "boxd>=0.3.1",
     "python-dotenv>=1.0.0",
     "seeka>=0.2.0",
 ]
@@ -155,5 +157,6 @@ markers = [
     "claude: Claude/Anthropic live provider tests",
     "minimax: MiniMax live provider tests",
     "google: Google Gemini live provider tests",
+    "boxd: boxd Sandbox live tests",
 ]
 asyncio_mode = "auto"
