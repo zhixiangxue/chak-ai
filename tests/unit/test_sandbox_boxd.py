@@ -130,7 +130,7 @@ def test_boxd_runs_task_on_isolated_machine_and_deletes_it(fake_boxd):
 
     _, name, create_kwargs = calls[0]
     assert name.startswith("t-") and len(name) == len("t-") + 12
-    assert create_kwargs == {"org": "acme", "isolated": True, "auto_destroy_timeout": 630}
+    assert create_kwargs == {"org": "acme", "isolated": True, "delete_after": 630}
 
     # machine is addressed by the id create returned
     assert calls[1] == ("ready", "m-123")

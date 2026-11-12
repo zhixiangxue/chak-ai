@@ -11,6 +11,7 @@ Optional: BOXD_ORG, BOXD_REGION, BOXD_SANDBOX_NAME_PREFIX.
 import asyncio
 import hashlib
 import os
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -96,19 +97,24 @@ def test_boxd_sandbox_times_out(created):
     _assert_deleted(created)
 
 
-def test_boxd_sandbox_is_isolated_with_auto_destroy(created, monkeypatch):
+def test_boxd_sandbox_is_isolated_with_delete_after(created, monkeypatch):
     seen = []
     original = boxd.resources.machines.Machines.wait_until_ready
 
     def spy(self, machine_id, **kwargs):
         machine = original(self, machine_id, **kwargs)
-        seen.append((machine.networking.isolated, machine.idle.destroy_after))
+        seen.append((machine.networking.isolated, machine.delete_at, datetime.now(UTC)))
         return machine
 
     monkeypatch.setattr(boxd.resources.machines.Machines, "wait_until_ready", spy)
+    started = datetime.now(UTC)
     out = asyncio.run(_sandbox().call({"shell_script": "echo hi"}))
     assert out == "hi"
-    assert seen == [(True, 180 + 600)]
+    [(isolated, delete_at, ready_at)] = seen
+    assert isolated is True
+    # a fixed timer of timeout + 600 seconds, counted from creation
+    assert delete_at is not None
+    assert started + timedelta(seconds=780 - 30) <= delete_at <= ready_at + timedelta(seconds=780 + 30)
     _assert_deleted(created)
 
 

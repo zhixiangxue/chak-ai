@@ -31,7 +31,7 @@ from typing import Any, Dict, List, Optional
 _PROVIDERS = ("e2b", "boxd")
 _SCRIPT_PATH = "/tmp/_chak_script.sh"
 # Extra seconds a boxd machine may live beyond `timeout` (startup and file
-# writes) before boxd destroys it on its own, in case cleanup never runs.
+# writes) before boxd deletes it on its own, in case cleanup never runs.
 _BOXD_TTL_MARGIN = 600
 
 # Prepended to the shell script on boxd. Machines run Ubuntu as a non-root
@@ -260,13 +260,14 @@ class Sandbox:
             with Boxd(api_key=self._api_key, region=self._region) as client:
                 try:
                     # Isolated: LLM-written code runs with no access to other
-                    # machines on the account.  The auto-destroy timer removes
-                    # the machine even if this process dies before cleanup.
+                    # machines on the account.  delete_after is a fixed timer
+                    # that starts at creation and deletes the machine even if
+                    # this process dies before cleanup.
                     machine = client.machines.create(
                         f"{self._name_prefix}{uuid.uuid4().hex[:12]}",
                         org=self._org,
                         isolated=True,
-                        auto_destroy_timeout=int(self._timeout) + _BOXD_TTL_MARGIN,
+                        delete_after=int(self._timeout) + _BOXD_TTL_MARGIN,
                     )
                     machine_id = machine.id
                     client.machines.wait_until_ready(machine_id)
